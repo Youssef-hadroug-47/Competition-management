@@ -1,0 +1,2 @@
+- [ ] tie breakers for groups/league tournament format 
+- [ ] dynamic formats: 
