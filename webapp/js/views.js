@@ -298,8 +298,8 @@ function viewNewTournament(container) {
                 ${['stages', 'groups', 'division', 'league', 'knockout', 'custom']
                   .map((f) => `<option value="${f}" ${wizard.info.format === f ? 'selected' : ''}>${f}</option>`).join('')}
               </select></div>
-            <div class="field"><label>Expected number of teams</label>
-              <input type="number" min="0" id="w-numteams" value="${UI.esc(wizard.info.numberOfTeams || '')}"></div>
+            <div class="field"><label>Expected number of teams *</label>
+              <input type="number" min="0" id="w-numteams" value="${UI.esc(wizard.info.numberOfTeams || '')}" required></div>
           </div>
         </div>
         <div class="row" style="justify-content:flex-end">
@@ -450,7 +450,16 @@ function tabOverview(content, tournament, stages, id, refresh) {
         <h3>Followers</h3>
         <div id="followers-box">${isAdmin ? '<p class="empty">Loading…</p>' : '<p class="muted">Follower list is admin-only. Use the Follow / Unfollow buttons to exercise those endpoints as this user.</p>'}</div>
       </div>
-    </div>`;
+    </div>
+    ${isAdmin ? `
+    <div class="card">
+      <h3>🎲 Simulate</h3>
+      <p class="muted">Plays out every remaining match with random-weighted results (teams with a lower seed
+        are favored, plus a small home-advantage bump) — drawing any stage that hasn't been drawn yet along
+        the way, all the way through to a champion.</p>
+      <button class="small primary" id="simulate-tournament">🎲 Simulate tournament to completion</button>
+      <div id="simulate-tournament-result"></div>
+    </div>` : ''}`;
 
   UI.qs('#follow-btn', content).addEventListener('click', UI.guard(UI.qs('#follow-btn', content), async () => {
     await API.tournaments.follow(id);
@@ -488,6 +497,23 @@ function tabOverview(content, tournament, stages, id, refresh) {
       route();
     }));
     loadFollowers();
+
+    const simBtn = UI.qs('#simulate-tournament', content);
+    if (simBtn) {
+      simBtn.addEventListener('click', UI.guard(simBtn, async () => {
+        const res = await API.simulate.tournament(id);
+        const lines = res.stages.map((s) =>
+          `Stage #${s.sequenceOrder} (${s.stageType})${s.drew ? ' — drawn' : ''}: ${s.matchesSimulated} matches simulated${s.advance?.champion ? ' — champion crowned 🏆' : ''}`
+        ).join('<br>');
+        UI.qs('#simulate-tournament-result', content).innerHTML = `
+          <div class="card" style="margin-top:10px">
+            <p><strong>Tournament status:</strong> ${UI.statusBadge(res.status)}</p>
+            <p>${lines}</p>
+            <p class="muted">Switch to the Matches tab to see results, or Overview will refresh next time you open it.</p>
+          </div>`;
+        UI.toast('Simulation complete', 'success');
+      }));
+    }
   }
 
   async function loadFollowers() {
@@ -852,7 +878,10 @@ async function tabDraw(content, tournament, stages, id, refresh) {
           ${sorted.map((s) => `<option value="${s.id}">${stageOptionLabel(s)}</option>`).join('')}
         </select>
         <button class="primary" type="submit">🎲 Run draw</button>
-      </form>` : '<p class="empty">Add a stage in the Format tab first.</p>'}
+        <button type="button" class="small" id="simulate-stage-btn">🎲 Simulate this stage</button>
+      </form>
+      <p class="hint">"Simulate this stage" draws it first if needed, then plays out every match in it with
+        random-weighted results (knockout rounds cascade automatically).</p>` : '<p class="empty">Add a stage in the Format tab first.</p>'}
     </div>
     <div id="draw-result"></div>`;
 
@@ -871,6 +900,22 @@ async function tabDraw(content, tournament, stages, id, refresh) {
              ${res.draw.promotedFromStage ? ` — drawn from teams promoted out of stage #${res.draw.promotedFromStage}` : ''}</p>
         </div>`;
       UI.toast('Draw complete — see Matches tab', 'success');
+    }));
+  }
+
+  const simStageBtn = UI.qs('#simulate-stage-btn', content);
+  if (simStageBtn) {
+    simStageBtn.addEventListener('click', UI.guard(simStageBtn, async () => {
+      const stageId = UI.qs('#draw-stage', content).value;
+      const res = await API.simulate.stage(stageId);
+      UI.qs('#draw-result', content).innerHTML = `
+        <div class="card">
+          <h4>Stage simulated</h4>
+          <p>Stage #${res.sequenceOrder} (<strong>${UI.esc(res.stageType)}</strong>)
+             ${res.drew ? '— drawn and ' : '— '}${res.matchesSimulated} matches simulated
+             ${res.advance?.champion ? ' — champion crowned 🏆' : ''}</p>
+        </div>`;
+      UI.toast('Stage simulated — see Matches tab', 'success');
     }));
   }
 }
@@ -900,6 +945,7 @@ function matchRowHtml(m, teamName, canOfficiate) {
             ? (canOfficiate ? `<button type="button" class="small success" data-start="${m.id}">▶ Start (attaches you as referee)</button>` : '<span class="muted">Only admin/referee can start</span>')
             : ''}
           ${m.status !== 'finished' && canOfficiate ? `<button type="button" class="small primary" data-finish="${m.id}">🏁 Finish</button>` : ''}
+          ${m.status !== 'finished' && canOfficiate ? `<button type="button" class="small" data-simulate="${m.id}">🎲 Simulate</button>` : ''}
         </div>
       </div>
     </div>`;
@@ -983,6 +1029,8 @@ async function tabMatches(content, tournament, stages, id, refresh) {
   };
   const me = API.getUser();
   const canOfficiate = me && ['admin', 'referee'].includes(me.role);
+  const isAdmin = API.hasRole('admin');
+  const anyUnfinished = mRes.matches.some((m) => m.status !== 'finished');
 
   const sortedStages = [...stages].sort((a, b) => a.sequenceOrder - b.sequenceOrder);
   const byStage = groupMatchesByStage(mRes.matches, sortedStages);
@@ -992,6 +1040,10 @@ async function tabMatches(content, tournament, stages, id, refresh) {
     <p class="hint">The backend attaches a referee to a match by recording <em>who started it</em> —
       there's no separate "assign referee to someone else" endpoint. Log in as a referee (or admin)
       and use <strong>Start</strong> to attach yourself.</p>
+    ${isAdmin && anyMatches && anyUnfinished ? `
+    <div class="row" style="margin-bottom:12px">
+      <button type="button" class="small primary" id="simulate-all-btn">🎲 Simulate all remaining matches</button>
+    </div>` : ''}
     ${anyMatches
       ? byStage.filter(({ groups }) => groups.some((g) => g.matches.length)).map(({ stage, groups }) => `
         <div class="stage-matches">
@@ -1020,6 +1072,29 @@ async function tabMatches(content, tournament, stages, id, refresh) {
     const venue = UI.qs(`#venue-${mid}`, content).value;
     await API.matches.start(mid, venue || undefined);
     UI.toast('Match started — you are now the referee', 'success'); refresh();
+  })));
+
+  const simAllBtn = UI.qs('#simulate-all-btn', content);
+  if (simAllBtn) {
+    simAllBtn.addEventListener('click', UI.guard(simAllBtn, async () => {
+      const res = await API.simulate.tournament(id);
+      const total = res.stages.reduce((sum, s) => sum + s.matchesSimulated, 0);
+      UI.toast(`Simulated ${total} match${total === 1 ? '' : 'es'}`, 'success');
+      refresh();
+    }));
+  }
+
+  UI.qsa('[data-simulate]', content).forEach((btn) => btn.addEventListener('click', UI.guard(btn, async () => {
+    const mid = btn.dataset.simulate;
+    const res = await API.matches.simulate(mid);
+    if (res.skipped) {
+      UI.toast('Match was already finished');
+    } else {
+      UI.toast(`Simulated: ${res.match.score.home}–${res.match.score.away}`, 'success');
+      if (res.advance?.finalized) UI.toast(`🏆 ${res.advance.round} complete — champion crowned!`, 'success');
+      else if (res.advance?.round) UI.toast(`Round complete — ${res.advance.round} drawn automatically (${res.advance.matchesCreated} matches)`, 'success');
+    }
+    refresh();
   })));
 
   UI.qsa('[data-finish]', content).forEach((btn) => btn.addEventListener('click', UI.guard(btn, async () => {

@@ -1,9 +1,10 @@
-const { db, now, parseJson } = require('../db');
+const { db, now } = require('../db');
 const { asyncHandler } = require('../utils/asyncHandler');
 const { httpError } = require('../middleware/error');
 const map = require('../services/mappers');
 const access = require('../services/access');
-const { runDraw, advanceKnockoutStage } = require('../services/drawService');
+const { runDraw } = require('../services/drawService');
+const { finishMatchRecord } = require('../services/matchService');
 
 const draw = asyncHandler((req, res) => {
   const tournamentId = req.body?.tournamentId || req.params.id;
@@ -29,56 +30,6 @@ const getMatch = asyncHandler((req, res) => {
   access.requireTournamentInspect(tournament, req.user);
   res.json({ match: map.match(row) });
 });
-
-function applyResultToTable(match, homeScore, awayScore, pointsSettings) {
-  const pts = pointsSettings || { win: 3, draw: 1, loss: 0 };
-  const home = db.prepare('SELECT * FROM participant_teams WHERE id = ?').get(match.home_participant_team_id);
-  const away = db.prepare('SELECT * FROM participant_teams WHERE id = ?').get(match.away_participant_team_id);
-  if (!home || !away) return;
-
-  const homeWin = homeScore > awayScore;
-  const draw = homeScore === awayScore;
-  db.prepare(
-    `UPDATE participant_teams SET
-      played = played + 1,
-      won = won + ?,
-      drawn = drawn + ?,
-      lost = lost + ?,
-      goals_for = goals_for + ?,
-      goals_against = goals_against + ?,
-      points = points + ?,
-      status = 'active'
-     WHERE id = ?`
-  ).run(
-    homeWin ? 1 : 0,
-    draw ? 1 : 0,
-    homeWin ? 0 : draw ? 0 : 1,
-    homeScore,
-    awayScore,
-    homeWin ? pts.win : draw ? pts.draw : pts.loss,
-    home.id
-  );
-  db.prepare(
-    `UPDATE participant_teams SET
-      played = played + 1,
-      won = won + ?,
-      drawn = drawn + ?,
-      lost = lost + ?,
-      goals_for = goals_for + ?,
-      goals_against = goals_against + ?,
-      points = points + ?,
-      status = 'active'
-     WHERE id = ?`
-  ).run(
-    homeWin ? 0 : draw ? 0 : 1,
-    draw ? 1 : 0,
-    homeWin ? 1 : 0,
-    awayScore,
-    homeScore,
-    homeWin ? pts.loss : draw ? pts.draw : pts.win,
-    away.id
-  );
-}
 
 const startMatch = asyncHandler((req, res) => {
   const row = db.prepare('SELECT * FROM matches WHERE id = ?').get(req.params.id);
@@ -125,41 +76,18 @@ const finishMatch = asyncHandler((req, res) => {
   const awayScore = req.body?.awayScore ?? row.away_score;
   if (homeScore == null || awayScore == null) throw httpError(400, 'homeScore and awayScore are required');
 
-  db.prepare(
-    `UPDATE matches SET status = 'finished', home_score = ?, away_score = ?,
-      extra_time_home = ?, extra_time_away = ?, penalties_home = ?, penalties_away = ?,
-      finished_at = ?, referee_id = COALESCE(referee_id, ?)
-     WHERE id = ?`
-  ).run(
-    homeScore,
-    awayScore,
-    req.body?.extraTimeHome ?? row.extra_time_home,
-    req.body?.extraTimeAway ?? row.extra_time_away,
-    req.body?.penaltiesHome ?? row.penalties_home,
-    req.body?.penaltiesAway ?? row.penalties_away,
-    now(),
-    req.user.id,
-    row.id
-  );
-
-  const stage = db.prepare('SELECT * FROM stages WHERE id = ?').get(row.stage_id);
-  const settings = parseJson(stage?.settings, map.defaultStageSettings(stage?.type));
-  if (stage?.type === 'league') {
-    applyResultToTable(row, Number(homeScore), Number(awayScore), settings.points);
-  }
-
-  // Knockout stages advance themselves: once every match in the current
-  // round is finished, the next round is generated automatically (or the
-  // champion is crowned if this was the final round).
-  let advance = null;
-  if (stage?.type === 'knockout') {
-    advance = advanceKnockoutStage(stage.id);
-  }
-
-  res.json({
-    match: map.match(db.prepare('SELECT * FROM matches WHERE id = ?').get(row.id)),
-    advance,
+  const { match: updated, advance } = finishMatchRecord({
+    matchRow: row,
+    homeScore: Number(homeScore),
+    awayScore: Number(awayScore),
+    extraTimeHome: req.body?.extraTimeHome ?? row.extra_time_home,
+    extraTimeAway: req.body?.extraTimeAway ?? row.extra_time_away,
+    penaltiesHome: req.body?.penaltiesHome ?? row.penalties_home,
+    penaltiesAway: req.body?.penaltiesAway ?? row.penalties_away,
+    refereeId: req.user.id,
   });
+
+  res.json({ match: map.match(updated), advance });
 });
 
 const follow = asyncHandler((req, res) => {

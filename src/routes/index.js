@@ -4,6 +4,7 @@ const auth = require('../controllers/authController');
 const tournaments = require('../controllers/tournamentController');
 const catalog = require('../controllers/catalogController');
 const matches = require('../controllers/matchController');
+const simulation = require('../controllers/simulationController');
 
 const router = express.Router();
 
@@ -58,6 +59,10 @@ router.get('/matches/:id', authOptional, matches.getMatch);
 router.post('/matches/:id/start', requireAuth, requireRole('admin', 'referee'), matches.startMatch);
 router.patch('/matches/:id', requireAuth, requireRole('admin', 'referee'), matches.updateMatch);
 router.post('/matches/:id/finish', requireAuth, requireRole('admin', 'referee'), matches.finishMatch);
+
+router.post('/matches/:id/simulate', requireAuth, requireRole('admin', 'referee'), simulation.simulateMatch);
+router.post('/stages/:id/simulate', requireAuth, requireRole('admin'), simulation.simulateStage);
+router.post('/tournaments/:id/simulate', requireAuth, requireRole('admin'), simulation.simulateTournament);
 
 router.post('/tournaments/:id/follow', requireAuth, matches.follow);
 router.delete('/tournaments/:id/follow', requireAuth, matches.unfollow);

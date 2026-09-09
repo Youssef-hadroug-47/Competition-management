@@ -148,10 +148,18 @@ const API = (() => {
     start: (id, venue) => request(`/matches/${id}/start`, { method: 'POST', body: venue ? { venue } : {} }),
     update: (id, body) => request(`/matches/${id}`, { method: 'PATCH', body }),
     finish: (id, body) => request(`/matches/${id}/finish`, { method: 'POST', body }),
+    simulate: (id) => request(`/matches/${id}/simulate`, { method: 'POST' }),
+  };
+
+  /* ---- Simulation (random-weighted game/stage/tournament results) ---- */
+  const simulate = {
+    match: (matchId) => request(`/matches/${matchId}/simulate`, { method: 'POST' }),
+    stage: (stageId) => request(`/stages/${stageId}/simulate`, { method: 'POST' }),
+    tournament: (tournamentId) => request(`/tournaments/${tournamentId}/simulate`, { method: 'POST' }),
   };
 
   return {
     getBaseUrl, setBaseUrl, getToken, setToken, getUser, setUser, isLoggedIn, hasRole,
-    request, auth, tournaments, teams, players, participants, matches,
+    request, auth, tournaments, teams, players, participants, matches, simulate,
   };
 })();
