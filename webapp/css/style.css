@@ -132,7 +132,7 @@ tr:last-child td{border-bottom:none}
 .match-row{border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin-bottom:8px;background:var(--panel-2)}
 .match-teams{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:600}
 .match-teams .vs{color:var(--muted);font-weight:400;font-size:12px}
-.score-input{width:48px;text-align:center;padding:6px 4px}
+.score-input{width:124px;text-align:center;padding:6px 4px;font-size:20px;font-weight:700}
 
 /* --- Matches tab: grouped/bracket visualization --- */
 .stage-matches{margin-bottom:26px}
@@ -143,7 +143,7 @@ tr:last-child td{border-bottom:none}
 .bracket{display:flex;gap:0;overflow-x:auto;padding:4px 0 14px}
 .bracket-round{
   display:flex;flex-direction:column;justify-content:space-around;
-  min-width:230px;flex:0 0 230px;padding:0 20px;position:relative;
+  min-width:260px;flex:0 0 230px;padding:0 20px;position:relative;
 }
 .bracket-round:first-child{padding-left:0}
 .bracket-round:last-child{padding-right:0}
@@ -168,6 +168,19 @@ tr:last-child td{border-bottom:none}
 .bracket-round:not(:first-child) .bracket-match::before{
   content:"";position:absolute;top:50%;left:-20px;width:20px;height:1px;background:var(--border);
 }
+
+/* --- Standings table for league groups --- */
+.standings{width:100%;border-collapse:collapse;margin-bottom:14px;font-size:12px}
+.standings th,.standings td{padding:6px 5px;border-bottom:1px solid var(--border);text-align:center}
+.standings th{color:var(--muted);font-weight:500;font-size:10px;text-transform:uppercase;letter-spacing:.03em}
+.standings td:first-child,.standings th:first-child{text-align:left;padding-left:0}
+.standings td:nth-child(2){text-align:left}
+.standings tr:last-child td{border-bottom:none}
+.standings .champion-row{background:#1a2f20;color:var(--success);font-weight:600}
+
+/* --- Match extra-time / penalties details --- */
+.match-details{display:flex;gap:12px;margin-top:4px;font-size:11px;color:var(--muted)}
+.match-et,.match-pens{display:inline-block;padding:1px 8px;border-radius:4px;background:var(--panel);border:1px solid var(--border)}
 
 .error-box{background:#3a1f22;border:1px solid #5a2a2f;color:#ffb2b6;border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:13px}
 .hint{background:#20263a;border:1px solid #2d3550;color:#a9b6e0;border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:12px}

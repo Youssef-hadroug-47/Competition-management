@@ -90,8 +90,9 @@ function simulateMatch(matchId, { actorId } = {}) {
     penaltiesAway: row.penalties_away,
     refereeId: actorId,
   });
-  
+
   let et = null;
+  
   if (stage?.type === 'knockout' && homeScore == awayScore && settings.extraTime) {
     et = randomScoreline(home?.seed, away?.seed);
     db.prepare('UPDATE matches SET extra_time_home = ?, extra_time_away = ? WHERE id = ?').run(
@@ -103,7 +104,7 @@ function simulateMatch(matchId, { actorId } = {}) {
     match = db.prepare('SELECT * FROM matches WHERE id = ?').get(match.id);
   }
 
-  if (stage?.type === 'knockout' && et?.awayScore == et?.homeScore && settings.penalties) {
+  if (stage?.type === 'knockout' && ( (et && et.awayScore == et.homeScore) || (!et && homeScore == awayScore)) && settings.penalties) {
     const pens = randomPenalties();
     db.prepare('UPDATE matches SET penalties_home = ?, penalties_away = ? WHERE id = ?').run(
       pens.home,

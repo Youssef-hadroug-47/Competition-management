@@ -307,7 +307,9 @@ function viewNewTournament(container) {
         </div>`;
       UI.qs('#w-next1', container).addEventListener('click', () => {
         const name = UI.qs('#w-name', container).value.trim();
+        const expected_number_of_teams = UI.qs('#w-numteams', container).value.trim();
         if (!name) { UI.toast('Name is required'); return; }
+        if (!expected_number_of_teams) { UI.toast('how many teams the tournament should have'); return;}
         captureStep1();
         step = 2;
         render();
@@ -921,6 +923,19 @@ async function tabDraw(content, tournament, stages, id, refresh) {
 }
 
 /* --- Matches tab --- */
+function matchDetailsHtml(m) {
+  const et =
+    m.score.extraTimeHome != null && m.score.extraTimeAway != null
+      ? `<span class="match-et">ET ${m.score.extraTimeHome}–${m.score.extraTimeAway}</span>`
+      : '';
+  const pens =
+    m.score.penaltiesHome != null && m.score.penaltiesAway != null
+      ? `<span class="match-pens">PEN ${m.score.penaltiesHome}–${m.score.penaltiesAway}</span>`
+      : '';
+  if (!et && !pens) return '';
+  return `<div class="match-details">${et}${pens}</div>`;
+}
+
 function matchRowHtml(m, teamName, canOfficiate) {
   return `
     <div class="match-row" data-match="${m.id}">
@@ -934,6 +949,7 @@ function matchRowHtml(m, teamName, canOfficiate) {
         </div>
         <div class="row">${UI.statusBadge(m.status)}<span class="muted">MD ${m.matchday}</span></div>
       </div>
+      ${matchDetailsHtml(m)}
       <div class="row between" style="margin-top:8px">
         <div class="row">
           <input type="text" id="venue-${m.id}" placeholder="Venue" value="${UI.esc(m.venue || '')}" style="width:150px">
@@ -978,13 +994,46 @@ function matchdaySections(matches) {
   return [...byMatchday.entries()].sort((a, b) => a[0] - b[0]);
 }
 
-// One card per league group — its matches (from every registered team,
-// tied to that specific group) organized into matchday sub-sections.
-function leagueGroupCardHtml(group, teamName, canOfficiate) {
+// Standings table for a league group, sorted by points → GD → GF.
+function groupStandingsHtml(participantTeams, groupId) {
+  const teams = participantTeams
+    .filter((pt) => pt.groupId === groupId)
+    .sort((a, b) => {
+      if (b.stats.points !== a.stats.points) return b.stats.points - a.stats.points;
+      if (b.stats.goalDifference !== a.stats.goalDifference) return b.stats.goalDifference - a.stats.goalDifference;
+      if (b.stats.goalsFor !== a.stats.goalsFor) return b.stats.goalsFor - a.stats.goalsFor;
+      return 0;
+    });
+  if (!teams.length) return '';
+  return `
+    <table class="standings">
+      <thead><tr><th>#</th><th>Team</th><th>P</th><th>W</th><th>D</th><th>L</th><th>GF</th><th>GA</th><th>GD</th><th>Pts</th></tr></thead>
+      <tbody>${teams.map((pt, i) => {
+        const gd = pt.stats.goalDifference;
+        return `<tr class="${pt.status === 'champion' ? 'champion-row' : ''}">
+          <td>${i + 1}</td>
+          <td>${UI.esc(pt.team?.name || 'Unknown')}</td>
+          <td>${pt.stats.played}</td>
+          <td>${pt.stats.won}</td>
+          <td>${pt.stats.drawn}</td>
+          <td>${pt.stats.lost}</td>
+          <td>${pt.stats.goalsFor}</td>
+          <td>${pt.stats.goalsAgainst}</td>
+          <td>${gd > 0 ? '+' : ''}${gd}</td>
+          <td><strong>${pt.stats.points}</strong></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>`;
+}
+
+// One card per league group — its standings table followed by its matches
+// organized into matchday sub-sections.
+function leagueGroupCardHtml(group, teamName, canOfficiate, participantTeams) {
   const mds = matchdaySections(group.matches);
   return `
     <div class="card">
       <h3>${UI.esc(group.name)}</h3>
+      ${groupStandingsHtml(participantTeams, group.id)}
       ${group.matches.length
         ? mds.map(([md, ms]) => `
           <div class="matchday-block">
@@ -1050,7 +1099,7 @@ async function tabMatches(content, tournament, stages, id, refresh) {
           <h2>Stage #${stage.sequenceOrder} <span class="muted" style="font-weight:400;font-size:14px">— ${UI.esc(stage.type)}</span></h2>
           ${stage.type === 'knockout'
             ? `<div class="bracket">${groups.map((g) => bracketRoundHtml(g, teamName, canOfficiate)).join('')}</div>`
-            : `<div class="grid cols-2">${groups.map((g) => leagueGroupCardHtml(g, teamName, canOfficiate)).join('')}</div>`}
+            : `<div class="grid cols-2">${groups.map((g) => leagueGroupCardHtml(g, teamName, canOfficiate, ptRes.participantTeams)).join('')}</div>`}
         </div>`).join('')
       : '<p class="empty">No matches yet — run the draw first.</p>'}`;
 
