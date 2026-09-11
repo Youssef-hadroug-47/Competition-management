@@ -45,6 +45,14 @@ function defaultStageSettings(type) {
     },
     points: type == 'league' ? { win: 3, draw: 1, loss: 0 } : null,
     teamsAdvancePerGroup: type === 'league' ? 2 : null,
+    tiebreakers: type === 'league'
+      ? [
+          { type: 'head_to_head', priority: 1, awayGoalsPrivileged: true },
+          { type: 'goal_difference', priority: 2 },
+          { type: 'goals_for', priority: 3 },
+          { type: 'sportsmanlike', priority: 4 },
+        ]
+      : [],
   };
   return base;
 }

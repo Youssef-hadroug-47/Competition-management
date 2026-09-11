@@ -142,55 +142,180 @@ function defaultStageSettings(type) {
     extraTime: type === 'knockout',
     penalties: type === 'knockout',
     suspensionSystem: { enabled: true, yellowCardsForSuspension: 2, redCardMissedMatches: 1 },
-    points: { win: 3, draw: 1, loss: 0 },
+    points: type === 'league' ? { win: 3, draw: 1, loss: 0 } : null,
     teamsAdvancePerGroup: type === 'league' ? 2 : null,
+    tiebreakers: type === 'league'
+      ? [
+          { type: 'head_to_head', priority: 1, awayGoalsPrivileged: true },
+          { type: 'goal_difference', priority: 2 },
+          { type: 'goals_for', priority: 3 },
+          { type: 'sportsmanlike', priority: 4 },
+        ]
+      : [],
   };
 }
 
 // Renders the settings fields for a stage under a unique DOM id namespace `ns`.
 function stageSettingsFieldsHtml(ns, s, stageType) {
+  const tiebreakerOptions = [
+    { value: 'head_to_head', label: 'Head-to-head' },
+    { value: 'goal_difference', label: 'Goal difference' },
+    { value: 'goals_for', label: 'Goals for' },
+    { value: 'sportsmanlike', label: 'Sportsmanlike (fewest red, then yellow)' },
+    { value: 'draw', label: 'Draw (random by ID)' },
+  ];
+  const tbs = (s.tiebreakers || []).sort((a, b) => a.priority - b.priority);
   return `
     <div class="grid cols-3">
       <div class="field"><label>Head-to-head matches</label>
         <input type="number" min="1" id="${ns}-h2h" value="${s.headToHeadMatches}"></div>
-      <div class="field"><label>Teams advancing${stageType === 'knockout' ? ' (to next stage)' : ' / group'}</label>
-        <input type="number" min="0" id="${ns}-adv" value="${s.teamsAdvancePerGroup ?? ''}" placeholder="all"></div>
+      ${ stageType === 'league' ? `<div class="field"><label>Teams advancing / group</label>
+        <input type="number" min="0" id="${ns}-adv" value="${s.teamsAdvancePerGroup ?? ''}" placeholder="all"></div>` : ''}
       <div class="field"><label>&nbsp;</label>
         <div class="checkline"><input type="checkbox" id="${ns}-et" ${s.extraTime ? 'checked' : ''}> Extra time</div>
         <div class="checkline" style="margin-top:4px"><input type="checkbox" id="${ns}-pen" ${s.penalties ? 'checked' : ''}> Penalties</div>
       </div>
     </div>
+    ${stageType === 'league' ? `
     <div class="grid cols-3">
-      <div class="field"><label>Points — win</label><input type="number" id="${ns}-pw" value="${s.points.win}"></div>
-      <div class="field"><label>Points — draw</label><input type="number" id="${ns}-pd" value="${s.points.draw}"></div>
-      <div class="field"><label>Points — loss</label><input type="number" id="${ns}-pl" value="${s.points.loss}"></div>
+      <div class="field"><label>Points — win</label><input type="number" id="${ns}-pw" value="${s.points ? s.points.win : 3}"></div>
+      <div class="field"><label>Points — draw</label><input type="number" id="${ns}-pd" value="${s.points ? s.points.draw : 1}"></div>
+      <div class="field"><label>Points — loss</label><input type="number" id="${ns}-pl" value="${s.points ? s.points.loss : 0}"></div>
+    </div>` : ''}
+    <div class="grid cols-3">
+      <div class="field"><div class="checkline"><input type="checkbox" id="${ns}-se" ${s.suspensionSystem?.enabled !== false ? 'checked' : ''}> Suspension system</div></div>
+      <div class="field"><label>Yellow cards → suspension</label><input type="number" id="${ns}-sy" value="${s.suspensionSystem?.yellowCardsForSuspension ?? 2}"></div>
+      <div class="field"><label>Matches missed / red card</label><input type="number" id="${ns}-sr" value="${s.suspensionSystem?.redCardMissedMatches ?? 1}"></div>
     </div>
-    <div class="grid cols-3">
-      <div class="field"><div class="checkline"><input type="checkbox" id="${ns}-se" ${s.suspensionSystem.enabled ? 'checked' : ''}> Suspension system</div></div>
-      <div class="field"><label>Yellow cards → suspension</label><input type="number" id="${ns}-sy" value="${s.suspensionSystem.yellowCardsForSuspension}"></div>
-      <div class="field"><label>Matches missed / red card</label><input type="number" id="${ns}-sr" value="${s.suspensionSystem.redCardMissedMatches}"></div>
-    </div>`;
+    ${stageType === 'league' ? `
+    <div class="tiebreakers-section">
+      <h4>Tiebreakers <span class="muted" style="font-weight:400;text-transform:none">(applied in priority order when points are equal)</span></h4>
+      <div id="${ns}-tiebreakers-list" class="tiebreakers-list">
+        ${tbs.map((tb, idx) => {
+          const tbNs = `${ns}-tb-${idx}`;
+          return `<div class="tiebreaker-row" data-tb-idx="${idx}">
+            <input type="number" class="tb-priority" id="${tbNs}-prio" value="${tb.priority}" min="1" max="20" style="width:50px">
+            <select class="tb-type" id="${tbNs}-type" style="flex:1">
+              ${tiebreakerOptions.map((o) => `<option value="${o.value}" ${o.value === tb.type ? 'selected' : ''}>${o.label}</option>`).join('')}
+            </select>
+            <div class="tb-away-wrap" id="${tbNs}-away-wrap" style="${tb.type === 'head_to_head' ? '' : 'display:none'}">
+              <div class="checkline"><input type="checkbox" class="tb-away" id="${tbNs}-away" ${tb.awayGoalsPrivileged !== false ? 'checked' : ''}> Away goals</div>
+            </div>
+            <button type="button" class="small ghost danger" data-remove-tb="${tbNs}" title="Remove">✕</button>
+          </div>`;
+        }).join('')}
+      </div>
+      <button type="button" class="small" id="${ns}-add-tb">+ Add tiebreaker</button>
+    </div>` : ''}`;
 }
 
 function readStageSettingsFromRoot(root, ns) {
   const val = (id) => UI.qs('#' + id, root);
-  const num = (el) => (el.value === '' ? null : Number(el.value));
+  const num = (el) => (!el || el.value === '' ? null : Number(el.value));
+  const tiebreakerRows = UI.qsa(`[data-tb-idx]`, val(`${ns}-tiebreakers-list`) || root);
+  const tiebreakers = tiebreakerRows.map((row) => {
+    const idx = row.dataset.tbIdx;
+    const type = val(`${ns}-tb-${idx}-type`)?.value || 'goal_difference';
+    const prio = num(val(`${ns}-tb-${idx}-prio`)) ?? 1;
+    const away = val(`${ns}-tb-${idx}-away`)?.checked || false;
+    return { type, priority: prio, ...(type === 'head_to_head' ? { awayGoalsPrivileged: away } : {}) };
+  });
+  const pointsEl = val(`${ns}-pw`);
   return {
     headToHeadMatches: num(val(`${ns}-h2h`)) ?? 1,
     teamsAdvancePerGroup: num(val(`${ns}-adv`)),
-    extraTime: val(`${ns}-et`).checked,
-    penalties: val(`${ns}-pen`).checked,
-    points: {
-      win: num(val(`${ns}-pw`)) ?? 0,
-      draw: num(val(`${ns}-pd`)) ?? 0,
-      loss: num(val(`${ns}-pl`)) ?? 0,
-    },
-    suspensionSystem: {
-      enabled: val(`${ns}-se`).checked,
-      yellowCardsForSuspension: num(val(`${ns}-sy`)) ?? 2,
-      redCardMissedMatches: num(val(`${ns}-sr`)) ?? 1,
-    },
+    extraTime: val(`${ns}-et`)?.checked ?? false,
+    penalties: val(`${ns}-pen`)?.checked ?? false,
+    points: pointsEl
+      ? {
+          win: num(val(`${ns}-pw`)) ?? 0,
+          draw: num(val(`${ns}-pd`)) ?? 0,
+          loss: num(val(`${ns}-pl`)) ?? 0,
+        }
+      : null,
+    suspensionSystem: val(`${ns}-se`)
+      ? {
+          enabled: val(`${ns}-se`).checked,
+          yellowCardsForSuspension: num(val(`${ns}-sy`)) ?? 2,
+          redCardMissedMatches: num(val(`${ns}-sr`)) ?? 1,
+        }
+      : undefined,
+    tiebreakers: tiebreakers.length ? tiebreakers : undefined,
   };
+}
+
+function wireTiebreakerListeners(root, ns) {
+  const container = UI.qs(`#${ns}-tiebreakers-list`, root) || root;
+  if (!container) return;
+
+  const tiebreakerOptions = [
+    { value: 'head_to_head', label: 'Head-to-head' },
+    { value: 'goal_difference', label: 'Goal difference' },
+    { value: 'goals_for', label: 'Goals for' },
+    { value: 'sportsmanlike', label: 'Sportsmanlike (fewest red, then yellow)' },
+    { value: 'draw', label: 'Draw (random by ID)' },
+  ];
+
+  function reindex() {
+    const rows = UI.qsa('[data-tb-idx]', container);
+    rows.forEach((row, idx) => {
+      row.dataset.tbIdx = idx;
+      const idBase = `${ns}-tb-${idx}`;
+      const oldBase = row.dataset.oldBase || idBase;
+      row.querySelector('.tb-priority').id = `${idBase}-prio`;
+      row.querySelector('.tb-type').id = `${idBase}-type`;
+      const aw = row.querySelector('.tb-away-wrap');
+      if (aw) aw.id = `${idBase}-away-wrap`;
+      const cb = row.querySelector('.tb-away');
+      if (cb) cb.id = `${idBase}-away`;
+      const btn = row.querySelector('[data-remove-tb]');
+      if (btn) btn.dataset.removeTb = idBase;
+      row.dataset.oldBase = idBase;
+    });
+  }
+
+  function wireRow(row) {
+    const typeSel = row.querySelector('.tb-type');
+    if (typeSel) {
+      typeSel.addEventListener('change', () => {
+        const aw = row.querySelector('.tb-away-wrap');
+        if (aw) aw.style.display = typeSel.value === 'head_to_head' ? '' : 'none';
+      });
+    }
+    const rmBtn = row.querySelector('[data-remove-tb]');
+    if (rmBtn) {
+      rmBtn.addEventListener('click', () => {
+        row.remove();
+        reindex();
+      });
+    }
+  }
+
+  UI.qsa('[data-tb-idx]', container).forEach(wireRow);
+
+  const addBtn = UI.qs(`#${ns}-add-tb`, root);
+  if (addBtn) {
+    addBtn.addEventListener('click', () => {
+      const existing = UI.qsa('[data-tb-idx]', container);
+      const nextIdx = existing.length;
+      const div = document.createElement('div');
+      div.className = 'tiebreaker-row';
+      div.dataset.tbIdx = nextIdx;
+      div.dataset.oldBase = `${ns}-tb-${nextIdx}`;
+      div.innerHTML = `
+        <input type="number" class="tb-priority" id="${ns}-tb-${nextIdx}-prio" value="${nextIdx + 1}" min="1" max="20" style="width:50px">
+        <select class="tb-type" id="${ns}-tb-${nextIdx}-type" style="flex:1">
+          ${tiebreakerOptions.map((o) => `<option value="${o.value}" ${o.value === 'goal_difference' ? 'selected' : ''}>${o.label}</option>`).join('')}
+        </select>
+        <div class="tb-away-wrap" id="${ns}-tb-${nextIdx}-away-wrap" style="display:none">
+          <div class="checkline"><input type="checkbox" class="tb-away" id="${ns}-tb-${nextIdx}-away" checked> Away goals</div>
+        </div>
+        <button type="button" class="small ghost danger" data-remove-tb="${ns}-tb-${nextIdx}" title="Remove">✕</button>`;
+      container.appendChild(div);
+      wireRow(div);
+      reindex();
+    });
+  }
 }
 
 /* ===================== NEW TOURNAMENT WIZARD ========================= */
@@ -277,6 +402,7 @@ function viewNewTournament(container) {
       wizard.stages[idx].settings = defaultStageSettings(sel.value);
       renderStep2Stages();
     }));
+    wizard.stages.forEach((s, idx) => wireTiebreakerListeners(box, `w${idx}`));
   }
 
   function render() {
@@ -596,9 +722,11 @@ async function tabFormat(content, tournament, stages, id, refresh) {
     const type = UI.qs('#fmt-add-type', content).value;
     UI.qs('#fmt-add-settings', content).innerHTML =
       stageSettingsFieldsHtml('fmt-add', defaultStageSettings(type), type);
+    if (type === 'league') wireTiebreakerListeners(content, 'fmt-add');
   }
   renderAddSettings();
   UI.qs('#fmt-add-type', content).addEventListener('change', renderAddSettings);
+  stages.forEach((s) => wireTiebreakerListeners(content, 'st-' + s.id));
 
   const addBtn = UI.qs('#fmt-add-btn', content);
   addBtn.addEventListener('click', UI.guard(addBtn, async () => {
@@ -775,19 +903,37 @@ async function tabTeams(content, tournament, stages, id, refresh) {
     autofillBtn.addEventListener('click', UI.guard(autofillBtn, async () => {
       let count = tournament.numberOfTeams > 0 ? tournament.numberOfTeams : Number(prompt('How many teams to generate?', '8'));
       if (!count) return;
+
+      const existingTeams = teamsCat.teams.reduce((map, t) => { map[t.name] = t; return map; }, {});
+      const existingPlayers = playersCat.players.reduce((map, p) => { map[p.name] = p; return map; }, {});
+      const registeredTeamIds = new Set(ptRes.participantTeams.map((pt) => pt.teamId));
+
       for (let i = 1; i <= count; i += 1) {
-        autofillBtn.textContent = `Generating team ${i}/${count}…`;
-        const team = await API.teams.create({ name: `Team ${i}`, shortName: `T${i}` });
-        const pt = await API.participants.addTeam(id, { teamId: team.team.id, seed: i });
+        autofillBtn.textContent = `Auto-filling team ${i}/${count}…`;
+        const teamName = `Team ${i}`;
+        const team = existingTeams[teamName] || (await API.teams.create({ name: teamName, shortName: `T${i}` })).team;
+
+        let pt;
+        if (!registeredTeamIds.has(team.id)) {
+          pt = (await API.participants.addTeam(id, { teamId: team.id, seed: i })).participantTeam;
+          registeredTeamIds.add(team.id);
+        } else {
+          pt = ptRes.participantTeams.find((p) => p.teamId === team.id);
+        }
+
+        const existingRoster = pt ? (await API.participants.listPlayers(pt.id)).participantPlayers : [];
+        const existingPlayerNames = new Set(existingRoster.map((pp) => pp.player?.name));
         for (let p = 1; p <= 11; p += 1) {
-          const player = await API.players.create({
-            name: `Team ${i} Player ${p}`,
-            position: p === 1 ? 'goalkeeper' : 'player',
-          });
-          await API.participants.addPlayer(pt.participantTeam.id, { playerId: player.player.id, shirtNumber: p });
+          const playerName = `Team ${i} Player ${p}`;
+          if (existingPlayerNames.has(playerName)) continue;
+          const pos = p === 1 ? 'goalkeeper' : 'player';
+          const player = existingPlayers[playerName] || (await API.players.create({ name: playerName, position: pos })).player;
+          if (pt) {
+            await API.participants.addPlayer(pt.id, { playerId: player.id, shirtNumber: p });
+          }
         }
       }
-      UI.toast('Auto-fill complete — edit names anytime', 'success');
+      UI.toast('Auto-fill complete — reused existing teams/players where possible', 'success');
       refresh();
     }));
   }
@@ -994,16 +1140,151 @@ function matchdaySections(matches) {
   return [...byMatchday.entries()].sort((a, b) => a[0] - b[0]);
 }
 
-// Standings table for a league group, sorted by points → GD → GF.
-function groupStandingsHtml(participantTeams, groupId) {
-  const teams = participantTeams
-    .filter((pt) => pt.groupId === groupId)
-    .sort((a, b) => {
-      if (b.stats.points !== a.stats.points) return b.stats.points - a.stats.points;
-      if (b.stats.goalDifference !== a.stats.goalDifference) return b.stats.goalDifference - a.stats.goalDifference;
-      if (b.stats.goalsFor !== a.stats.goalsFor) return b.stats.goalsFor - a.stats.goalsFor;
-      return 0;
+// Computes each team's points/GF/GA from only the matches they played
+// against each other within this set (their "mini-league") — mirrors
+// src/services/drawService.js's computeMiniLeagueStats so the standings
+// shown here agree with how the backend actually resolves ties/promotion.
+function computeMiniLeagueStatsClient(teamIds, matches) {
+  const stats = {};
+  teamIds.forEach((tid) => { stats[tid] = { pts: 0, gf: 0, ga: 0 }; });
+  matches
+    .filter((m) => m.status === 'finished' && teamIds.includes(m.homeParticipantTeamId) && teamIds.includes(m.awayParticipantTeamId))
+    .forEach((m) => {
+      const hs = m.score.home || 0;
+      const as = m.score.away || 0;
+      const h = m.homeParticipantTeamId;
+      const a = m.awayParticipantTeamId;
+      stats[h].gf += hs; stats[h].ga += as;
+      stats[a].gf += as; stats[a].ga += hs;
+      if (hs > as) stats[h].pts += 3;
+      else if (as > hs) stats[a].pts += 3;
+      else { stats[h].pts += 1; stats[a].pts += 1; }
     });
+  return stats;
+}
+
+// Head-to-head between exactly two teams (points → GD → GF → away goals).
+function compareHeadToHeadClient(a, b, matches, awayGoalsPrivileged) {
+  const between = matches.filter((m) =>
+    m.status === 'finished' &&
+    ((m.homeParticipantTeamId === a.id && m.awayParticipantTeamId === b.id) ||
+     (m.homeParticipantTeamId === b.id && m.awayParticipantTeamId === a.id))
+  );
+  if (!between.length) return 0;
+  let aPts = 0, bPts = 0, aGf = 0, bGf = 0, aAg = 0, bAg = 0;
+  for (const m of between) {
+    const aIsHome = m.homeParticipantTeamId === a.id;
+    const aScore = aIsHome ? (m.score.home || 0) : (m.score.away || 0);
+    const bScore = aIsHome ? (m.score.away || 0) : (m.score.home || 0);
+    aGf += aScore; bGf += bScore;
+    if (aIsHome) bAg += bScore; else aAg += aScore;
+    if (aScore > bScore) aPts += 3;
+    else if (bScore > aScore) bPts += 3;
+    else { aPts += 1; bPts += 1; }
+  }
+  if (aPts !== bPts) return bPts - aPts;
+  if (aGf !== bGf) return bGf - aGf;
+  if (awayGoalsPrivileged && aAg !== bAg) return bAg - aAg;
+  return 0;
+}
+
+function compareByTiebreaker(a, b, tb, matches) {
+  switch (tb.type) {
+    case 'goal_difference': {
+      const gdA = a.stats.goalDifference, gdB = b.stats.goalDifference;
+      return gdA !== gdB ? gdB - gdA : 0;
+    }
+    case 'goals_for':
+      return a.stats.goalsFor !== b.stats.goalsFor ? b.stats.goalsFor - a.stats.goalsFor : 0;
+    case 'head_to_head':
+      return compareHeadToHeadClient(a, b, matches, tb.awayGoalsPrivileged !== false);
+    case 'draw':
+      return a.id < b.id ? -1 : 1;
+    default:
+      // 'sportsmanlike' (card counts) isn't available in this payload, so
+      // it's a no-op here — it still applies correctly server-side, which
+      // is what actually decides promotion.
+      return 0;
+  }
+}
+
+// Sorts teams by points, then applies the stage's configured tiebreaker
+// chain. When head-to-head is the *primary* tiebreaker and 3+ teams are
+// tied on points, they're resolved via a mini-league among just those tied
+// teams (not a pairwise comparison) before falling back to the remaining
+// tiebreakers for any teams still level after that — matching the backend.
+function sortTeamsWithTiebreakersClient(teams, tiebreakers, matches) {
+  const tbs = [...tiebreakers].sort((x, y) => x.priority - y.priority);
+  const h2hPrimary = tbs.length > 0 && tbs[0].type === 'head_to_head';
+
+  const byPoints = [...teams].sort((a, b) => b.stats.points - a.stats.points);
+  const buckets = [];
+  let current = [];
+  for (const t of byPoints) {
+    if (!current.length || t.stats.points === current[0].stats.points) current.push(t);
+    else { buckets.push(current); current = [t]; }
+  }
+  if (current.length) buckets.push(current);
+
+  const result = [];
+  for (const bucket of buckets) {
+    let sorted;
+    if (bucket.length <= 2 || !h2hPrimary) {
+      sorted = [...bucket].sort((a, b) => {
+        for (const tb of tbs) {
+          const r = compareByTiebreaker(a, b, tb, matches);
+          if (r !== 0) return r;
+        }
+        return 0;
+      });
+    } else {
+      const teamIds = bucket.map((t) => t.id);
+      const mlStats = computeMiniLeagueStatsClient(teamIds, matches);
+      sorted = [...bucket].sort((a, b) => {
+        const sa = mlStats[a.id], sb = mlStats[b.id];
+        if (sb.pts !== sa.pts) return sb.pts - sa.pts;
+        const gdA = sa.gf - sa.ga, gdB = sb.gf - sb.ga;
+        if (gdB !== gdA) return gdB - gdA;
+        return sb.gf - sa.gf;
+      });
+      const remainingTbs = tbs.filter((tb) => tb.type !== 'head_to_head');
+      if (remainingTbs.length) {
+        const key = (t) => {
+          const s = mlStats[t.id];
+          return `${s.pts}|${s.gf - s.ga}|${s.gf}`;
+        };
+        const mlBuckets = [];
+        let mlCurrent = [];
+        for (const t of sorted) {
+          if (!mlCurrent.length || key(t) === key(mlCurrent[0])) mlCurrent.push(t);
+          else { mlBuckets.push(mlCurrent); mlCurrent = [t]; }
+        }
+        if (mlCurrent.length) mlBuckets.push(mlCurrent);
+        sorted = mlBuckets.flatMap((b) => b.length > 1
+          ? [...b].sort((a, c) => {
+              for (const tb of remainingTbs) {
+                const r = compareByTiebreaker(a, c, tb, matches);
+                if (r !== 0) return r;
+              }
+              return 0;
+            })
+          : b);
+      }
+    }
+    result.push(...sorted);
+  }
+  return result;
+}
+
+// Standings table for a league group, sorted by the stage's configured
+// tiebreaker chain (defaulting to head-to-head → GD → GF, same as the
+// backend) rather than a hardcoded points → GD → GF order.
+function groupStandingsHtml(participantTeams, groupId, tiebreakers, matches) {
+  const teams = sortTeamsWithTiebreakersClient(
+    participantTeams.filter((pt) => pt.groupId === groupId),
+    tiebreakers && tiebreakers.length ? tiebreakers : [{ type: 'goal_difference', priority: 1 }, { type: 'goals_for', priority: 2 }],
+    matches
+  );
   if (!teams.length) return '';
   return `
     <table class="standings">

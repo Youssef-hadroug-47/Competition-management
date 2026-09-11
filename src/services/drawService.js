@@ -145,7 +145,222 @@ function resolveTieWinner(tieMatches) {
   return null;
 }
 
+// --- Tiebreakers for league stages -----------------------------------
+
+function getCardsForTeam(participantTeamId) {
+  const players = db
+    .prepare('SELECT yellow_cards, red_cards FROM participant_players WHERE participant_team_id = ?')
+    .all(participantTeamId);
+  let reds = 0;
+  let yellows = 0;
+  for (const p of players) {
+    reds += Number(p.red_cards || 0);
+    yellows += Number(p.yellow_cards || 0);
+  }
+  return { reds, yellows };
+}
+
+function getHeadToHeadMatches(aId, bId, stageId) {
+  return db
+    .prepare(
+      `SELECT * FROM matches WHERE stage_id = ? AND (
+        (home_participant_team_id = ? AND away_participant_team_id = ?) OR
+        (home_participant_team_id = ? AND away_participant_team_id = ?)
+      ) AND status = 'finished'`
+    )
+    .all(stageId, aId, bId, bId, aId);
+}
+
+function compareHeadToHead(a, b, stageId, awayGoalsPrivileged) {
+  const matches = getHeadToHeadMatches(a.id, b.id, stageId);
+  if (!matches.length) return 0;
+  let aPts = 0, bPts = 0;
+  let aGf = 0, bGf = 0;
+  let aAg = 0, bAg = 0;
+  for (const m of matches) {
+    const aIsHome = m.home_participant_team_id === a.id;
+    const aScore = aIsHome ? (m.home_score || 0) : (m.away_score || 0);
+    const bScore = aIsHome ? (m.away_score || 0) : (m.home_score || 0);
+    aGf += aScore;
+    bGf += bScore;
+    if (aIsHome) { aAg += 0; bAg += bScore; }
+    else { aAg += aScore; bAg += 0; }
+    if (aScore > bScore) aPts += 3;
+    else if (bScore > aScore) bPts += 3;
+    else { aPts += 1; bPts += 1; }
+  }
+  if (aPts !== bPts) return bPts - aPts;
+  const aGd = aGf - bGf;
+  if (aGd !== 0) return (aGd > 0 ? -1 : 1);
+  if (aGf !== bGf) return bGf - aGf;
+  if (awayGoalsPrivileged && aAg !== bAg) return bAg - aAg;
+  return 0;
+}
+
+function compareTeams(a, b, allTeams, tiebreakers, stageId) {
+  for (const tb of [...tiebreakers].sort((x, y) => x.priority - y.priority)) {
+    let result = 0;
+    switch (tb.type) {
+      case 'goal_difference': {
+        const gdA = (a.goals_for || 0) - (a.goals_against || 0);
+        const gdB = (b.goals_for || 0) - (b.goals_against || 0);
+        if (gdA !== gdB) result = gdB - gdA;
+        break;
+      }
+      case 'goals_for': {
+        if ((a.goals_for || 0) !== (b.goals_for || 0)) result = (b.goals_for || 0) - (a.goals_for || 0);
+        break;
+      }
+      case 'head_to_head': {
+        const h2h = compareHeadToHead(a, b, stageId, tb.awayGoalsPrivileged !== false);
+        if (h2h !== 0) result = h2h;
+        break;
+      }
+      case 'sportsmanlike': {
+        const ca = getCardsForTeam(a.id);
+        const cb = getCardsForTeam(b.id);
+        if (ca.reds !== cb.reds) result = ca.reds - cb.reds;
+        else if (ca.yellows !== cb.yellows) result = ca.yellows - cb.yellows;
+        break;
+      }
+      case 'draw': {
+        result = a.id < b.id ? -1 : 1;
+        break;
+      }
+    }
+    if (result !== 0) return result;
+  }
+  return 0;
+}
+
+// Builds a mini-league sub-table for a set of tied teams: finds all
+// finished matches between them within the given stage, computes points
+// GD and GF from those matches only, then returns them sorted by those
+// mini-league stats (points → GD → GF).
+// Computes each team's points/GF/GA from only the matches they played
+// against each other within this bucket (their "mini-league").
+function computeMiniLeagueStats(teams, stageId) {
+  const teamIds = teams.map((t) => t.id);
+  const placeholders = teamIds.map(() => '?').join(',');
+  const matches = db
+    .prepare(
+      `SELECT * FROM matches WHERE stage_id = ? AND status = 'finished'
+       AND home_participant_team_id IN (${placeholders})
+       AND away_participant_team_id IN (${placeholders})`
+    )
+    .all(stageId, ...teamIds, ...teamIds);
+
+  const stats = {};
+  for (const t of teams) {
+    stats[t.id] = { pts: 0, gf: 0, ga: 0 };
+  }
+  for (const m of matches) {
+    const hId = m.home_participant_team_id;
+    const aId = m.away_participant_team_id;
+    const hs = m.home_score || 0;
+    const as = m.away_score || 0;
+    if (stats[hId]) { stats[hId].gf += hs; stats[hId].ga += as; }
+    if (stats[aId]) { stats[aId].gf += as; stats[aId].ga += hs; }
+    if (hs > as && stats[hId]) stats[hId].pts += 3;
+    else if (as > hs && stats[aId]) stats[aId].pts += 3;
+    else {
+      if (stats[hId]) stats[hId].pts += 1;
+      if (stats[aId]) stats[aId].pts += 1;
+    }
+  }
+  return stats;
+}
+
+function sortByMiniLeague(teams, stageId) {
+  const stats = computeMiniLeagueStats(teams, stageId);
+  return [...teams].sort((a, b) => {
+    const sa = stats[a.id], sb = stats[b.id];
+    if (!sa && !sb) return 0;
+    if (!sa) return 1;
+    if (!sb) return -1;
+    if (sb.pts !== sa.pts) return sb.pts - sa.pts;
+    const gdA = sa.gf - sa.ga, gdB = sb.gf - sb.ga;
+    if (gdB !== gdA) return gdB - gdA;
+    if (sb.gf !== sa.gf) return sb.gf - sa.gf;
+    return 0;
+  });
+}
+
+// Resolves ties: groups teams by their accumulated score (points + all
+// tiebreaker criteria recursively), resolves each group using mini-league
+// when head_to_head is the primary tiebreaker, then applies remaining
+// tiebreakers. Returns the fully sorted array.
+function sortTeamsWithTiebreakers(teams, tiebreakers, stageId) {
+  const h2hPrimary = tiebreakers.length && tiebreakers.sort((x, y) => x.priority - y.priority)[0].type === 'head_to_head';
+
+  // First pass: sort by points descending
+  const byPoints = [...teams].sort((a, b) => (b.points || 0) - (a.points || 0));
+
+  // Split into buckets of equal points
+  const buckets = [];
+  let current = [];
+  for (const t of byPoints) {
+    if (!current.length || (t.points || 0) === (current[0].points || 0)) {
+      current.push(t);
+    } else {
+      buckets.push(current);
+      current = [t];
+    }
+  }
+  if (current.length) buckets.push(current);
+
+  // Sort each bucket (teams with same points)
+  const result = [];
+  for (const bucket of buckets) {
+    let sorted;
+    if (bucket.length <= 2 || !h2hPrimary) {
+      // Simple pairwise comparison works for 1-2 teams or non-h2h primary
+      sorted = [...bucket].sort((a, b) => compareTeams(a, b, bucket, tiebreakers, stageId));
+    } else {
+      // 3+ teams tied on points with head_to_head first:
+      // First pass: use mini-league to get the relative ordering
+      sorted = sortByMiniLeague(bucket, stageId);
+      // Second pass: resolve any remaining ties within mini-league
+      // using the full tiebreaker chain (excluding head_to_head to avoid
+      // double-counting). Teams only carry forward into the same sub-bucket
+      // here if they were ACTUALLY still tied after the mini-league (equal
+      // mini-league points/GD/GF) — grouping by overall tournament points
+      // would be wrong, since every team in `bucket` already shares those.
+      const remainingTbs = tiebreakers.filter((tb) => tb.type !== 'head_to_head');
+      if (remainingTbs.length) {
+        const mlStats = computeMiniLeagueStats(bucket, stageId);
+        const miniLeagueKey = (t) => {
+          const s = mlStats[t.id] || { pts: 0, gf: 0, ga: 0 };
+          return `${s.pts}|${s.gf - s.ga}|${s.gf}`;
+        };
+        const mlBuckets = [];
+        let mlCurrent = [];
+        for (const t of sorted) {
+          if (!mlCurrent.length || miniLeagueKey(t) === miniLeagueKey(mlCurrent[0])) {
+            mlCurrent.push(t);
+          } else {
+            mlBuckets.push(mlCurrent);
+            mlCurrent = [t];
+          }
+        }
+        if (mlCurrent.length) mlBuckets.push(mlCurrent);
+        sorted = mlBuckets.flatMap((b) =>
+          (b.length > 1 ? [...b].sort((a, b) => compareTeams(a, b, b, remainingTbs, stageId)) : b)
+        );
+      }
+    }
+    result.push(...sorted);
+  }
+  return result;
+}
+
+
+
 function getLeaguePromotedTeams(stage, limitPerGroup) {
+  const settings = parseJson(stage.settings, defaultStageSettings('league'));
+  const defaultTbs = defaultStageSettings('league').tiebreakers;
+  const tiebreakers =
+    settings.tiebreakers && settings.tiebreakers.length ? settings.tiebreakers : defaultTbs;
   const groups = db
     .prepare('SELECT * FROM groups WHERE stage_id = ? ORDER BY sequence_order ASC, name ASC')
     .all(stage.id);
@@ -159,11 +374,7 @@ function getLeaguePromotedTeams(stage, limitPerGroup) {
         );
     teams.sort((a, b) => {
       if (b.points !== a.points) return b.points - a.points;
-      const gdA = a.goals_for - a.goals_against;
-      const gdB = b.goals_for - b.goals_against;
-      if (gdB !== gdA) return gdB - gdA;
-      if (b.goals_for !== a.goals_for) return b.goals_for - a.goals_for;
-      return 0;
+      return compareTeams(a, b, teams, tiebreakers, stage.id);
     });
     const n = limitPerGroup == null ? teams.length : Math.min(limitPerGroup, teams.length);
     promoted.push(...teams.slice(0, n));

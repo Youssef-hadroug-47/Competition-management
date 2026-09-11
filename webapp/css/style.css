@@ -197,3 +197,10 @@ tr:last-child td{border-bottom:none}
 .auth-wrap h1{text-align:center}
 .link-btn{background:none;border:none;color:var(--primary);cursor:pointer;padding:0;font-size:13px}
 .center{text-align:center}
+
+/* --- Tiebreakers --- */
+.tiebreakers-section{margin-top:14px;padding-top:14px;border-top:1px dashed var(--border)}
+.tiebreakers-list{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
+.tiebreaker-row{display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--panel);border:1px solid var(--border);border-radius:6px}
+.tiebreaker-row .tb-priority{-moz-appearance:textfield}
+.tiebreaker-row .tb-priority::-webkit-inner-spin-button,.tiebreaker-row .tb-priority::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
