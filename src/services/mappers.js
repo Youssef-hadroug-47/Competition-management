@@ -13,7 +13,7 @@ function tournament(row) {
     slug: row.slug,
     status: row.status,
     visibility: row.visibility,
-    format: row.format,
+    // format: row.format,
     numberOfTeams: row.number_of_teams,
     place: row.place,
     createdBy: row.created_by,
@@ -43,8 +43,8 @@ function defaultStageSettings(type) {
       yellowCardsForSuspension: 2,
       redCardMissedMatches: 1,
     },
+    advancingTeamsFromRanking: type == 'league' ? 0 : null,
     points: type == 'league' ? { win: 3, draw: 1, loss: 0 } : null,
-    teamsAdvancePerGroup: type === 'league' ? 2 : null,
     tiebreakers: type === 'league'
       ? [
           { type: 'head_to_head', priority: 1, awayGoalsPrivileged: true },
@@ -58,6 +58,19 @@ function defaultStageSettings(type) {
 }
 
 function group(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    stageId: row.stage_id,
+    name: row.name,
+    sequenceOrder: row.sequence_order,
+    numberOfTeams: row.number_teams,
+    advancingTeams: row.advancing_teams,
+    advancingTeamsToRanking: row.advancing_teams_to_ranking,
+  };
+}
+
+function round(row) {
   if (!row) return null;
   return {
     id: row.id,
@@ -192,6 +205,7 @@ module.exports = {
   tournament,
   stage,
   group,
+  round,
   team,
   player,
   participantTeam,

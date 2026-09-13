@@ -89,6 +89,7 @@ const API = (() => {
     update: (id, body) => request(`/tournaments/${id}`, { method: 'PATCH', body }),
     remove: (id) => request(`/tournaments/${id}`, { method: 'DELETE' }),
 
+    getStage: (stageId) => request(`/stages/${stageId}`),
     addStage: (tournamentId, body) => request(`/tournaments/${tournamentId}/stages`, { method: 'POST', body }),
     updateStage: (stageId, body) => request(`/stages/${stageId}`, { method: 'PATCH', body }),
     removeStage: (stageId) => request(`/stages/${stageId}`, { method: 'DELETE' }),
@@ -96,6 +97,10 @@ const API = (() => {
     addGroup: (stageId, body) => request(`/stages/${stageId}/groups`, { method: 'POST', body }),
     updateGroup: (groupId, body) => request(`/groups/${groupId}`, { method: 'PATCH', body }),
     removeGroup: (groupId) => request(`/groups/${groupId}`, { method: 'DELETE' }),
+
+    addRound: (stageId, body) => request(`/stages/${stageId}/rounds`, { method: 'POST', body }),
+    updateRound: (roundId, body) => request(`/rounds/${roundId}`, { method: 'PATCH', body }),
+    removeRound: (roundId) => request(`/rounds/${roundId}`, { method: 'DELETE' }),
 
     follow: (id) => request(`/tournaments/${id}/follow`, { method: 'POST' }),
     unfollow: (id) => request(`/tournaments/${id}/follow`, { method: 'DELETE' }),

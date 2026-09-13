@@ -22,12 +22,17 @@ router.post('/tournaments', requireAuth, requireRole('admin'), tournaments.creat
 router.patch('/tournaments/:id', requireAuth, requireRole('admin'), tournaments.update);
 router.delete('/tournaments/:id', requireAuth, requireRole('admin'), tournaments.remove);
 
+router.get('/stages/:id', requireAuth, requireRole('admin'), tournaments.getStage);
 router.post('/tournaments/:id/stages', requireAuth, requireRole('admin'), tournaments.addStage);
 router.patch('/stages/:id', requireAuth, requireRole('admin'), tournaments.updateStage);
 router.delete('/stages/:id', requireAuth, requireRole('admin'), tournaments.removeStage);
 router.post('/stages/:id/groups', requireAuth, requireRole('admin'), tournaments.addGroup);
 router.patch('/groups/:id', requireAuth, requireRole('admin'), tournaments.updateGroup);
 router.delete('/groups/:id', requireAuth, requireRole('admin'), tournaments.removeGroup);
+
+router.post('/stages/:id/rounds', requireAuth, requireRole('admin'), tournaments.addRound);
+router.patch('/rounds/:id', requireAuth, requireRole('admin'), tournaments.updateRound);
+router.delete('/rounds/:id', requireAuth, requireRole('admin'), tournaments.removeRound);
 
 router.get('/teams', authOptional, catalog.listTeams);
 router.get('/teams/:id', authOptional, catalog.getTeam);

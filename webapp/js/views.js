@@ -102,7 +102,6 @@ function tournamentCardHtml(t) {
       <p class="muted">${UI.esc(t.place || 'No location set')}</p>
       <div class="row" style="margin-top:8px">
         ${UI.statusBadge(t.status)}
-        <span class="badge" style="background:#26314a">${UI.esc(t.format)}</span>
         ${t.visibility === 'private' ? '<span class="badge" style="background:#3a2030">private</span>' : ''}
       </div>
     </div>`;
@@ -143,10 +142,10 @@ function defaultStageSettings(type) {
     penalties: type === 'knockout',
     suspensionSystem: { enabled: true, yellowCardsForSuspension: 2, redCardMissedMatches: 1 },
     points: type === 'league' ? { win: 3, draw: 1, loss: 0 } : null,
-    teamsAdvancePerGroup: type === 'league' ? 2 : null,
+    advancingTeamsFromRanking: type === 'league' ? 0 : null,
     tiebreakers: type === 'league'
       ? [
-          { type: 'head_to_head', priority: 1, awayGoalsPrivileged: true },
+          { type: 'head_to_head', priority: 1, awayGoalsPrivileged: false },
           { type: 'goal_difference', priority: 2 },
           { type: 'goals_for', priority: 3 },
           { type: 'sportsmanlike', priority: 4 },
@@ -169,8 +168,9 @@ function stageSettingsFieldsHtml(ns, s, stageType) {
     <div class="grid cols-3">
       <div class="field"><label>Head-to-head matches</label>
         <input type="number" min="1" id="${ns}-h2h" value="${s.headToHeadMatches}"></div>
-      ${ stageType === 'league' ? `<div class="field"><label>Teams advancing / group</label>
-        <input type="number" min="0" id="${ns}-adv" value="${s.teamsAdvancePerGroup ?? ''}" placeholder="all"></div>` : ''}
+      ${ stageType === 'league' ? `<div class="field"><label>Advancing from ranking group</label>
+        <input type="number" min="0" id="${ns}-advrank" value="${s.advancingTeamsFromRanking ?? 0}">
+        <span class="hint">How many teams the pooled ranking group promotes (e.g. best third-placed teams, Euros-style)</span></div>` : ''}
       <div class="field"><label>&nbsp;</label>
         <div class="checkline"><input type="checkbox" id="${ns}-et" ${s.extraTime ? 'checked' : ''}> Extra time</div>
         <div class="checkline" style="margin-top:4px"><input type="checkbox" id="${ns}-pen" ${s.penalties ? 'checked' : ''}> Penalties</div>
@@ -220,10 +220,12 @@ function readStageSettingsFromRoot(root, ns) {
     const away = val(`${ns}-tb-${idx}-away`)?.checked || false;
     return { type, priority: prio, ...(type === 'head_to_head' ? { awayGoalsPrivileged: away } : {}) };
   });
+  console.log("tiebreakers");
+  console.log(tiebreakers);
   const pointsEl = val(`${ns}-pw`);
   return {
     headToHeadMatches: num(val(`${ns}-h2h`)) ?? 1,
-    teamsAdvancePerGroup: num(val(`${ns}-adv`)),
+    advancingTeamsFromRanking: num(val(`${ns}-advrank`)) ?? 0,
     extraTime: val(`${ns}-et`)?.checked ?? false,
     penalties: val(`${ns}-pen`)?.checked ?? false,
     points: pointsEl
@@ -318,6 +320,93 @@ function wireTiebreakerListeners(root, ns) {
   }
 }
 
+/* ===================== GROUP / ROUND EDITOR ========================= */
+// Renders an editable list of league groups (name, number of teams,
+// directly-advancing teams, teams that feed the pooled ranking group) or
+// knockout rounds (name only — rounds are optional and auto-generated from
+// the bracket size if left empty). `ns` is a unique DOM id namespace.
+function groupRoundEditorHtml(ns, items, stageType) {
+  const isLeague = stageType === 'league';
+  const rowHtml = (g) => `
+    <div class="group-edit-row row" style="align-items:flex-end;gap:8px;margin-bottom:6px">
+      <div class="field" style="flex:2;margin-bottom:0"><label>${isLeague ? 'Group name' : 'Round name'}</label>
+        <input type="text" class="g-name" value="${UI.esc(g.name || '')}"></div>
+      ${isLeague ? `
+      <div class="field" style="flex:1;margin-bottom:0"><label>Teams</label>
+        <input type="number" class="g-num" min="3" value="${g.number_teams ?? 4}"></div>
+      <div class="field" style="flex:1;margin-bottom:0"><label>Advancing</label>
+        <input type="number" class="g-adv" min="0" value="${g.advancing_teams ?? 1}"></div>
+      <div class="field" style="flex:1;margin-bottom:0"><label>To ranking group</label>
+        <input type="number" class="g-rank" min="0" value="${g.advancing_teams_to_ranking ?? 0}"></div>` : ''}
+      <button type="button" class="small ghost danger g-remove" title="Remove">✕</button>
+    </div>`;
+  return `
+    <div id="${ns}-glist">${items.map(rowHtml).join('')}</div>
+    <button type="button" class="small" id="${ns}-add-g">+ Add ${isLeague ? 'group' : 'round'}</button>
+    ${isLeague
+      ? `<p class="hint">"Advancing" teams promote straight to the next stage. "To ranking group" teams
+          are pooled together with the equivalent teams from every other group and re-ranked as one list —
+          the stage's "Advancing from ranking group" setting above controls how many of that combined pool
+          get through (this is the Euros-style best-third-place system).</p>`
+      : `<p class="hint">Naming rounds here is optional — leave this empty and the bracket shape
+          (Quarter-finals, Semi-finals, Final, …) is generated automatically from the number of teams
+          when you run the draw.</p>`}`;
+}
+
+// Reads a groupRoundEditorHtml's current rows back into plain objects
+// shaped for the addGroup/addRound API calls. Rows with no name are dropped.
+function readGroupRoundEditor(root, ns, stageType) {
+  const isLeague = stageType === 'league';
+  const list = UI.qs(`#${ns}-glist`, root);
+  const rows = list ? UI.qsa('.group-edit-row', list) : [];
+  return rows
+    .map((row) => {
+      const name = row.querySelector('.g-name')?.value?.trim() || '';
+      if (!isLeague) return { name };
+      return {
+        name,
+        number_teams: Number(row.querySelector('.g-num')?.value) || 0,
+        advancing_teams: Number(row.querySelector('.g-adv')?.value) || 0,
+        advancing_teams_to_ranking: Number(row.querySelector('.g-rank')?.value) || 0,
+      };
+    })
+    .filter((g) => g.name);
+}
+
+// Wires up "+ Add group/round" and per-row "✕ Remove" for a
+// groupRoundEditorHtml, appending/removing DOM rows directly (no
+// caller-side re-render needed) — same pattern as wireTiebreakerListeners.
+function wireGroupRoundEditor(root, ns, stageType) {
+  const list = UI.qs(`#${ns}-glist`, root);
+  const addBtn = UI.qs(`#${ns}-add-g`, root);
+  if (!list || !addBtn) return;
+  const isLeague = stageType === 'league';
+
+  function wireRemove(row) {
+    row.querySelector('.g-remove').addEventListener('click', () => row.remove());
+  }
+  UI.qsa('.group-edit-row', list).forEach(wireRemove);
+
+  addBtn.addEventListener('click', () => {
+    const div = document.createElement('div');
+    div.className = 'group-edit-row row';
+    div.style.cssText = 'align-items:flex-end;gap:8px;margin-bottom:6px';
+    div.innerHTML = `
+      <div class="field" style="flex:2;margin-bottom:0"><label>${isLeague ? 'Group name' : 'Round name'}</label>
+        <input type="text" class="g-name" value=""></div>
+      ${isLeague ? `
+      <div class="field" style="flex:1;margin-bottom:0"><label>Teams</label>
+        <input type="number" class="g-num" min="3" value="4"></div>
+      <div class="field" style="flex:1;margin-bottom:0"><label>Advancing</label>
+        <input type="number" class="g-adv" min="0" value="1"></div>
+      <div class="field" style="flex:1;margin-bottom:0"><label>To ranking group</label>
+        <input type="number" class="g-rank" min="0" value="0"></div>` : ''}
+      <button type="button" class="small ghost danger g-remove" title="Remove">✕</button>`;
+    list.appendChild(div);
+    wireRemove(div);
+  });
+}
+
 /* ===================== NEW TOURNAMENT WIZARD ========================= */
 
 function viewNewTournament(container) {
@@ -330,7 +419,6 @@ function viewNewTournament(container) {
       slug: UI.qs('#w-slug', container).value.trim(),
       place: UI.qs('#w-place', container).value.trim(),
       visibility: UI.qs('#w-visibility', container).value,
-      format: UI.qs('#w-format', container).value,
       numberOfTeams: UI.qs('#w-numteams', container).value,
     };
   }
@@ -341,8 +429,7 @@ function viewNewTournament(container) {
       if (typeSel) s.type = typeSel.value;
       const ns = `w${idx}`;
       if (UI.qs(`#${ns}-h2h`, container)) s.settings = readStageSettingsFromRoot(container, ns);
-      const groupsInput = UI.qs(`#${ns}-groups`, container);
-      if (groupsInput) s.groupsText = groupsInput.value;
+      if (UI.qs(`#${ns}-glist`, container)) s.groups = readGroupRoundEditor(container, ns, s.type);
     });
   }
 
@@ -352,12 +439,11 @@ function viewNewTournament(container) {
       slug: wizard.info.slug || undefined,
       place: wizard.info.place || undefined,
       visibility: wizard.info.visibility || 'public',
-      format: wizard.info.format || 'stages',
       numberOfTeams: wizard.info.numberOfTeams ? Number(wizard.info.numberOfTeams) : undefined,
       stages: wizard.stages.map((s) => ({
         type: s.type,
         settings: s.settings,
-        groups: (s.groupsText || '').split(',').map((x) => x.trim()).filter(Boolean).map((name) => ({ name })),
+        groups: s.groups || [],
       })),
     };
   }
@@ -385,8 +471,8 @@ function viewNewTournament(container) {
             <button type="button" class="small ghost" data-remove-stage="${idx}">✕ Remove stage</button>
           </div>
           ${stageSettingsFieldsHtml(`w${idx}`, s.settings, s.type)}
-          <div class="field"><label>Groups (comma-separated names, optional)</label>
-            <input type="text" id="w${idx}-groups" value="${UI.esc(s.groupsText || '')}" placeholder="e.g. Group A, Group B"></div>
+          <h4>${s.type === 'league' ? 'Groups' : 'Rounds'}</h4>
+          ${groupRoundEditorHtml(`w${idx}`, s.groups || [], s.type)}
         </div>`).join('')
       : '<p class="empty">No stages yet — a tournament can also be created without one and formatted later.</p>';
 
@@ -400,9 +486,13 @@ function viewNewTournament(container) {
       const idx = Number(sel.dataset.stageType);
       wizard.stages[idx].type = sel.value;
       wizard.stages[idx].settings = defaultStageSettings(sel.value);
+      wizard.stages[idx].groups = [];
       renderStep2Stages();
     }));
-    wizard.stages.forEach((s, idx) => wireTiebreakerListeners(box, `w${idx}`));
+    wizard.stages.forEach((s, idx) => {
+      wireTiebreakerListeners(box, `w${idx}`);
+      wireGroupRoundEditor(box, `w${idx}`, s.type);
+    });
   }
 
   function render() {
@@ -418,11 +508,6 @@ function viewNewTournament(container) {
               <select id="w-visibility">
                 <option value="public" ${wizard.info.visibility !== 'private' ? 'selected' : ''}>Public</option>
                 <option value="private" ${wizard.info.visibility === 'private' ? 'selected' : ''}>Private</option>
-              </select></div>
-            <div class="field"><label>Format label</label>
-              <select id="w-format">
-                ${['stages', 'groups', 'division', 'league', 'knockout', 'custom']
-                  .map((f) => `<option value="${f}" ${wizard.info.format === f ? 'selected' : ''}>${f}</option>`).join('')}
               </select></div>
             <div class="field"><label>Expected number of teams *</label>
               <input type="number" min="0" id="w-numteams" value="${UI.esc(wizard.info.numberOfTeams || '')}" required></div>
@@ -460,7 +545,7 @@ function viewNewTournament(container) {
       renderStep2Stages();
       UI.qs('#w-add-stage', container).addEventListener('click', () => {
         captureStep2();
-        wizard.stages.push({ type: 'league', settings: defaultStageSettings('league'), groupsText: '' });
+        wizard.stages.push({ type: 'league', settings: defaultStageSettings('league'), groups: [] });
         renderStep2Stages();
       });
       UI.qs('#w-back1', container).addEventListener('click', () => { captureStep2(); step = 1; render(); });
@@ -470,6 +555,7 @@ function viewNewTournament(container) {
 
     // step 3 — review
     const payload = buildPayload();
+    console.log(payload);
     container.innerHTML = stepsNav() + `
       <div class="card">
         <h2>Review & create</h2>
@@ -483,7 +569,7 @@ function viewNewTournament(container) {
     UI.qs('#w-back2', container).addEventListener('click', () => { step = 2; render(); });
     const createBtn = UI.qs('#w-create', container);
     createBtn.addEventListener('click', UI.guard(createBtn, async () => {
-      const res = await API.tournaments.create(buildPayload());
+      const res = await API.tournaments.create(payload);
       UI.toast('Tournament created', 'success');
       go(`#/tournaments/${res.tournament.id}`);
       route();
@@ -544,7 +630,6 @@ function tabOverview(content, tournament, stages, id, refresh) {
         <p><span class="muted">Slug</span> — <code>${UI.esc(tournament.slug)}</code></p>
         <p><span class="muted">Place</span> — ${UI.esc(tournament.place || '—')}</p>
         <p><span class="muted">Visibility</span> — ${UI.esc(tournament.visibility)}</p>
-        <p><span class="muted">Format label</span> — ${UI.esc(tournament.format)}</p>
         <p><span class="muted">Expected teams</span> — ${tournament.numberOfTeams || '—'}</p>
         <p><span class="muted">Created</span> — ${UI.fmtDate(tournament.createdAt)}</p>
         <div class="row" style="margin-top:10px">
@@ -566,9 +651,6 @@ function tabOverview(content, tournament, stages, id, refresh) {
                 <option value="public" ${tournament.visibility === 'public' ? 'selected' : ''}>public</option>
                 <option value="private" ${tournament.visibility === 'private' ? 'selected' : ''}>private</option>
               </select></div>
-            <div class="field"><label>Format label</label>
-              <select id="e-format">${['stages', 'groups', 'division', 'league', 'knockout', 'custom']
-                .map((f) => `<option ${f === tournament.format ? 'selected' : ''}>${f}</option>`).join('')}</select></div>
             <div class="field"><label>Expected teams</label><input type="number" id="e-numteams" value="${tournament.numberOfTeams || ''}"></div>
           </div>
           <button class="primary" type="submit">Save changes</button>
@@ -611,7 +693,6 @@ function tabOverview(content, tournament, stages, id, refresh) {
         place: UI.qs('#e-place', form).value,
         status: UI.qs('#e-status', form).value,
         visibility: UI.qs('#e-visibility', form).value,
-        format: UI.qs('#e-format', form).value,
         numberOfTeams: Number(UI.qs('#e-numteams', form).value) || 0,
       });
       UI.toast('Tournament updated', 'success');
@@ -668,19 +749,55 @@ function tabOverview(content, tournament, stages, id, refresh) {
   }
 }
 
-/* --- Format tab: stages & groups CRUD --- */
+/* --- Format tab: stages & groups/rounds CRUD --- */
+function existingGroupsRoundsHtml(s) {
+  const isLeague = s.type === 'league';
+  const items = (isLeague ? s.groups : s.rounds) || [];
+  if (!items.length) return `<p class="muted">No ${isLeague ? 'groups' : 'rounds'} yet.</p>`;
+  return items.map((g) => `
+    <div class="group-edit-row row" data-item-id="${g.id}" style="align-items:flex-end;gap:8px;margin-bottom:6px">
+      <div class="field" style="flex:2;margin-bottom:0"><label>${isLeague ? 'Group name' : 'Round name'}</label>
+        <input type="text" class="g-name" value="${UI.esc(g.name)}"></div>
+      ${isLeague ? `
+      <div class="field" style="flex:1;margin-bottom:0"><label>Teams</label>
+        <input type="number" class="g-num" min="3" value="${g.numberOfTeams}"></div>
+      <div class="field" style="flex:1;margin-bottom:0"><label>Advancing</label>
+        <input type="number" class="g-adv" min="0" value="${g.advancingTeams}"></div>
+      <div class="field" style="flex:1;margin-bottom:0"><label>To ranking group</label>
+        <input type="number" class="g-rank" min="0" value="${g.advancingTeamsToRanking}"></div>` : ''}
+      <button type="button" class="small" data-save-item>Save</button>
+      <button type="button" class="small danger" data-del-item title="Remove">✕</button>
+    </div>`).join('');
+}
+
+function addItemFormHtml(s) {
+  const isLeague = s.type === 'league';
+  return `
+    <form class="row" style="margin-top:8px;flex-wrap:wrap;gap:8px;align-items:flex-end" data-add-item-form>
+      <div class="field" style="flex:2;margin-bottom:0"><label>${isLeague ? 'New group name' : 'New round name'}</label>
+        <input type="text" class="new-name"></div>
+      ${isLeague ? `
+      <div class="field" style="flex:1;margin-bottom:0"><label>Teams</label><input type="number" class="new-num" min="3" value="4"></div>
+      <div class="field" style="flex:1;margin-bottom:0"><label>Advancing</label><input type="number" class="new-adv" min="0" value="1"></div>
+      <div class="field" style="flex:1;margin-bottom:0"><label>To ranking group</label><input type="number" class="new-rank" min="0" value="0"></div>` : ''}
+      <button class="small" type="submit">+ ${isLeague ? 'Group' : 'Round'}</button>
+    </form>`;
+}
+
 function stageCardHtml(s, stages) {
   const prev = stages.find((x) => x.sequenceOrder === s.sequenceOrder - 1);
   const next = stages.find((x) => x.sequenceOrder === s.sequenceOrder + 1);
   const linkNote = prev
-    ? `<p class="hint">🔗 Fed by stage #${prev.sequenceOrder} (${UI.esc(prev.type)}) — its draw pool is only the teams that stage promotes
-        (top <strong>${prev.settings.teamsAdvancePerGroup ?? 'all'}</strong> ${prev.type === 'league' ? 'per group' : 'winner(s)'}).</p>`
+    ? `<p class="hint">🔗 Fed by stage #${prev.sequenceOrder} (${UI.esc(prev.type)}) — its draw pool is only the teams that stage
+        promotes: each group's own <strong>Advancing</strong> count promotes directly, and the stage-level
+        <strong>${prev.settings.advancingTeamsFromRanking ?? 0}</strong> "advancing from ranking group" adds
+        the best of the remaining teams pooled across all groups${prev.type === 'knockout' ? ', or simply the round winner(s) for a knockout stage' : ''}.</p>`
     : '';
   const feedsNote = next
     ? `<p class="hint">➡ Feeds stage #${next.sequenceOrder} (${UI.esc(next.type)}) once every match here is finished.</p>`
     : '';
   const knockoutNote = s.type === 'knockout'
-    ? '<p class="hint">🏆 Knockout rounds are generated automatically — the next round is drawn as soon as every match in the current round is finished.</p>'
+    ? '<p class="hint">🏆 Knockout rounds are generated automatically if you don\'t define any — the next round is drawn as soon as every match in the current round is finished.</p>'
     : '';
   return `
     <div class="stage-block" data-stage="${s.id}">
@@ -693,12 +810,9 @@ function stageCardHtml(s, stages) {
       </div>
       ${linkNote}${feedsNote}${knockoutNote}
       ${stageSettingsFieldsHtml('st-' + s.id, s.settings, s.type)}
-      <h4>Groups</h4>
-      <div>${s.groups.map((g) => `<span class="group-pill">${UI.esc(g.name)} <button type="button" class="small ghost icon" data-del-group="${g.id}">✕</button></span>`).join('') || '<span class="muted">No groups</span>'}</div>
-      <form class="row" style="margin-top:8px" data-add-group-form>
-        <input type="text" placeholder="New group name" id="newgroup-${s.id}" style="flex:1">
-        <button class="small" type="submit">+ Group</button>
-      </form>
+      <h4>${s.type === 'league' ? 'Groups' : 'Rounds'}</h4>
+      <div data-items-list>${existingGroupsRoundsHtml(s)}</div>
+      ${addItemFormHtml(s)}
     </div>`;
 }
 
@@ -708,13 +822,14 @@ async function tabFormat(content, tournament, stages, id, refresh) {
     <div class="card">
       <h3>Add a stage</h3>
       <p class="hint">Stages are chained by order: stage #2 draws only from the teams stage #1 promotes
-        (set "Teams advancing" on stage #1 to control how many), and so on down the chain.</p>
+        (each group's "Advancing" count, plus the stage's "Advancing from ranking group" setting), and so on down the chain.</p>
       <div class="row" style="margin-bottom:10px">
         <label style="width:auto;margin:0">Type</label>
         <select id="fmt-add-type"><option value="league">League</option><option value="knockout">Knockout</option></select>
       </div>
       <div id="fmt-add-settings"></div>
-      <div class="field"><label>Initial groups (comma-separated, optional)</label><input type="text" id="fmt-add-groups" placeholder="Group A, Group B"></div>
+      <h4 id="fmt-add-groups-title">Groups</h4>
+      <div id="fmt-add-groups-editor"></div>
       <button class="primary" id="fmt-add-btn">+ Add stage</button>
     </div>`;
 
@@ -723,6 +838,9 @@ async function tabFormat(content, tournament, stages, id, refresh) {
     UI.qs('#fmt-add-settings', content).innerHTML =
       stageSettingsFieldsHtml('fmt-add', defaultStageSettings(type), type);
     if (type === 'league') wireTiebreakerListeners(content, 'fmt-add');
+    UI.qs('#fmt-add-groups-title', content).textContent = type === 'league' ? 'Groups' : 'Rounds';
+    UI.qs('#fmt-add-groups-editor', content).innerHTML = groupRoundEditorHtml('fmt-add', [], type);
+    wireGroupRoundEditor(content, 'fmt-add', type);
   }
   renderAddSettings();
   UI.qs('#fmt-add-type', content).addEventListener('change', renderAddSettings);
@@ -732,7 +850,7 @@ async function tabFormat(content, tournament, stages, id, refresh) {
   addBtn.addEventListener('click', UI.guard(addBtn, async () => {
     const type = UI.qs('#fmt-add-type', content).value;
     const settings = readStageSettingsFromRoot(content, 'fmt-add');
-    const groups = UI.qs('#fmt-add-groups', content).value.split(',').map((s) => s.trim()).filter(Boolean).map((name) => ({ name }));
+    const groups = readGroupRoundEditor(content, 'fmt-add', type);
     await API.tournaments.addStage(id, { type, settings, groups });
     UI.toast('Stage added', 'success');
     refresh();
@@ -753,18 +871,50 @@ async function tabFormat(content, tournament, stages, id, refresh) {
       await API.tournaments.removeStage(s.id);
       UI.toast('Stage deleted', 'success'); refresh();
     }));
-    UI.qsa('[data-del-group]', block).forEach((btn) => btn.addEventListener('click', UI.guard(btn, async () => {
-      if (!confirm('Delete this group?')) return;
-      await API.tournaments.removeGroup(btn.dataset.delGroup);
-      UI.toast('Group deleted', 'success'); refresh();
-    })));
-    const groupForm = block.querySelector('[data-add-group-form]');
-    groupForm.addEventListener('submit', UI.guard(groupForm.querySelector('button'), async (e) => {
+
+    const isLeague = s.type === 'league';
+    UI.qsa('[data-item-id]', block).forEach((row) => {
+      const itemId = row.dataset.itemId;
+      const saveBtn = row.querySelector('[data-save-item]');
+      saveBtn.addEventListener('click', UI.guard(saveBtn, async () => {
+        const name = row.querySelector('.g-name').value.trim();
+        if (isLeague) {
+          await API.tournaments.updateGroup(itemId, {
+            name,
+            number_teams: Number(row.querySelector('.g-num').value) || 0,
+            advancing_teams: Number(row.querySelector('.g-adv').value) || 0,
+            advancing_teams_to_ranking: Number(row.querySelector('.g-rank').value) || 0,
+          });
+        } else {
+          await API.tournaments.updateRound(itemId, { name });
+        }
+        UI.toast(`${isLeague ? 'Group' : 'Round'} updated`, 'success'); refresh();
+      }));
+      const delBtn2 = row.querySelector('[data-del-item]');
+      delBtn2.addEventListener('click', UI.guard(delBtn2, async () => {
+        if (!confirm(`Delete this ${isLeague ? 'group' : 'round'}?`)) return;
+        if (isLeague) await API.tournaments.removeGroup(itemId);
+        else await API.tournaments.removeRound(itemId);
+        UI.toast(`${isLeague ? 'Group' : 'Round'} deleted`, 'success'); refresh();
+      }));
+    });
+
+    const addForm = block.querySelector('[data-add-item-form]');
+    addForm.addEventListener('submit', UI.guard(addForm.querySelector('button'), async (e) => {
       e.preventDefault();
-      const input = UI.qs(`#newgroup-${s.id}`, block);
-      if (!input.value.trim()) return;
-      await API.tournaments.addGroup(s.id, { name: input.value.trim() });
-      UI.toast('Group added', 'success'); refresh();
+      const name = addForm.querySelector('.new-name').value.trim();
+      if (!name) return;
+      if (isLeague) {
+        await API.tournaments.addGroup(s.id, {
+          name,
+          number_teams: Number(addForm.querySelector('.new-num').value) || 0,
+          advancing_teams: Number(addForm.querySelector('.new-adv').value) || 0,
+          advancing_teams_to_ranking: Number(addForm.querySelector('.new-rank').value) || 0,
+        });
+      } else {
+        await API.tournaments.addRound(s.id, { name });
+      }
+      UI.toast(`${isLeague ? 'Group' : 'Round'} added`, 'success'); refresh();
     }));
   }
 }
@@ -813,7 +963,7 @@ async function tabTeams(content, tournament, stages, id, refresh) {
     content.innerHTML = `<div class="error-box">${UI.esc(UI.errorMessage(err))}</div>`;
     return;
   }
-  const allGroups = stages.flatMap((s) => s.groups.map((g) => ({ ...g, stageType: s.type })));
+  const allGroups = stages.flatMap((s) => (s.groups || []).map((g) => ({ ...g, stageType: s.type })));
   const isAdmin = API.hasRole('admin');
 
   content.innerHTML = `
@@ -1113,14 +1263,17 @@ function matchRowHtml(m, teamName, canOfficiate) {
     </div>`;
 }
 
-// Buckets every match under the stage → group it belongs to, so callers can
-// render "Group A together", "Semi-finals together", etc. instead of one
-// flat list. Groups are sorted by sequenceOrder; a stage with no explicit
-// groups falls back to a single synthetic "Matches" bucket.
+// Buckets every match under the stage → group (or round, for knockout
+// stages) it belongs to, so callers can render "Group A together",
+// "Semi-finals together", etc. instead of one flat list. Buckets are sorted
+// by sequenceOrder; a stage with neither falls back to a single synthetic
+// "Matches" bucket.
 function groupMatchesByStage(matches, stages) {
   return stages.map((stage) => {
-    const rawGroups = stage.groups && stage.groups.length ? stage.groups : [{ id: null, name: 'Matches', sequenceOrder: 1 }];
-    const groups = [...rawGroups]
+    const buckets = (stage.groups && stage.groups.length) ? stage.groups
+      : (stage.rounds && stage.rounds.length) ? stage.rounds
+      : [{ id: null, name: 'Matches', sequenceOrder: 1 }];
+    const groups = [...buckets]
       .sort((a, b) => a.sequenceOrder - b.sequenceOrder)
       .map((g) => ({
         ...g,
@@ -1282,7 +1435,7 @@ function sortTeamsWithTiebreakersClient(teams, tiebreakers, matches) {
 function groupStandingsHtml(participantTeams, groupId, tiebreakers, matches) {
   const teams = sortTeamsWithTiebreakersClient(
     participantTeams.filter((pt) => pt.groupId === groupId),
-    tiebreakers && tiebreakers.length ? tiebreakers : [{ type: 'goal_difference', priority: 1 }, { type: 'goals_for', priority: 2 }],
+    tiebreakers && tiebreakers.length ? tiebreakers : defaultStageSettings("league").tiebreakers,
     matches
   );
   if (!teams.length) return '';
@@ -1309,12 +1462,13 @@ function groupStandingsHtml(participantTeams, groupId, tiebreakers, matches) {
 
 // One card per league group — its standings table followed by its matches
 // organized into matchday sub-sections.
-function leagueGroupCardHtml(group, teamName, canOfficiate, participantTeams) {
+async function leagueGroupCardHtml(group, teamName, canOfficiate, participantTeams) {
   const mds = matchdaySections(group.matches);
+  const stage = await API.tournaments.getStage(group.stageId);
   return `
     <div class="card">
       <h3>${UI.esc(group.name)}</h3>
-      ${groupStandingsHtml(participantTeams, group.id)}
+      ${groupStandingsHtml(participantTeams, group.id, stage.settings.tiebreakers, group.matches)}
       ${group.matches.length
         ? mds.map(([md, ms]) => `
           <div class="matchday-block">
@@ -1366,6 +1520,17 @@ async function tabMatches(content, tournament, stages, id, refresh) {
   const byStage = groupMatchesByStage(mRes.matches, sortedStages);
   const anyMatches = mRes.matches.length > 0;
 
+  const activeGroups = byStage.filter(({groups}) => groups.some((g) => g.matches.length));
+  const unknown = await Promise.all(activeGroups.map( async ({ stage, groups }) => {
+        const grps = await Promise.all(groups.map( (g) => leagueGroupCardHtml(g, teamName, canOfficiate, ptRes.participantTeams)));
+        console.log(grps);
+        return `
+        <div class="stage-matches">
+          <h2>Stage #${stage.sequenceOrder} <span class="muted" style="font-weight:400;font-size:14px">— ${UI.esc(stage.type)}</span></h2>
+          ${stage.type === 'knockout'
+            ? `<div class="bracket">${groups.map((g) => bracketRoundHtml(g, teamName, canOfficiate)).join('')}</div>`
+            : `<div class="grid cols-2">${ grps.join('')}</div>`}
+        </div>`}))
   content.innerHTML = `
     <p class="hint">The backend attaches a referee to a match by recording <em>who started it</em> —
       there's no separate "assign referee to someone else" endpoint. Log in as a referee (or admin)
@@ -1375,13 +1540,7 @@ async function tabMatches(content, tournament, stages, id, refresh) {
       <button type="button" class="small primary" id="simulate-all-btn">🎲 Simulate all remaining matches</button>
     </div>` : ''}
     ${anyMatches
-      ? byStage.filter(({ groups }) => groups.some((g) => g.matches.length)).map(({ stage, groups }) => `
-        <div class="stage-matches">
-          <h2>Stage #${stage.sequenceOrder} <span class="muted" style="font-weight:400;font-size:14px">— ${UI.esc(stage.type)}</span></h2>
-          ${stage.type === 'knockout'
-            ? `<div class="bracket">${groups.map((g) => bracketRoundHtml(g, teamName, canOfficiate)).join('')}</div>`
-            : `<div class="grid cols-2">${groups.map((g) => leagueGroupCardHtml(g, teamName, canOfficiate, ptRes.participantTeams)).join('')}</div>`}
-        </div>`).join('')
+      ? unknown.join('')
       : '<p class="empty">No matches yet — run the draw first.</p>'}`;
 
   UI.qsa('[data-save-score]', content).forEach((btn) => btn.addEventListener('click', UI.guard(btn, async () => {

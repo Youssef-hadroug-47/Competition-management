@@ -356,16 +356,24 @@ function sortTeamsWithTiebreakers(teams, tiebreakers, stageId) {
 
 
 
-function getLeaguePromotedTeams(stage, limitPerGroup) {
+function getLeaguePromotedTeams(stage) {
+  if (stage.type !== "league") return null;
   const settings = parseJson(stage.settings, defaultStageSettings('league'));
   const defaultTbs = defaultStageSettings('league').tiebreakers;
   const tiebreakers =
     settings.tiebreakers && settings.tiebreakers.length ? settings.tiebreakers : defaultTbs;
+  const defaultAdvanceFromRanking = defaultStageSettings('league').advancingTeamsFromRanking;
+  const nbrAdvanceFromRanking = settings.advancingTeamsFromRanking ?? defaultAdvanceFromRanking ?? 0;
+
   const groups = db
     .prepare('SELECT * FROM groups WHERE stage_id = ? ORDER BY sequence_order ASC, name ASC')
     .all(stage.id);
   const sourceGroups = groups.length ? groups : [{ id: null }];
   const promoted = [];
+  // Candidates for the pooled "ranking group" (e.g. best third-placed teams
+  // across all groups, as in the Euros) — gathered from every group here,
+  // then sorted together and trimmed to nbrAdvanceFromRanking below.
+  const rankingPool = [];
   for (const g of sourceGroups) {
     const teams = g.id
       ? db.prepare('SELECT * FROM participant_teams WHERE group_id = ?').all(g.id)
@@ -376,18 +384,33 @@ function getLeaguePromotedTeams(stage, limitPerGroup) {
       if (b.points !== a.points) return b.points - a.points;
       return compareTeams(a, b, teams, tiebreakers, stage.id);
     });
-    const n = limitPerGroup == null ? teams.length : Math.min(limitPerGroup, teams.length);
+    // g.advancing_teams is the raw DB column (snake_case) — only real groups
+    // (g.id set) carry it; the synthetic "no groups configured" fallback
+    // promotes every team, same as before.
+    const n = g.id == null ? teams.length : Math.min(g.advancing_teams, teams.length);
     promoted.push(...teams.slice(0, n));
+    const nbrTeamsToRanking = g.id == null ? 0 : (g.advancing_teams_to_ranking ?? 0);
+    // Ranking-eligible teams are the ones placed right after the teams that
+    // advance automatically — i.e. starting at index n, not n + 1.
+    rankingPool.push(...teams.slice(n, n + nbrTeamsToRanking));
   }
+
+  rankingPool.sort((a, b) => {
+    if (b.points !== a.points) return b.points - a.points;
+    return compareTeams(a, b, rankingPool, tiebreakers, stage.id);
+  });
+
+  promoted.push(...rankingPool.slice(0, nbrAdvanceFromRanking));
+
   return promoted;
 }
 
-function getKnockoutPromotedTeams(stage, limit) {
-  const groups = db
-    .prepare('SELECT * FROM groups WHERE stage_id = ? ORDER BY sequence_order DESC')
+function getKnockoutPromotedTeams(stage) {
+  const rounds = db
+    .prepare('SELECT * FROM rounds WHERE stage_id = ? ORDER BY sequence_order DESC')
     .all(stage.id);
-  if (!groups.length) return [];
-  const finalRound = groups[0];
+  if (!rounds.length) return [];
+  const finalRound = rounds[0];
   const matches = db
     .prepare('SELECT * FROM matches WHERE group_id = ? ORDER BY matchday ASC, created_at ASC')
     .all(finalRound.id);
@@ -397,18 +420,17 @@ function getKnockoutPromotedTeams(stage, limit) {
     const winnerId = resolveTieWinner(tieMatches);
     if (winnerId) winners.push(db.prepare('SELECT * FROM participant_teams WHERE id = ?').get(winnerId));
   }
-  return limit == null ? winners : winners.slice(0, limit);
+  return winners;
 }
 
-// Returns the participant_teams promoted out of `previousStage`, according
-// to that stage's own settings (teamsAdvancePerGroup — reused for both
-// league group standings and knockout tie winners).
+// Returns the participant_teams promoted out of `previousStage`: for a
+// league stage, each group's own advancing_teams/advancing_teams_to_ranking
+// plus the stage's advancingTeamsFromRanking setting; for a knockout stage,
+// the winners of its final round.
 function getPromotedParticipants(previousStage) {
-  const settings = parseJson(previousStage.settings, defaultStageSettings(previousStage.type));
-  const limit = settings.teamsAdvancePerGroup ?? null;
   return previousStage.type === 'league'
-    ? getLeaguePromotedTeams(previousStage, limit)
-    : getKnockoutPromotedTeams(previousStage, limit);
+    ? getLeaguePromotedTeams(previousStage)
+    : getKnockoutPromotedTeams(previousStage);
 }
 
 function drawLeagueStage(tournament, stage, groups, participants) {
@@ -466,7 +488,7 @@ function drawKnockoutStage(tournament, stage, groups, participants) {
   if (!roundGroups.length) {
     const names = knockoutRounds(shuffled.length);
     const insertGroup = db.prepare(
-      `INSERT INTO groups (id, stage_id, name, sequence_order) VALUES (?, ?, ?, ?)`
+      `INSERT INTO rounds (id, stage_id, name, sequence_order) VALUES (?, ?, ?, ?)`
     );
     roundGroups = names.map((name, index) => {
       const gid = id();
@@ -551,14 +573,16 @@ function runDraw({ tournamentId, stageId }) {
     }
   } else {
     participants = db.prepare('SELECT * FROM participant_teams WHERE tournament_id = ?').all(tournamentId);
-    if (participants.length < 2) {
-      throw httpError(400, 'Add at least two participant teams before drawing');
+    const number_of_teams = db.prepare('SELECT * from tournaments WHERE id = ?').get(tournamentId).number_of_teams;
+    if (participants.length != number_of_teams) {
+      throw httpError(400, `add ${number_of_teams - participants.length} teams to run draw`);
     }
   }
 
-  const groups = db
-    .prepare('SELECT * FROM groups WHERE stage_id = ? ORDER BY sequence_order ASC, name ASC')
-    .all(stage.id);
+  const groups =  db
+    .prepare(`SELECT * FROM ${ stage.type === "league" ? 'groups' : 'rounds'} WHERE stage_id = ? ORDER BY sequence_order ASC, name ASC`)
+    .all(stage.id) ; 
+
 
   const result =
     stage.type === 'knockout'
@@ -594,7 +618,7 @@ function advanceKnockoutStage(stageId) {
   const settings = parseJson(stage.settings, defaultStageSettings('knockout'));
   const legs = Math.max(1, Number(settings.headToHeadMatches) || 1);
   const groups = db
-    .prepare('SELECT * FROM groups WHERE stage_id = ? ORDER BY sequence_order ASC')
+    .prepare('SELECT * FROM rounds WHERE stage_id = ? ORDER BY sequence_order ASC')
     .all(stage.id);
   if (!groups.length) return null;
 

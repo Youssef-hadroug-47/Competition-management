@@ -17,8 +17,8 @@ CREATE TABLE IF NOT EXISTS tournaments (
     CHECK (status IN ('draft', 'registration', 'draw_complete', 'in_progress', 'completed', 'cancelled')),
   visibility TEXT NOT NULL DEFAULT 'public'
     CHECK (visibility IN ('public', 'private')),
-  format TEXT NOT NULL DEFAULT 'stages'
-    CHECK (format IN ('stages', 'groups', 'division', 'league', 'knockout', 'custom')),
+  -- format TEXT NOT NULL DEFAULT 'stages'
+    -- CHECK (format IN ('stages', 'groups', 'division', 'league', 'knockout', 'custom')),
   number_of_teams INTEGER NOT NULL DEFAULT 0,
   place TEXT,
   created_by TEXT NOT NULL REFERENCES users(id),
@@ -35,11 +35,22 @@ CREATE TABLE IF NOT EXISTS stages (
   UNIQUE (tournament_id, sequence_order)
 );
 
+CREATE TABLE IF NOT EXISTS rounds (
+  id TEXT PRIMARY KEY,
+  stage_id TEXT NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, 
+  sequence_order INTEGER NOT NULL DEFAULT 1
+);
+
 CREATE TABLE IF NOT EXISTS groups (
   id TEXT PRIMARY KEY,
   stage_id TEXT NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
-  sequence_order INTEGER NOT NULL DEFAULT 1
+  sequence_order INTEGER NOT NULL DEFAULT 1,
+  number_teams INTEGER NOT NULL CHECK ( number_teams >= 3 ),
+  advancing_teams INTEGER NOT NULL CHECK (advancing_teams < number_teams),
+  advancing_teams_to_ranking INTEGER NOT NULL DEFAULT 0
+    CHECK (advancing_teams + advancing_teams_to_ranking <= number_teams)
 );
 
 CREATE TABLE IF NOT EXISTS teams (
@@ -107,7 +118,11 @@ CREATE TABLE IF NOT EXISTS matches (
   id TEXT PRIMARY KEY,
   tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
   stage_id TEXT NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
-  group_id TEXT REFERENCES groups(id) ON DELETE SET NULL,
+  -- Points at a groups.id (league stage) or a rounds.id (knockout stage),
+  -- depending on the parent stage's type — so it can't have a single-table
+  -- FK. Application code clears it when the referenced group/round is
+  -- deleted (see removeGroup/removeRound in tournamentController.js).
+  group_id TEXT,
   matchday INTEGER,
   home_participant_team_id TEXT REFERENCES participant_teams(id),
   away_participant_team_id TEXT REFERENCES participant_teams(id),
