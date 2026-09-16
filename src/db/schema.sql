@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS groups (
   id TEXT PRIMARY KEY,
   stage_id TEXT NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
+  promotion_rules TEXT NOT NULL DEFAULT '[]',
   sequence_order INTEGER NOT NULL DEFAULT 1,
   number_teams INTEGER NOT NULL CHECK ( number_teams >= 3 ),
   advancing_teams INTEGER NOT NULL CHECK (advancing_teams < number_teams),
@@ -152,8 +153,44 @@ CREATE TABLE IF NOT EXISTS tournament_follows (
   UNIQUE (tournament_id, user_id)
 );
 
+-- Promotions used to be computed on the fly at draw time by walking back to
+-- the immediately preceding stage. A group's promotion_rules can now route
+-- different rank ranges to different, arbitrary target stages, and the
+-- decision is made once — when the source stage finishes — rather than at
+-- draw time. This table is that persisted decision; draws for a stage read
+-- their incoming participants from here (WHERE target_stage_id = ?).
+CREATE TABLE IF NOT EXISTS stage_promotions (
+  id TEXT PRIMARY KEY,
+  tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+  source_stage_id TEXT NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
+  target_stage_id TEXT NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
+  participant_team_id TEXT NOT NULL REFERENCES participant_teams(id) ON DELETE CASCADE,
+  via_rank BOOLEAN NOT NULL DEFAULT false,
+  rank_position INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (source_stage_id, participant_team_id)
+);
+
+CREATE TABLE IF NOT EXISTS vote (
+  id TEXT PRIMARY KEY,
+  tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  award TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS vote_nominees (
+  nominee_id TEXT NOT NULL REFERENCES participant_players(id) ON DELETE CASCADE,
+  vote_id TEXT NOT NULL REFERENCES vote(id) ON DELETE CASCADE,
+  votes INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (nominee_id, vote_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_stages_tournament ON stages(tournament_id);
 CREATE INDEX IF NOT EXISTS idx_groups_stage ON groups(stage_id);
 CREATE INDEX IF NOT EXISTS idx_pt_tournament ON participant_teams(tournament_id);
 CREATE INDEX IF NOT EXISTS idx_matches_tournament ON matches(tournament_id);
 CREATE INDEX IF NOT EXISTS idx_follows_tournament ON tournament_follows(tournament_id);
+CREATE INDEX IF NOT EXISTS idx_stage_promotions_source ON stage_promotions(source_stage_id);
+CREATE INDEX IF NOT EXISTS idx_stage_promotions_target ON stage_promotions(target_stage_id);
+CREATE INDEX IF NOT EXISTS idx_vote_tournament ON vote(tournament_id);
+CREATE INDEX IF NOT EXISTS idx_vote_nominees_vote ON vote_nominees(vote_id);

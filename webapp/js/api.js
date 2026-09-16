@@ -156,15 +156,29 @@ const API = (() => {
     simulate: (id) => request(`/matches/${id}/simulate`, { method: 'POST' }),
   };
 
-  /* ---- Simulation (random-weighted game/stage/tournament results) ---- */
   const simulate = {
     match: (matchId) => request(`/matches/${matchId}/simulate`, { method: 'POST' }),
     stage: (stageId) => request(`/stages/${stageId}/simulate`, { method: 'POST' }),
     tournament: (tournamentId) => request(`/tournaments/${tournamentId}/simulate`, { method: 'POST' }),
   };
 
+  const vote = {
+    getAll: (tournamentId) => request(`/tournaments/${tournamentId}/votes`) ,
+    get: (id) => request(`/votes/${id}`),
+    create: (tournamentId) => request(`/tournaments/${tournamentId}/votes`, {method: 'POST', body}),
+    update: (id) => request(`/votes/${id}`, { method: 'PATCH', body}),
+    delete: (id) => request(`/votes/${id}`, {method: 'DELETE'}),
+  };
+
+  const nominees = {
+    get: (voteId) => request(`/votes/${voteId}/nominees`),
+    create: (voteId) => request(`/votes/${voteId}/nominees`, { method: 'POST', body}),
+    setVotes: (voteId, nomineeId) => request(`/votes/${voteId}/nominees/${nomineeId}`, { method: 'POST', body}),
+    delete: (voteId, nomineeId) => request(`/votes/${voteId}/nominees/${nomineeId}`, {method: 'DELETE'}),
+  };
+
   return {
     getBaseUrl, setBaseUrl, getToken, setToken, getUser, setUser, isLoggedIn, hasRole,
-    request, auth, tournaments, teams, players, participants, matches, simulate,
+    request, auth, tournaments, teams, players, participants, matches, simulate, vote, nominees,
   };
 })();

@@ -80,11 +80,22 @@ Send JWT as `Authorization: Bearer <token>`.
 - `PATCH /api/matches/:id`
 - `POST /api/matches/:id/finish` `{ homeScore, awayScore }`
 
-### Follow (Instagram-style)
+### Follow 
 - `POST /api/tournaments/:id/follow`
 - `DELETE /api/tournaments/:id/follow`
 - `GET /api/tournaments/:id/followers` (admin)
 - `PATCH /api/tournaments/:id/follow-requests/:userId` `{ status: "accepted" | "rejected" }`
+
+### Vote
+- `GET /api/tournaments/:tournamentId/votes`
+- `GET /api/votes/:id` : list votes
+- `POST /api/tournaments/:tournamentId/votes : {name, award}`
+- `PATCH /api/votes/:id : {name, award}`
+- `DELETE /api/votes/:id`
+- `GET /api/votes/:voteId/nominees`
+- `POST /api/votes/:voteId/nominees : {nomineeId}`
+- `POST /api/votes/:voteId/nominees/:nomineeId : {votes}`
+- `POST /api/votes/:voteId/nominees/:nomineeId`
 
 ## Example: create a World Cup-style tournament
 

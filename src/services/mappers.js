@@ -47,7 +47,8 @@ function defaultStageSettings(type) {
     points: type == 'league' ? { win: 3, draw: 1, loss: 0 } : null,
     tiebreakers: type === 'league'
       ? [
-          { type: 'head_to_head', priority: 1, awayGoalsPrivileged: true },
+          { type: 'points', priority: 1},
+          { type: 'head_to_head', priority: 1},
           { type: 'goal_difference', priority: 2 },
           { type: 'goals_for', priority: 3 },
           { type: 'sportsmanlike', priority: 4 },
@@ -65,8 +66,7 @@ function group(row) {
     name: row.name,
     sequenceOrder: row.sequence_order,
     numberOfTeams: row.number_teams,
-    advancingTeams: row.advancing_teams,
-    advancingTeamsToRanking: row.advancing_teams_to_ranking,
+    promotionRules: row.promtion_rules,
   };
 }
 
@@ -200,6 +200,26 @@ function follow(row) {
   };
 }
 
+function vote(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    tournamentId: row.tournament_id,
+    name: row.name,
+    award: row.award,
+  };
+}
+
+function voteNominee(row) {
+  if (!row) return null;
+  return {
+    voteId: row.vote_id,
+    // References participant_players.id, not players.id directly.
+    nomineeId: row.nominee_id,
+    votes: row.votes,
+  };
+}
+
 module.exports = {
   userPublic,
   tournament,
@@ -213,4 +233,6 @@ module.exports = {
   match,
   follow,
   defaultStageSettings,
+  vote,
+  voteNominee,
 };

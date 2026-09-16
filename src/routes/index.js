@@ -5,6 +5,8 @@ const tournaments = require('../controllers/tournamentController');
 const catalog = require('../controllers/catalogController');
 const matches = require('../controllers/matchController');
 const simulation = require('../controllers/simulationController');
+const { listVotes, getVote } = require('../controllers/voteController');
+const { deleteVote, updateVote, listNominees, addNominee, setNomineeVotes, removeNominee } = require('../services/voteService');
 
 const router = express.Router();
 
@@ -78,5 +80,16 @@ router.patch(
   requireRole('admin'),
   matches.moderateFollow
 );
+
+router.get('/tournaments/:tournamentId/votes', requireAuth, listVotes);
+router.get('/votes/:id', requireAuth, getVote);
+router.post('/tournaments/:tournamentId/votes', requireAuth, requireRole('admin'), createVote);
+router.patch('/votes/:id', requireAuth, requireRole('admin'), updateVote);
+router.delete('/votes/:id', requireAuth, requireRole('admin'), deleteVote);
+
+router.get('/votes/:voteId/nominees', requireAuth, listNominees);
+router.post('/votes/:voteId/nominees', requireAuth, requireRole('admin'), addNominee);
+router.post('/votes/:voteId/nominees/:nomineeId', requireAuth, requireRole('admin'), setNomineeVotes);
+router.delete('/votes/:voteId/nominees/:nomineeId', requireAuth, requireRole('admin'), removeNominee);
 
 module.exports = router;

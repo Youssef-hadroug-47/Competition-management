@@ -37,15 +37,14 @@ function insertStageWithGroups(tournamentId, stageInput, index) {
       );
     } else {
       db.prepare(
-        'INSERT INTO groups (id, stage_id, name, sequence_order, number_teams, advancing_teams, advancing_teams_to_ranking) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO groups (id, stage_id, name, sequence_order, number_teams, promotion_rules) VALUES (?, ?, ?, ?, ?, ?)'
       ).run(
         id(),
         stageId,
         g.name,
         sequenceOrder,
         g.number_teams ?? g.numberOfTeams,
-        g.advancing_teams ?? g.advancingTeams,
-        g.advancing_teams_to_ranking ?? g.advancingTeamsToRanking ?? 0
+        g.promotion_rules ?? '[]'
       );
     }
   });
@@ -197,20 +196,17 @@ const addGroup = asyncHandler((req, res) => {
   const stage = db.prepare('SELECT * FROM stages WHERE id = ?').get(req.params.id);
   if (!stage) throw httpError(404, 'Stage not found');
   if (!req.body?.name) throw httpError(400, 'name is required');
-  if (req.body?.advancing_teams === undefined || req.body?.advancing_teams === null)
-    throw httpError(400, 'number of advancing teams is required');
   if (req.body?.number_teams === undefined || req.body?.number_teams === null)
     throw httpError(400, 'number of teams is required');
 
   const groupId = id();
-  db.prepare(`INSERT INTO groups (id, stage_id, name, sequence_order, number_teams, advancing_teams, advancing_teams_to_ranking) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+  db.prepare(`INSERT INTO groups (id, stage_id, name, sequence_order, number_teams, promotion_rules) VALUES (?, ?, ?, ?, ?, ?)`).run(
     groupId,
     stage.id,
     req.body.name,
     req.body.sequenceOrder ?? 1,
     req.body.number_teams,
-    req.body.advancing_teams,
-    req.body.advancing_teams_to_ranking ?? 0
+    req.body.promotion_rules ?? JSON.stringify([{from: 1, to: req.body.number_teams, stage: null}])
   );
 
   const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId);
@@ -249,13 +245,12 @@ const updateGroup = asyncHandler((req, res) => {
   const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(req.params.id);
   if (!group) throw httpError(404, 'Group not found');
   db.prepare(
-    'UPDATE groups SET name = ?, sequence_order = ?, number_teams = ?, advancing_teams = ?, advancing_teams_to_ranking = ? WHERE id = ?'
+    'UPDATE groups SET name = ?, sequence_order = ?, number_teams = ?, promotion_rules = ? WHERE id = ?'
   ).run(
     req.body?.name ?? group.name,
     req.body?.sequence_order ?? group.sequence_order,
     req.body?.number_teams ?? group.number_teams,
-    req.body?.advancing_teams ?? group.advancing_teams,
-    req.body?.advancing_teams_to_ranking ?? group.advancing_teams_to_ranking,
+    req.body.promotion_rules ?? JSON.stringify([{from: 1, to: req.body.number_teams, stage: null}]),
     group.id
   );
   res.json({group: map.group(db.prepare('SELECT * from groups WHERE id = ?').get(group.id))});

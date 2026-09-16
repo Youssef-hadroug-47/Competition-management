@@ -70,17 +70,58 @@ function insertMatch({ tournamentId, stageId, groupId, matchday, homeId, awayId 
 }
 
 /* ----------------------------------------------------------------------
- * Stage linking helpers — a stage with sequence_order > 1 is "fed" by the
- * stage immediately before it (sequence_order - 1). Its draw pool is
- * restricted to the teams that stage's promotion rules produced, instead
- * of every team registered in the tournament.
+ * Stage linking helpers — promotions are no longer computed on the fly at
+ * draw time. A group's promotion_rules can send different rank ranges to
+ * different, arbitrary target stages (not necessarily sequence_order + 1),
+ * so the decision is made once, when the source stage finishes, and
+ * persisted in stage_promotions (see finalizeLeagueStage / the knockout
+ * final-round branch of advanceKnockoutStage). A stage's draw pool is
+ * whatever stage_promotions currently says is targeting it.
  * -------------------------------------------------------------------- */
 
-function getPreviousStage(tournamentId, stage) {
-  if (!stage || stage.sequence_order <= 1) return null;
+// node:sqlite's DatabaseSync has no better-sqlite3-style db.transaction()
+// helper, so wrap the BEGIN/COMMIT/ROLLBACK by hand. Not reentrant — don't
+// call this from inside another runInTransaction.
+function runInTransaction(fn) {
+  db.exec('BEGIN');
+  try {
+    fn();
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function insertStagePromotion(insert, { tournamentId, sourceStageId, targetStageId, participantTeamId, viaRank, rankPosition }) {
+  insert.run(id(), tournamentId, sourceStageId, targetStageId, participantTeamId, viaRank ? 1 : 0, rankPosition ?? null, now());
+}
+
+// Everyone currently promoted INTO `stage`, regardless of which stage(s)
+// fed them there.
+function getIncomingParticipants(stage) {
   return db
-    .prepare('SELECT * FROM stages WHERE tournament_id = ? AND sequence_order = ?')
-    .get(tournamentId, stage.sequence_order - 1);
+    .prepare(
+      `SELECT DISTINCT pt.* FROM stage_promotions sp
+       JOIN participant_teams pt ON pt.id = sp.participant_team_id
+       WHERE sp.target_stage_id = ?`
+    )
+    .all(stage.id);
+}
+
+// Which stages currently have promotions feeding `stage` — used for
+// "finish stage X first" style error messages, since a stage can now be
+// fed by more than one source.
+function getFeederStageSequenceOrders(stage) {
+  return db
+    .prepare(
+      `SELECT DISTINCT s.sequence_order AS seq FROM stage_promotions sp
+       JOIN stages s ON s.id = sp.source_stage_id
+       WHERE sp.target_stage_id = ?
+       ORDER BY seq ASC`
+    )
+    .all(stage.id)
+    .map((r) => r.seq);
 }
 
 function isStageComplete(stage) {
@@ -147,113 +188,44 @@ function resolveTieWinner(tieMatches) {
 
 // --- Tiebreakers for league stages -----------------------------------
 
-function getCardsForTeam(participantTeamId) {
-  const players = db
-    .prepare('SELECT yellow_cards, red_cards FROM participant_players WHERE participant_team_id = ?')
-    .all(participantTeamId);
-  let reds = 0;
-  let yellows = 0;
-  for (const p of players) {
-    reds += Number(p.red_cards || 0);
-    yellows += Number(p.yellow_cards || 0);
-  }
-  return { reds, yellows };
-}
-
-function getHeadToHeadMatches(aId, bId, stageId) {
+// One query for every tied team's card totals, instead of one query per
+// team per comparison. Returns raw rows; callers build a Map keyed by
+// participant_team_id.
+function getCardsForTeams(teams) {
+  if (!teams.length) return [];
+  const teamIds = teams.map((t) => t.id);
+  const placeholders = teamIds.map(() => '?').join(',');
   return db
     .prepare(
-      `SELECT * FROM matches WHERE stage_id = ? AND (
-        (home_participant_team_id = ? AND away_participant_team_id = ?) OR
-        (home_participant_team_id = ? AND away_participant_team_id = ?)
-      ) AND status = 'finished'`
+      `SELECT participant_team_id, SUM(yellow_cards) yellows, SUM(red_cards) reds
+       FROM participant_players
+       WHERE participant_team_id IN (${placeholders})
+       GROUP BY participant_team_id`
     )
-    .all(stageId, aId, bId, bId, aId);
-}
-
-function compareHeadToHead(a, b, stageId, awayGoalsPrivileged) {
-  const matches = getHeadToHeadMatches(a.id, b.id, stageId);
-  if (!matches.length) return 0;
-  let aPts = 0, bPts = 0;
-  let aGf = 0, bGf = 0;
-  let aAg = 0, bAg = 0;
-  for (const m of matches) {
-    const aIsHome = m.home_participant_team_id === a.id;
-    const aScore = aIsHome ? (m.home_score || 0) : (m.away_score || 0);
-    const bScore = aIsHome ? (m.away_score || 0) : (m.home_score || 0);
-    aGf += aScore;
-    bGf += bScore;
-    if (aIsHome) { aAg += 0; bAg += bScore; }
-    else { aAg += aScore; bAg += 0; }
-    if (aScore > bScore) aPts += 3;
-    else if (bScore > aScore) bPts += 3;
-    else { aPts += 1; bPts += 1; }
-  }
-  if (aPts !== bPts) return bPts - aPts;
-  const aGd = aGf - bGf;
-  if (aGd !== 0) return (aGd > 0 ? -1 : 1);
-  if (aGf !== bGf) return bGf - aGf;
-  if (awayGoalsPrivileged && aAg !== bAg) return bAg - aAg;
-  return 0;
-}
-
-function compareTeams(a, b, allTeams, tiebreakers, stageId) {
-  for (const tb of [...tiebreakers].sort((x, y) => x.priority - y.priority)) {
-    let result = 0;
-    switch (tb.type) {
-      case 'goal_difference': {
-        const gdA = (a.goals_for || 0) - (a.goals_against || 0);
-        const gdB = (b.goals_for || 0) - (b.goals_against || 0);
-        if (gdA !== gdB) result = gdB - gdA;
-        break;
-      }
-      case 'goals_for': {
-        if ((a.goals_for || 0) !== (b.goals_for || 0)) result = (b.goals_for || 0) - (a.goals_for || 0);
-        break;
-      }
-      case 'head_to_head': {
-        const h2h = compareHeadToHead(a, b, stageId, tb.awayGoalsPrivileged !== false);
-        if (h2h !== 0) result = h2h;
-        break;
-      }
-      case 'sportsmanlike': {
-        const ca = getCardsForTeam(a.id);
-        const cb = getCardsForTeam(b.id);
-        if (ca.reds !== cb.reds) result = ca.reds - cb.reds;
-        else if (ca.yellows !== cb.yellows) result = ca.yellows - cb.yellows;
-        break;
-      }
-      case 'draw': {
-        result = a.id < b.id ? -1 : 1;
-        break;
-      }
-    }
-    if (result !== 0) return result;
-  }
-  return 0;
+    .all(...teamIds);
 }
 
 // Builds a mini-league sub-table for a set of tied teams: finds all
-// finished matches between them within the given stage, computes points
-// GD and GF from those matches only, then returns them sorted by those
-// mini-league stats (points → GD → GF).
-// Computes each team's points/GF/GA from only the matches they played
-// against each other within this bucket (their "mini-league").
-function computeMiniLeagueStats(teams, stageId) {
+// finished matches between them within the given group, and computes
+// points/GF/GA from those matches only (their "mini-league"). Used to
+// resolve head-to-head among 3+ teams tied on points, since pairwise
+// comparison isn't guaranteed transitive (A > B > C > A is possible).
+function computeMiniLeagueStats(teams, groupId) {
   const teamIds = teams.map((t) => t.id);
+  const stats = {};
+  for (const t of teams) stats[t.id] = { pts: 0, gf: 0, ga: 0 };
+  if (teamIds.length < 2) return stats;
+
   const placeholders = teamIds.map(() => '?').join(',');
   const matches = db
     .prepare(
-      `SELECT * FROM matches WHERE stage_id = ? AND status = 'finished'
+      `SELECT home_participant_team_id, away_participant_team_id, home_score, away_score
+       FROM matches WHERE group_id = ? AND status = 'finished'
        AND home_participant_team_id IN (${placeholders})
        AND away_participant_team_id IN (${placeholders})`
     )
-    .all(stageId, ...teamIds, ...teamIds);
+    .all(groupId, ...teamIds, ...teamIds);
 
-  const stats = {};
-  for (const t of teams) {
-    stats[t.id] = { pts: 0, gf: 0, ga: 0 };
-  }
   for (const m of matches) {
     const hId = m.home_participant_team_id;
     const aId = m.away_participant_team_id;
@@ -271,93 +243,143 @@ function computeMiniLeagueStats(teams, stageId) {
   return stats;
 }
 
-function sortByMiniLeague(teams, stageId) {
-  const stats = computeMiniLeagueStats(teams, stageId);
-  return [...teams].sort((a, b) => {
-    const sa = stats[a.id], sb = stats[b.id];
-    if (!sa && !sb) return 0;
-    if (!sa) return 1;
-    if (!sb) return -1;
-    if (sb.pts !== sa.pts) return sb.pts - sa.pts;
-    const gdA = sa.gf - sa.ga, gdB = sb.gf - sb.ga;
-    if (gdB !== gdA) return gdB - gdA;
-    if (sb.gf !== sa.gf) return sb.gf - sa.gf;
+// Sorts `teams` descending by a numeric composite key (array of numbers,
+// compared lexicographically) and groups consecutive equal-key teams into
+// buckets. This is the shared building block for every tiebreaker
+// criterion below — sort first, THEN split, so teams tied on a value that
+// aren't adjacent in the input still end up in the same bucket.
+function bucketByComposite(teams, keyFn) {
+  const sorted = [...teams].sort((a, b) => {
+    const ka = keyFn(a);
+    const kb = keyFn(b);
+    for (let i = 0; i < ka.length; i += 1) {
+      if (kb[i] !== ka[i]) return kb[i] - ka[i];
+    }
     return 0;
   });
-}
 
-// Resolves ties: groups teams by their accumulated score (points + all
-// tiebreaker criteria recursively), resolves each group using mini-league
-// when head_to_head is the primary tiebreaker, then applies remaining
-// tiebreakers. Returns the fully sorted array.
-function sortTeamsWithTiebreakers(teams, tiebreakers, stageId) {
-  const h2hPrimary = tiebreakers.length && tiebreakers.sort((x, y) => x.priority - y.priority)[0].type === 'head_to_head';
+  const sameKey = (x, y) => {
+    const kx = keyFn(x);
+    const ky = keyFn(y);
+    return kx.every((v, i) => v === ky[i]);
+  };
 
-  // First pass: sort by points descending
-  const byPoints = [...teams].sort((a, b) => (b.points || 0) - (a.points || 0));
-
-  // Split into buckets of equal points
   const buckets = [];
   let current = [];
-  for (const t of byPoints) {
-    if (!current.length || (t.points || 0) === (current[0].points || 0)) {
-      current.push(t);
-    } else {
-      buckets.push(current);
-      current = [t];
-    }
+  for (const t of sorted) {
+    if (!current.length || sameKey(t, current[0])) current.push(t);
+    else { buckets.push(current); current = [t]; }
   }
   if (current.length) buckets.push(current);
+  return buckets;
+}
 
-  // Sort each bucket (teams with same points)
+// Splits `teams` into tied buckets for one tiebreaker criterion. Each
+// bucket is itself an array of teams; a bucket of length 1 is fully
+// resolved, a bucket of length > 1 is still tied on this criterion and
+// needs the next one in the chain.
+function splitIntoBuckets(teams, type, groupId) {
+  switch (type) {
+    case 'points':
+      return bucketByComposite(teams, (t) => [t.points || 0]);
+
+    case 'goal_difference':
+      return bucketByComposite(teams, (t) => [t.goal_difference || 0]);
+
+    case 'goals_for':
+      return bucketByComposite(teams, (t) => [t.goals_for || 0]);
+
+    case 'sportsmanlike':
+      // Fewer cards is better, so negate to reuse the descending sort.
+      return bucketByComposite(teams, (t) => [-(t.red_cards || 0), -(t.yellow_cards || 0)]);
+
+    case 'head_to_head': {
+      // Scoped to just the currently-tied bucket, and only matches these
+      // teams played against each other — a fresh mini-league per bucket,
+      // not the group's overall table.
+      const stats = computeMiniLeagueStats(teams, groupId);
+      return bucketByComposite(teams, (t) => {
+        const s = stats[t.id] || { pts: 0, gf: 0, ga: 0 };
+        return [s.pts, s.gf - s.ga, s.gf];
+      });
+    }
+
+    case 'draw': {
+      // Deterministic, never leaves teams tied — every bucket is a
+      // singleton, ordered by id.
+      const sorted = [...teams].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      return sorted.map((t) => [t]);
+    }
+
+    default:
+      throw httpError(500, `Unknown tiebreaker type: ${type}`);
+  }
+}
+
+// Resolves ties: applies each tiebreaker in priority order, only
+// recursing into a tiebreaker's sub-buckets for teams still tied after
+// it. If every configured tiebreaker is exhausted and teams are still
+// tied, falls back to a deterministic id sort so the result is never
+// ambiguous even if the caller forgot to configure a 'draw' tiebreaker.
+function sortTeamsWithTiebreakers(teams, sortedTiebreakers, idx, groupId) {
+  if (teams.length <= 1) return teams;
+  if (idx >= sortedTiebreakers.length) {
+    return [...teams].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  }
+
+  const buckets = splitIntoBuckets(teams, sortedTiebreakers[idx].type, groupId);
   const result = [];
   for (const bucket of buckets) {
-    let sorted;
-    if (bucket.length <= 2 || !h2hPrimary) {
-      // Simple pairwise comparison works for 1-2 teams or non-h2h primary
-      sorted = [...bucket].sort((a, b) => compareTeams(a, b, bucket, tiebreakers, stageId));
-    } else {
-      // 3+ teams tied on points with head_to_head first:
-      // First pass: use mini-league to get the relative ordering
-      sorted = sortByMiniLeague(bucket, stageId);
-      // Second pass: resolve any remaining ties within mini-league
-      // using the full tiebreaker chain (excluding head_to_head to avoid
-      // double-counting). Teams only carry forward into the same sub-bucket
-      // here if they were ACTUALLY still tied after the mini-league (equal
-      // mini-league points/GD/GF) — grouping by overall tournament points
-      // would be wrong, since every team in `bucket` already shares those.
-      const remainingTbs = tiebreakers.filter((tb) => tb.type !== 'head_to_head');
-      if (remainingTbs.length) {
-        const mlStats = computeMiniLeagueStats(bucket, stageId);
-        const miniLeagueKey = (t) => {
-          const s = mlStats[t.id] || { pts: 0, gf: 0, ga: 0 };
-          return `${s.pts}|${s.gf - s.ga}|${s.gf}`;
-        };
-        const mlBuckets = [];
-        let mlCurrent = [];
-        for (const t of sorted) {
-          if (!mlCurrent.length || miniLeagueKey(t) === miniLeagueKey(mlCurrent[0])) {
-            mlCurrent.push(t);
-          } else {
-            mlBuckets.push(mlCurrent);
-            mlCurrent = [t];
-          }
-        }
-        if (mlCurrent.length) mlBuckets.push(mlCurrent);
-        sorted = mlBuckets.flatMap((b) =>
-          (b.length > 1 ? [...b].sort((a, b) => compareTeams(a, b, b, remainingTbs, stageId)) : b)
-        );
-      }
-    }
-    result.push(...sorted);
+    if (bucket.length === 1) result.push(...bucket);
+    else result.push(...sortTeamsWithTiebreakers(bucket, sortedTiebreakers, idx + 1, groupId));
   }
   return result;
 }
 
+// Ranks a single group's teams using the stage's tiebreaker chain. Rank 1
+// (group winner) is index 0. Points/goals_for/goals_against are read from
+// the stored participant_teams columns (not recomputed from matches) so
+// any manual adjustment — deductions, forfeits, bonus points — is
+// respected; only goal_difference is derived, and only cards/head-to-head
+// pull from other tables.
+function rankGroupTeams(group, tiebreakers) {
+  const sortedTbs = [...tiebreakers].sort((a, b) => a.priority - b.priority);
+  const teams = db.prepare('SELECT * FROM participant_teams WHERE group_id = ?').all(group.id);
+  if (!teams.length) return teams;
 
+  const cardRows = getCardsForTeams(teams);
+  const cards = new Map(
+    cardRows.map((c) => [c.participant_team_id, { yellow_cards: c.yellows || 0, red_cards: c.reds || 0 }])
+  );
 
-function getLeaguePromotedTeams(stage) {
-  if (stage.type !== "league") return null;
+  for (const team of teams) {
+    const c = cards.get(team.id) || { yellow_cards: 0, red_cards: 0 };
+    team.yellow_cards = c.yellow_cards;
+    team.red_cards = c.red_cards;
+    team.goal_difference = (team.goals_for || 0) - (team.goals_against || 0);
+  }
+
+  return sortTeamsWithTiebreakers(teams, sortedTbs, 0, group.id);
+}
+
+// Computes and persists promotions out of a finished league stage.
+// Each group's promotion_rules is an array of {from, to, stage, rank}
+// ranges over that group's own final standings (1-based, inclusive):
+//   - rank falsy: every team in [from, to] is promoted straight to `stage`.
+//   - rank true: teams in [from, to] become candidates for `stage` instead
+//     of being auto-promoted — they're pooled with every other rank:true
+//     candidate from every group in this stage (regardless of which target
+//     stage they're bound for), sorted together, and only the top
+//     settings.advancingTeamsFromRanking of that pool actually promote.
+//     This matches the old "best third-placed teams" behaviour, just with
+//     an explicit per-range target stage instead of an implicit next one.
+// Returns null (and does nothing) if the stage isn't actually finished yet.
+// Safe to call repeatedly/idempotently — it replaces this stage's rows in
+// stage_promotions each time it successfully runs.
+function finalizeLeagueStage(stage) {
+  if (!stage || stage.type !== 'league') return null;
+  if (!isStageComplete(stage)) return null;
+
   const settings = parseJson(stage.settings, defaultStageSettings('league'));
   const defaultTbs = defaultStageSettings('league').tiebreakers;
   const tiebreakers =
@@ -368,69 +390,85 @@ function getLeaguePromotedTeams(stage) {
   const groups = db
     .prepare('SELECT * FROM groups WHERE stage_id = ? ORDER BY sequence_order ASC, name ASC')
     .all(stage.id);
-  const sourceGroups = groups.length ? groups : [{ id: null }];
-  const promoted = [];
-  // Candidates for the pooled "ranking group" (e.g. best third-placed teams
-  // across all groups, as in the Euros) — gathered from every group here,
-  // then sorted together and trimmed to nbrAdvanceFromRanking below.
-  const rankingPool = [];
-  for (const g of sourceGroups) {
-    const teams = g.id
-      ? db.prepare('SELECT * FROM participant_teams WHERE group_id = ?').all(g.id)
-      : db.prepare('SELECT * FROM participant_teams WHERE tournament_id = ? AND group_id IS NULL').all(
-          stage.tournament_id
-        );
-    teams.sort((a, b) => {
-      if (b.points !== a.points) return b.points - a.points;
-      return compareTeams(a, b, teams, tiebreakers, stage.id);
-    });
-    // g.advancing_teams is the raw DB column (snake_case) — only real groups
-    // (g.id set) carry it; the synthetic "no groups configured" fallback
-    // promotes every team, same as before.
-    const n = g.id == null ? teams.length : Math.min(g.advancing_teams, teams.length);
-    promoted.push(...teams.slice(0, n));
-    const nbrTeamsToRanking = g.id == null ? 0 : (g.advancing_teams_to_ranking ?? 0);
-    // Ranking-eligible teams are the ones placed right after the teams that
-    // advance automatically — i.e. starting at index n, not n + 1.
-    rankingPool.push(...teams.slice(n, n + nbrTeamsToRanking));
+  if (!groups.length) {
+    return { promoted: 0, direct: 0, viaRank: 0, note: 'Stage has no groups configured — nothing to promote.' };
   }
 
-  rankingPool.sort((a, b) => {
-    if (b.points !== a.points) return b.points - a.points;
-    return compareTeams(a, b, rankingPool, tiebreakers, stage.id);
+  const directPromotions = []; // { participantTeamId, targetStageId }
+  const rankingCandidates = []; // { team, targetStageId }
+
+  for (const grp of groups) {
+    const ranked = rankGroupTeams(grp, tiebreakers);
+    const rules = parseJson(grp.promotion_rules, []);
+    for (const rule of rules) {
+      if (!rule || !rule.stage) continue;
+      const from = Math.max(1, Number(rule.from) || 1);
+      const to = Math.min(ranked.length, Number(rule.to) || 0);
+      if (to < from) continue;
+      const slice = ranked.slice(from - 1, to);
+      if (rule.rank) {
+        for (const team of slice) rankingCandidates.push({ team, targetStageId: rule.stage });
+      } else {
+        for (const team of slice) directPromotions.push({ participantTeamId: team.id, targetStageId: rule.stage });
+      }
+    }
+  }
+
+  // Rank-based candidates come from different groups, so they never
+  // played each other — head_to_head can't apply across groups. Sort the
+  // pool on points/GD/GF only, with a deterministic id fallback.
+  const crossGroupTiebreakers = [
+    { type: 'points', priority: 1 },
+    { type: 'goal_difference', priority: 2 },
+    { type: 'goals_for', priority: 3 },
+    { type: 'draw', priority: 4 },
+  ];
+  const candidateTeams = rankingCandidates.map((c) => c.team);
+  const sortedCandidateTeams = sortTeamsWithTiebreakers(candidateTeams, crossGroupTiebreakers, 0, null);
+  const orderIndex = new Map(sortedCandidateTeams.map((t, i) => [t.id, i]));
+  rankingCandidates.sort((a, b) => orderIndex.get(a.team.id) - orderIndex.get(b.team.id));
+
+  const rankedPromotions = rankingCandidates.slice(0, nbrAdvanceFromRanking).map((c, index) => ({
+    participantTeamId: c.team.id,
+    targetStageId: c.targetStageId,
+    rankPosition: index + 1,
+  }));
+
+  const del = db.prepare('DELETE FROM stage_promotions WHERE source_stage_id = ?');
+  const insert = db.prepare(
+    `INSERT INTO stage_promotions (
+      id, tournament_id, source_stage_id, target_stage_id, participant_team_id, via_rank, rank_position, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  runInTransaction(() => {
+    del.run(stage.id);
+    for (const p of directPromotions) {
+      insertStagePromotion(insert, {
+        tournamentId: stage.tournament_id,
+        sourceStageId: stage.id,
+        targetStageId: p.targetStageId,
+        participantTeamId: p.participantTeamId,
+        viaRank: false,
+      });
+    }
+    for (const p of rankedPromotions) {
+      insertStagePromotion(insert, {
+        tournamentId: stage.tournament_id,
+        sourceStageId: stage.id,
+        targetStageId: p.targetStageId,
+        participantTeamId: p.participantTeamId,
+        viaRank: true,
+        rankPosition: p.rankPosition,
+      });
+    }
   });
 
-  promoted.push(...rankingPool.slice(0, nbrAdvanceFromRanking));
-
-  return promoted;
-}
-
-function getKnockoutPromotedTeams(stage) {
-  const rounds = db
-    .prepare('SELECT * FROM rounds WHERE stage_id = ? ORDER BY sequence_order DESC')
-    .all(stage.id);
-  if (!rounds.length) return [];
-  const finalRound = rounds[0];
-  const matches = db
-    .prepare('SELECT * FROM matches WHERE group_id = ? ORDER BY matchday ASC, created_at ASC')
-    .all(finalRound.id);
-  const ties = groupByMatchday(matches);
-  const winners = [];
-  for (const [, tieMatches] of ties) {
-    const winnerId = resolveTieWinner(tieMatches);
-    if (winnerId) winners.push(db.prepare('SELECT * FROM participant_teams WHERE id = ?').get(winnerId));
-  }
-  return winners;
-}
-
-// Returns the participant_teams promoted out of `previousStage`: for a
-// league stage, each group's own advancing_teams/advancing_teams_to_ranking
-// plus the stage's advancingTeamsFromRanking setting; for a knockout stage,
-// the winners of its final round.
-function getPromotedParticipants(previousStage) {
-  return previousStage.type === 'league'
-    ? getLeaguePromotedTeams(previousStage)
-    : getKnockoutPromotedTeams(previousStage);
+  return {
+    promoted: directPromotions.length + rankedPromotions.length,
+    direct: directPromotions.length,
+    viaRank: rankedPromotions.length,
+  };
 }
 
 function drawLeagueStage(tournament, stage, groups, participants) {
@@ -440,11 +478,6 @@ function drawLeagueStage(tournament, stage, groups, participants) {
     ...pt,
     group_id: groups[index % groups.length].id,
   }));
-
-  const update = db.prepare(
-    `UPDATE participant_teams SET group_id = ?, status = 'drawn' WHERE id = ?`
-  );
-  for (const pt of assignments) update.run(pt.group_id, pt.id);
 
   const settings = parseJson(stage.settings, defaultStageSettings('league'));
   const legs = Math.max(1, Number(settings.headToHeadMatches) || 1);
@@ -456,22 +489,28 @@ function drawLeagueStage(tournament, stage, groups, participants) {
   }
 
   const created = [];
-  for (const group of groups) {
-    const ids = byGroup.get(group.id) || [];
-    const fixtures = roundRobinPairs(ids, legs);
-    for (const fx of fixtures) {
-      created.push(
-        insertMatch({
-          tournamentId: tournament.id,
-          stageId: stage.id,
-          groupId: group.id,
-          matchday: fx.matchday,
-          homeId: fx.home,
-          awayId: fx.away,
-        })
-      );
+  runInTransaction(() => {
+    const update = db.prepare(`UPDATE participant_teams SET group_id = ?, status = 'drawn' WHERE id = ?`);
+    for (const pt of assignments) update.run(pt.group_id, pt.id);
+
+    for (const group of groups) {
+      const ids = byGroup.get(group.id) || [];
+      const fixtures = roundRobinPairs(ids, legs);
+      for (const fx of fixtures) {
+        created.push(
+          insertMatch({
+            tournamentId: tournament.id,
+            stageId: stage.id,
+            groupId: group.id,
+            matchday: fx.matchday,
+            homeId: fx.home,
+            awayId: fx.away,
+          })
+        );
+      }
     }
-  }
+  });
+
   return { assigned: assignments.length, matchesCreated: created.length };
 }
 
@@ -485,47 +524,51 @@ function drawKnockoutStage(tournament, stage, groups, participants) {
   const legs = Math.max(1, Number(settings.headToHeadMatches) || 1);
 
   let roundGroups = groups;
-  if (!roundGroups.length) {
-    const names = knockoutRounds(shuffled.length);
-    const insertGroup = db.prepare(
-      `INSERT INTO rounds (id, stage_id, name, sequence_order) VALUES (?, ?, ?, ?)`
-    );
-    roundGroups = names.map((name, index) => {
-      const gid = id();
-      insertGroup.run(gid, stage.id, name, index + 1);
-      return { id: gid, name, sequence_order: index + 1 };
-    });
-  }
-
-  const firstRound = [...roundGroups].sort((a, b) => a.sequence_order - b.sequence_order)[0];
-  const pairs = [];
-  for (let i = 0; i < shuffled.length; i += 2) {
-    const home = shuffled[i];
-    const away = shuffled[i + 1];
-    if (!away) continue;
-    pairs.push([home, away]);
-  }
-
+  let firstRound;
   const created = [];
-  pairs.forEach((pair, index) => {
-    for (let leg = 0; leg < legs; leg += 1) {
-      const home = leg === 0 ? pair[0] : pair[1];
-      const away = leg === 0 ? pair[1] : pair[0];
-      created.push(
-        insertMatch({
-          tournamentId: tournament.id,
-          stageId: stage.id,
-          groupId: firstRound.id,
-          matchday: index + 1,
-          homeId: home.id,
-          awayId: away.id,
-        })
-      );
-    }
-  });
 
-  const mark = db.prepare(`UPDATE participant_teams SET status = 'drawn' WHERE id = ?`);
-  for (const pt of shuffled) mark.run(pt.id);
+  runInTransaction(() => {
+    if (!roundGroups.length) {
+      const names = knockoutRounds(shuffled.length);
+      const insertGroup = db.prepare(
+        `INSERT INTO rounds (id, stage_id, name, sequence_order) VALUES (?, ?, ?, ?)`
+      );
+      roundGroups = names.map((name, index) => {
+        const gid = id();
+        insertGroup.run(gid, stage.id, name, index + 1);
+        return { id: gid, name, sequence_order: index + 1 };
+      });
+    }
+
+    firstRound = [...roundGroups].sort((a, b) => a.sequence_order - b.sequence_order)[0];
+    const pairs = [];
+    for (let i = 0; i < shuffled.length; i += 2) {
+      const home = shuffled[i];
+      const away = shuffled[i + 1];
+      if (!away) continue;
+      pairs.push([home, away]);
+    }
+
+    pairs.forEach((pair, index) => {
+      for (let leg = 0; leg < legs; leg += 1) {
+        const home = leg === 0 ? pair[0] : pair[1];
+        const away = leg === 0 ? pair[1] : pair[0];
+        created.push(
+          insertMatch({
+            tournamentId: tournament.id,
+            stageId: stage.id,
+            groupId: firstRound.id,
+            matchday: index + 1,
+            homeId: home.id,
+            awayId: away.id,
+          })
+        );
+      }
+    });
+
+    const mark = db.prepare(`UPDATE participant_teams SET status = 'drawn' WHERE id = ?`);
+    for (const pt of shuffled) mark.run(pt.id);
+  });
 
   return { assigned: shuffled.length, matchesCreated: created.length, firstRound: firstRound.name };
 }
@@ -553,23 +596,20 @@ function runDraw({ tournamentId, stageId }) {
     throw httpError(409, 'A draw already exists for this stage. Delete its matches first to redraw.');
   }
 
-  // Stage linking: a stage only draws from the teams its predecessor
-  // promoted, not the whole tournament roster.
-  const previousStage = getPreviousStage(tournamentId, stage);
+  // Stage linking: a stage only draws from teams that have already been
+  // promoted into it (see stage_promotions), not the whole tournament
+  // roster. Promotions are decided once, when a feeding stage finishes —
+  // see finalizeLeagueStage and advanceKnockoutStage — so by draw time this
+  // is just a lookup, not a computation.
   let participants;
-  if (previousStage) {
-    if (!isStageComplete(previousStage)) {
-      throw httpError(
-        409,
-        `Finish every match in stage #${previousStage.sequence_order} (${previousStage.type}) before drawing stage #${stage.sequence_order} — only its promoted teams feed this stage.`
-      );
-    }
-    participants = getPromotedParticipants(previousStage);
+  if (stage.sequence_order > 1) {
+    participants = getIncomingParticipants(stage);
     if (participants.length < 2) {
-      throw httpError(
-        400,
-        `Stage #${previousStage.sequence_order} did not produce enough promoted teams (found ${participants.length}) to draw stage #${stage.sequence_order}.`
-      );
+      const feederSeqs = getFeederStageSequenceOrders(stage);
+      const message = feederSeqs.length
+        ? `Only ${participants.length} team(s) have been promoted into stage #${stage.sequence_order} so far from stage(s) ${feederSeqs.join(', ')}. Make sure those stages have finished.`
+        : `No teams have been promoted into stage #${stage.sequence_order} yet. Finish the stage(s) whose promotion_rules target it first.`;
+      throw httpError(409, message);
     }
   } else {
     participants = db.prepare('SELECT * FROM participant_teams WHERE tournament_id = ?').all(tournamentId);
@@ -601,7 +641,7 @@ function runDraw({ tournamentId, stageId }) {
     stageId: stage.id,
     stageType: stage.type,
     sequenceOrder: stage.sequence_order,
-    promotedFromStage: previousStage ? previousStage.sequence_order : null,
+    promotedFromStages: stage.sequence_order > 1 ? getFeederStageSequenceOrders(stage) : [],
     ...result,
   };
 }
@@ -646,19 +686,48 @@ function advanceKnockoutStage(stageId) {
 
     const isFinalRound = i === groups.length - 1;
     if (isFinalRound) {
-      for (const { winnerId, loserId } of resolved) {
-        db.prepare(`UPDATE participant_teams SET status = 'champion' WHERE id = ?`).run(winnerId);
-        db.prepare(`UPDATE participant_teams SET status = 'eliminated' WHERE id = ?`).run(loserId);
-      }
+      // Knockout stages still promote their winner(s) straight to the next
+      // stage by sequence_order (no promotion_rules on rounds yet).
+      const nextStage = db
+        .prepare('SELECT * FROM stages WHERE tournament_id = ? AND sequence_order = ?')
+        .get(stage.tournament_id, stage.sequence_order + 1);
       const maxSeq = db
         .prepare('SELECT MAX(sequence_order) AS m FROM stages WHERE tournament_id = ?')
         .get(stage.tournament_id).m;
-      if (stage.sequence_order === maxSeq) {
-        db.prepare(`UPDATE tournaments SET status = 'completed', updated_at = ? WHERE id = ?`).run(
-          now(),
-          stage.tournament_id
-        );
-      }
+      const isTournamentComplete = stage.sequence_order === maxSeq;
+
+      runInTransaction(() => {
+        for (const { winnerId, loserId } of resolved) {
+          db.prepare(`UPDATE participant_teams SET status = 'champion' WHERE id = ?`).run(winnerId);
+          db.prepare(`UPDATE participant_teams SET status = 'eliminated' WHERE id = ?`).run(loserId);
+        }
+
+        if (nextStage) {
+          db.prepare('DELETE FROM stage_promotions WHERE source_stage_id = ?').run(stage.id);
+          const insert = db.prepare(
+            `INSERT INTO stage_promotions (
+              id, tournament_id, source_stage_id, target_stage_id, participant_team_id, via_rank, rank_position, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          );
+          for (const { winnerId } of resolved) {
+            insertStagePromotion(insert, {
+              tournamentId: stage.tournament_id,
+              sourceStageId: stage.id,
+              targetStageId: nextStage.id,
+              participantTeamId: winnerId,
+              viaRank: false,
+            });
+          }
+        }
+
+        if (isTournamentComplete) {
+          db.prepare(`UPDATE tournaments SET status = 'completed', updated_at = ? WHERE id = ?`).run(
+            now(),
+            stage.tournament_id
+          );
+        }
+      });
+
       return { finalized: true, round: round.name, champion: resolved[0]?.winnerId || null };
     }
 
@@ -666,46 +735,65 @@ function advanceKnockoutStage(stageId) {
     const nextRoundMatches = db.prepare('SELECT COUNT(*) AS c FROM matches WHERE group_id = ?').get(nextRound.id);
     if (nextRoundMatches.c > 0) continue; // already generated — keep checking later rounds
 
-    for (const { loserId } of resolved) {
-      db.prepare(`UPDATE participant_teams SET status = 'eliminated' WHERE id = ?`).run(loserId);
-    }
-
     const winners = resolved.map((r) => r.winnerId);
     const created = [];
-    for (let p = 0; p < winners.length; p += 2) {
-      const home = winners[p];
-      const away = winners[p + 1];
-      if (!home) continue;
-      if (!away) {
-        // Odd team out gets a bye straight into the next round.
-        db.prepare(`UPDATE participant_teams SET status = 'drawn' WHERE id = ?`).run(home);
-        continue;
+    runInTransaction(() => {
+      for (const { loserId } of resolved) {
+        db.prepare(`UPDATE participant_teams SET status = 'eliminated' WHERE id = ?`).run(loserId);
       }
-      for (let leg = 0; leg < legs; leg += 1) {
-        const h = leg === 0 ? home : away;
-        const a = leg === 0 ? away : home;
-        created.push(
-          insertMatch({
-            tournamentId: stage.tournament_id,
-            stageId: stage.id,
-            groupId: nextRound.id,
-            matchday: Math.floor(p / 2) + 1,
-            homeId: h,
-            awayId: a,
-          })
-        );
+
+      for (let p = 0; p < winners.length; p += 2) {
+        const home = winners[p];
+        const away = winners[p + 1];
+        if (!home) continue;
+        if (!away) {
+          // Odd team out gets a bye straight into the next round.
+          db.prepare(`UPDATE participant_teams SET status = 'drawn' WHERE id = ?`).run(home);
+          continue;
+        }
+        for (let leg = 0; leg < legs; leg += 1) {
+          const h = leg === 0 ? home : away;
+          const a = leg === 0 ? away : home;
+          created.push(
+            insertMatch({
+              tournamentId: stage.tournament_id,
+              stageId: stage.id,
+              groupId: nextRound.id,
+              matchday: Math.floor(p / 2) + 1,
+              homeId: h,
+              awayId: a,
+            })
+          );
+        }
       }
-    }
+    });
     return { round: nextRound.name, matchesCreated: created.length, advanced: winners.length };
   }
 
   return null;
 }
 
+// Call this whenever a match's status is set to 'finished'. It figures out
+// the right thing to do for the match's stage type:
+//   - league: if every match in the stage is now finished, computes and
+//     persists promotions (finalizeLeagueStage).
+//   - knockout: advances the bracket one step (generates the next round,
+//     or — on the final round — crowns the champion and persists
+//     promotions into the next stage). May need to be called again after
+//     each subsequent round finishes.
+// Returns null if the stage isn't in a state that needs anything done yet.
+function finalizeStageIfComplete(stageId) {
+  const stage = db.prepare('SELECT * FROM stages WHERE id = ?').get(stageId);
+  if (!stage) return null;
+  return stage.type === 'league' ? finalizeLeagueStage(stage) : advanceKnockoutStage(stage.id);
+}
+
 module.exports = {
   runDraw,
   roundRobinPairs,
   advanceKnockoutStage,
-  getPromotedParticipants,
+  finalizeLeagueStage,
+  finalizeStageIfComplete,
+  getIncomingParticipants,
   isStageComplete,
 };

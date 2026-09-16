@@ -1,6 +1,6 @@
 const { db, now, parseJson } = require('../db');
 const map = require('./mappers');
-const { advanceKnockoutStage } = require('./drawService');
+const { finalizeStageIfComplete } = require('./drawService');
 
 // Applies a finished match's score to both teams' league-table stats.
 // Shared by the manual "finish match" flow and the simulator so both
@@ -13,46 +13,54 @@ function applyResultToTable(match, homeScore, awayScore, pointsSettings) {
 
   const homeWin = homeScore > awayScore;
   const draw = homeScore === awayScore;
-  db.prepare(
-    `UPDATE participant_teams SET
-      played = played + 1,
-      won = won + ?,
-      drawn = drawn + ?,
-      lost = lost + ?,
-      goals_for = goals_for + ?,
-      goals_against = goals_against + ?,
-      points = points + ?,
-      status = 'active'
-     WHERE id = ?`
-  ).run(
-    homeWin ? 1 : 0,
-    draw ? 1 : 0,
-    homeWin ? 0 : draw ? 0 : 1,
-    homeScore,
-    awayScore,
-    homeWin ? pts.win : draw ? pts.draw : pts.loss,
-    home.id
-  );
-  db.prepare(
-    `UPDATE participant_teams SET
-      played = played + 1,
-      won = won + ?,
-      drawn = drawn + ?,
-      lost = lost + ?,
-      goals_for = goals_for + ?,
-      goals_against = goals_against + ?,
-      points = points + ?,
-      status = 'active'
-     WHERE id = ?`
-  ).run(
-    homeWin ? 0 : draw ? 0 : 1,
-    draw ? 1 : 0,
-    homeWin ? 1 : 0,
-    awayScore,
-    homeScore,
-    homeWin ? pts.loss : draw ? pts.draw : pts.win,
-    away.id
-  );
+
+  db.exec('BEGIN');
+  try {
+    db.prepare(
+      `UPDATE participant_teams SET
+        played = played + 1,
+        won = won + ?,
+        drawn = drawn + ?,
+        lost = lost + ?,
+        goals_for = goals_for + ?,
+        goals_against = goals_against + ?,
+        points = points + ?,
+        status = 'active'
+       WHERE id = ?`
+    ).run(
+      homeWin ? 1 : 0,
+      draw ? 1 : 0,
+      homeWin ? 0 : draw ? 0 : 1,
+      homeScore,
+      awayScore,
+      homeWin ? pts.win : draw ? pts.draw : pts.loss,
+      home.id
+    );
+    db.prepare(
+      `UPDATE participant_teams SET
+        played = played + 1,
+        won = won + ?,
+        drawn = drawn + ?,
+        lost = lost + ?,
+        goals_for = goals_for + ?,
+        goals_against = goals_against + ?,
+        points = points + ?,
+        status = 'active'
+       WHERE id = ?`
+    ).run(
+      homeWin ? 0 : draw ? 0 : 1,
+      draw ? 1 : 0,
+      homeWin ? 1 : 0,
+      awayScore,
+      homeScore,
+      homeWin ? pts.loss : draw ? pts.draw : pts.win,
+      away.id
+    );
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 // Marks a match finished, writes the score(s), updates the league table
@@ -96,10 +104,8 @@ function finishMatchRecord({
   // Knockout stages advance themselves: once every match in the current
   // round is finished, the next round is generated automatically (or the
   // champion is crowned if this was the final round).
-  let advance = null;
-  if (stage?.type === 'knockout') {
-    advance = advanceKnockoutStage(stage.id);
-  }
+  const advance = finalizeStageIfComplete(stage.id); 
+;
 
   const match = db.prepare('SELECT * FROM matches WHERE id = ?').get(matchRow.id);
   return { match, advance, stage };

@@ -1,9 +1,9 @@
 - [x] tie breakers for groups/league tournament format 
 - [ ] dynamic formats:
-    - [ ] add number of teams, advancing teams, advancing teams with ranking columns to groups table,
-    - [ ] add a new table "rounds" designed only for knockout stages
-    - [ ] knockout stage should only accept a power of 2 number of teams.
-    - [ ] (linking stages)
-
+    - [x] add number of teams, advancing teams, advancing teams with ranking columns to groups table,
+    - [x] add a new table "rounds" designed only for knockout stages
+    - [x] knockout stage should only accept a power of 2 number of teams.
+    - [x] (linking stages) : each completed stage must inject the promoted teams to their next stage
 - [ ] referee menu 
-- [ ] improve follow system 
+- [x] awards vote
+- [x] improve follow system 
