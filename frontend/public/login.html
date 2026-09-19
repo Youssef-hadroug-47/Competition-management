@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sign in — Tournly</title>
+<meta http-equiv="Content-Security-Policy"
+  content="default-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src https://fonts.gstatic.com; script-src 'self'; connect-src 'self' http://localhost:* https:; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Work+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+<div class="page">
+  <header class="topbar">
+    <a class="logo" href="/index.html"><span class="logo__mark" aria-hidden="true"></span>Tournly</a>
+  </header>
+
+  <div class="auth-shell">
+    <div class="auth-card">
+      <h1>Sign in</h1>
+      <p>Follow tournaments, cast votes, and run your own.</p>
+
+      <div id="banner" class="banner" hidden role="alert"></div>
+
+      <form id="login-form" novalidate>
+        <div class="field">
+          <label for="email">Email</label>
+          <input id="email" name="email" type="email" required autocomplete="username" />
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" required autocomplete="current-password" minlength="1" />
+        </div>
+        <button type="submit" class="btn btn--primary" id="submit-btn" style="width:100%;">Sign in</button>
+      </form>
+
+      <p class="auth-card__switch">New here? <a href="/register.html">Create an account</a></p>
+    </div>
+  </div>
+
+  <footer class="page__footer">Tournly — a small tournament organizer.</footer>
+</div>
+
+<script src="/js/config.js"></script>
+<script src="/js/session.js"></script>
+<script src="/js/ui.js"></script>
+<script src="/js/api.js"></script>
+<script src="/js/login.js"></script>
+</body>
+</html>

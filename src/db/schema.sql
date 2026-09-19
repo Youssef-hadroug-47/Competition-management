@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
   name TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('admin', 'referee', 'user')),
+  role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -25,6 +25,14 @@ CREATE TABLE IF NOT EXISTS tournaments (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS tournament_role (
+  tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK (role IN ('referee', 'moderator')),
+  UNIQUE(tournament_id, user_id)
+);
+
 
 CREATE TABLE IF NOT EXISTS stages (
   id TEXT PRIMARY KEY,
@@ -181,8 +189,9 @@ CREATE TABLE IF NOT EXISTS vote (
 CREATE TABLE IF NOT EXISTS vote_nominees (
   nominee_id TEXT NOT NULL REFERENCES participant_players(id) ON DELETE CASCADE,
   vote_id TEXT NOT NULL REFERENCES vote(id) ON DELETE CASCADE,
+  user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
   votes INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (nominee_id, vote_id)
+  PRIMARY KEY (user_id, vote_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_stages_tournament ON stages(tournament_id);

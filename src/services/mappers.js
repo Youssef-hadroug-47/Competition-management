@@ -66,7 +66,7 @@ function group(row) {
     name: row.name,
     sequenceOrder: row.sequence_order,
     numberOfTeams: row.number_teams,
-    promotionRules: row.promtion_rules,
+    promotionRules: row.promotion_rules,
   };
 }
 
@@ -214,9 +214,8 @@ function voteNominee(row) {
   if (!row) return null;
   return {
     voteId: row.vote_id,
-    // References participant_players.id, not players.id directly.
     nomineeId: row.nominee_id,
-    votes: row.votes,
+    userId: row.user_id
   };
 }
 

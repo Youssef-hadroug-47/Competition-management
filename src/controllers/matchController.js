@@ -5,9 +5,10 @@ const map = require('../services/mappers');
 const access = require('../services/access');
 const { runDraw } = require('../services/drawService');
 const { finishMatchRecord } = require('../services/matchService');
+const { getAllFollowedTournaments } = require('../services/followService');
 
 const draw = asyncHandler((req, res) => {
-  const tournamentId = req.body?.tournamentId || req.params.id;
+  const tournamentId = req.body?.tournamentId || req.params.tournamentId;
   if (!tournamentId) throw httpError(400, 'tournamentId is required');
   access.getTournamentOrThrow(tournamentId);
   const result = runDraw({ tournamentId, stageId: req.body?.stageId });
@@ -15,7 +16,7 @@ const draw = asyncHandler((req, res) => {
 });
 
 const listMatches = asyncHandler((req, res) => {
-  const tournament = access.getTournamentOrThrow(req.params.id);
+  const tournament = access.getTournamentOrThrow(req.params.tournamentId);
   access.requireTournamentInspect(tournament, req.user);
   const rows = db
     .prepare('SELECT * FROM matches WHERE tournament_id = ? ORDER BY matchday, created_at')
@@ -90,8 +91,20 @@ const finishMatch = asyncHandler((req, res) => {
   res.json({ match: map.match(updated), advance });
 });
 
+const listFollowedTournaments = asyncHandler(( req, res, next) => {
+  const userId = req.user.id || null;
+  
+  if (!userId)
+    throw httpError(401, 'Authentication is required ');
+  
+  const tournaments = getAllFollowedTournaments(userId);
+
+  res.status(200).json(tournaments);
+
+});
+
 const follow = asyncHandler((req, res) => {
-  const tournament = access.getTournamentOrThrow(req.params.id);
+  const tournament = access.getTournamentOrThrow(req.params.tournamentId);
   const existing = db
     .prepare('SELECT * FROM tournament_follows WHERE tournament_id = ? AND user_id = ?')
     .get(tournament.id, req.user.id);
@@ -107,21 +120,21 @@ const follow = asyncHandler((req, res) => {
 
 const unfollow = asyncHandler((req, res) => {
   db.prepare('DELETE FROM tournament_follows WHERE tournament_id = ? AND user_id = ?').run(
-    req.params.id,
+    req.params.tournamentId,
     req.user.id
   );
   res.status(204).end();
 });
 
 const listFollowers = asyncHandler((req, res) => {
-  access.getTournamentOrThrow(req.params.id);
+  access.getTournamentOrThrow(req.params.tournamentId);
   const rows = db
     .prepare(
       `SELECT f.*, u.email, u.name, u.role
        FROM tournament_follows f JOIN users u ON u.id = f.user_id
        WHERE f.tournament_id = ? ORDER BY f.created_at DESC`
     )
-    .all(req.params.id);
+    .all(req.params.tournamentId);
   res.json({
     followers: rows.map((r) => ({
       ...map.follow(r),
@@ -135,11 +148,11 @@ const moderateFollow = asyncHandler((req, res) => {
   if (!['accepted', 'rejected'].includes(status)) throw httpError(400, 'status must be accepted or rejected');
   const info = db
     .prepare('UPDATE tournament_follows SET status = ? WHERE tournament_id = ? AND user_id = ?')
-    .run(status, req.params.id, req.params.userId);
+    .run(status, req.params.tournamentId, req.params.userId);
   if (!info.changes) throw httpError(404, 'Follow request not found');
   const row = db
     .prepare('SELECT * FROM tournament_follows WHERE tournament_id = ? AND user_id = ?')
-    .get(req.params.id, req.params.userId);
+    .get(req.params.tournamentId, req.params.userId);
   res.json({ follow: map.follow(row) });
 });
 
@@ -153,5 +166,6 @@ module.exports = {
   follow,
   unfollow,
   listFollowers,
+  listFollowedTournaments,
   moderateFollow,
 };

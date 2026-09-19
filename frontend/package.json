@@ -1,0 +1,11 @@
+{
+  "name": "tournament-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Static frontend for the Tournament API — home + auth pages.",
+  "scripts": {
+    "build:config": "node scripts/generate-config.js",
+    "start": "npm run build:config && npx --yes serve public -l ${APP_PORT:-5173}",
+    "dev": "npm run start"
+  }
+}

@@ -13,8 +13,8 @@ const simulateStage = asyncHandler((req, res) => {
 });
 
 const simulateTournament = asyncHandler((req, res) => {
-  access.getTournamentOrThrow(req.params.id);
-  const result = simulation.simulateTournament(req.params.id, { actorId: req.user.id });
+  access.getTournamentOrThrow(req.params.tournamentId);
+  const result = simulation.simulateTournament(req.params.tournamentId, { actorId: req.user.id });
   res.json(result);
 });
 

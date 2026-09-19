@@ -4,6 +4,8 @@ const { asyncHandler } = require('../utils/asyncHandler');
 const { httpError } = require('../middleware/error');
 const map = require('../services/mappers');
 const access = require('../services/access');
+const { getRoles, getRole, addRole, deleteRole } = require('../services/tournamentRolesService');
+const { updateRole } = require('./authController');
 
 function insertStageWithGroups(tournamentId, stageInput, index) {
   if (!['league', 'knockout'].includes(stageInput.type)) {
@@ -94,6 +96,15 @@ const create = asyncHandler((req, res) => {
     now()
   );
 
+  db.prepare(
+    `INSERT INTO tournament_role (tournament_id, user_id, role)
+    VALUES (? ,? ,?)`
+  ).run(
+    tournamentId,
+    req.user.id,
+    'moderator'
+  )
+
   const stages = Array.isArray(body.stages) ? body.stages : [];
   stages.forEach((stage, index) => insertStageWithGroups(tournamentId, stage, index));
 
@@ -126,7 +137,7 @@ const getStage = asyncHandler((req, res) => {
 });
 
 const getOne = asyncHandler((req, res) => {
-  const row = access.getTournamentOrThrow(req.params.id);
+  const row = access.getTournamentOrThrow(req.params.tournamentId);
   access.requireTournamentInspect(row, req.user);
   res.json({
     tournament: map.tournament(row),
@@ -135,7 +146,7 @@ const getOne = asyncHandler((req, res) => {
 });
 
 const update = asyncHandler((req, res) => {
-  const row = access.getTournamentOrThrow(req.params.id);
+  const row = access.getTournamentOrThrow(req.params.tournamentId);
   const body = req.body || {};
   const next = {
     name: body.name ?? row.name,
@@ -161,13 +172,13 @@ const update = asyncHandler((req, res) => {
 });
 
 const remove = asyncHandler((req, res) => {
-  access.getTournamentOrThrow(req.params.id);
-  db.prepare('DELETE FROM tournaments WHERE id = ?').run(req.params.id);
+  access.getTournamentOrThrow(req.params.tournamentId);
+  db.prepare('DELETE FROM tournaments WHERE id = ?').run(req.params.tournamentId);
   res.status(204).end();
 });
 
 const addStage = asyncHandler((req, res) => {
-  const tournament = access.getTournamentOrThrow(req.params.id);
+  const tournament = access.getTournamentOrThrow(req.params.tournamentId);
   insertStageWithGroups(tournament.id, req.body || {}, 0);
   res.status(201).json({ stages: loadFormat(tournament.id) });
 });
@@ -270,7 +281,88 @@ const removeRound = asyncHandler((req, res) => {
   res.status(204).end();
 })
 
+const getAllTournamentRole = asyncHandler((req, res) => {
+  const tournamentId = req.params.tournamentId || null;
+
+  if (!tournamentId)
+    throw httpError(400, 'tournaments id is required');
+
+  const roles = getRoles(tournamentId);
+  if (!roles || roles.length === 0 )
+    throw httpError(404, 'Requested tournament does not exist or tournament roles are not set');
+  
+  res.json(roles);
+
+});
+
+const getTournamentRole = asyncHandler((req, res) => {
+  const userId = req.params.userId || null;
+  const tournamentId = req.params.tournamentId || null;
+  
+  if (!userId || !tournamentId)
+    throw httpError(400, 'user and tournament ids are both required');
+  const role = getRole(tournamentId, userId);
+  if (!role)
+    throw httpError(404, 'Requested user does not have a role in the given tournamnet');
+  res.json({role});
+});
+
+const addTournamentRole = asyncHandler((req, res) => {
+  const userId = req.params.userId || null;
+  const tournamentId = req.params.tournamentId || null;
+  const role = req.body.role || null;
+
+  if (!userId || !tournamentId || !role )  
+    throw httpError(400, 'userId, tournamentId and role are required');
+
+
+  if (!['referee', 'moderator'].includes(role))
+    throw httpError(400, 'only referee and moderator roles are available');
+
+  if (!addRole(tournamentId, userId, role))
+    throw httpError(400, 'this user already have a role');
+
+  res.status(201).end();
+
+});
+
+const updateTournamentRole = asyncHandler((req, res) => {
+  const userId = req.params.userId || null;
+  const tournamentId = req.params.tournamentId || null;
+  const role = req.body.role || null;
+
+
+  if (!userId || !tournamentId || !role) 
+    throw httpError(400, 'userId, tournamentId and role are required');
+
+  if (!['referee', 'moderator'].includes(role))
+    throw httpError(400, 'only referee and moderator roles are available');
+
+  if(!updateRole(tournamentId, userId, role)) 
+    throw httpError(404, 'tournament or user does not exist');
+  res.status(204).end();
+});
+const deleteTournamentRole = asyncHandler((req, res) => {
+
+  const userId = req.params.userId || null;
+  const tournamentId = req.params.tournamentId || null;
+
+
+  if (!userId || !tournamentId) 
+    throw httpError(400, 'userId and tournamentId are required');
+
+  if (!deleteRole(tournamentId, userId))
+    throw httpError(404, 'tournament or user does not exist');
+
+  res.status(204).end();
+});
+
 module.exports = {
+  getAllTournamentRole,
+  getTournamentRole,
+  updateTournamentRole,
+  addTournamentRole,
+  deleteTournamentRole,
   create,
   list,
   getOne,

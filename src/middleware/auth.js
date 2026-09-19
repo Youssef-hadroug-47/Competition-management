@@ -2,8 +2,44 @@ const jwt = require('jsonwebtoken');
 const { db } = require('../db');
 const config = require('../config');
 const { httpError } = require('./error');
+const { getRole } = require('../services/tournamentRolesService');
 
-function authOptional(req, res, next) {
+function requireTournamentRole(...roles) {
+  return (req, _, next) => {
+    
+    if (!req.user) return next(httpError(401, 'Authentication required'));
+
+    
+    const tournamentId = req.params.tournamentId || null;
+    if (!tournamentId)
+      return next(httpError(400, 'Bad Request'));
+
+    let role = req.user.tournamentRoles[tournamentId] || null;
+
+    if (!role)
+      role = getRole(tournamentId, req.user.id);
+    
+    if (!roles.includes(role))
+      return next(httpError(403, 'forbidden access'));
+    req.user.tournamentRoles[tournamentId] = role; 
+  }
+
+}
+
+
+function requireOwner(req, _, next) {
+  
+  if (!req.user) return next(httpError(401, 'Authentication required'));
+
+  const tournamentId = req.params.tournamentId || null;
+  if (!tournamentId)
+    return next(httpError(400, 'Bad Request'));
+
+  const creator = db.prepare('SELECT created_by FROM tournaments t WHERE id = ?').get(tournamentId);
+  return (creator != req.user.id) ? next(httpError(403, 'Forbidden Access')) : next();
+}
+
+function authOptional(req, _, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) {
@@ -37,4 +73,4 @@ function requireRole(...roles) {
   };
 }
 
-module.exports = { authOptional, requireAuth, requireRole };
+module.exports = { authOptional, requireOwner, requireAuth, requireRole, requireTournamentRole};

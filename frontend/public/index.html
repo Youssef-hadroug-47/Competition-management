@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tournaments</title>
+<!--
+  Content-Security-Policy (belt-and-braces alongside any header the real
+  static host should also set): only load script/style from this origin
+  and Google Fonts, never inline event handlers, no plugins/frames.
+-->
+<meta http-equiv="Content-Security-Policy"
+  content="default-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src https://fonts.gstatic.com; script-src 'self'; connect-src 'self' http://localhost:* https:; img-src 'self' data:; object-src 'none'; base-uri 'self'" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Work+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+<div class="page">
+  <header class="topbar">
+    <a class="logo" href="/index.html"><span class="logo__mark" aria-hidden="true"></span>Tournly</a>
+    <div class="topbar__actions" id="topbar-actions">
+      <!-- filled by home.js: either login/register buttons, or the profile menu -->
+    </div>
+  </header>
+
+  <main>
+    <div id="banner" class="banner" hidden role="alert"></div>
+
+    <!-- "les tournois favoris" — authenticated only -->
+    <section class="panel" id="favorites-panel" hidden>
+      <div class="panel__head">
+        <h2>Your favorite tournaments</h2>
+      </div>
+      <div id="favorites-body"><p class="empty-state">Loading…</p></div>
+    </section>
+
+    <!-- "création des tournois" -->
+    <section class="panel panel--accent" id="create-panel">
+      <div class="panel__head">
+        <h2>Create a tournament</h2>
+      </div>
+      <div id="create-body"></div>
+    </section>
+
+    <!-- "des tournois publiques" -->
+    <section class="panel" id="public-panel">
+      <div class="panel__head">
+        <h2>Public tournaments</h2>
+      </div>
+      <div id="public-body"><p class="empty-state">Loading…</p></div>
+    </section>
+  </main>
+
+  <footer class="page__footer">Tournly — a small tournament organizer.</footer>
+</div>
+
+<!-- Create-tournament modal -->
+<div class="modal-backdrop" id="create-modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="create-modal-title">
+    <h3 id="create-modal-title">New tournament</h3>
+    <div id="create-modal-banner" class="banner" hidden role="alert"></div>
+    <form id="create-form" novalidate>
+      <div class="field">
+        <label for="ct-name">Name</label>
+        <input id="ct-name" name="name" type="text" required maxlength="120" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="ct-place">Place</label>
+        <input id="ct-place" name="place" type="text" maxlength="120" autocomplete="off" />
+      </div>
+      <div class="field">
+        <label for="ct-teams">Number of teams</label>
+        <input id="ct-teams" name="numberOfTeams" type="number" min="2" max="256" />
+      </div>
+      <div class="field">
+        <label for="ct-visibility">Visibility</label>
+        <select id="ct-visibility" name="visibility">
+          <option value="public" selected>Public</option>
+          <option value="private">Private</option>
+        </select>
+      </div>
+      <div class="modal__actions">
+        <button type="button" class="btn btn--ghost" id="create-modal-cancel">Cancel</button>
+        <button type="submit" class="btn btn--primary" id="create-modal-submit">Create tournament</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="/js/config.js"></script>
+<script src="/js/session.js"></script>
+<script src="/js/ui.js"></script>
+<script src="/js/api.js"></script>
+<script src="/js/home.js"></script>
+</body>
+</html>

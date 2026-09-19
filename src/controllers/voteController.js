@@ -38,7 +38,7 @@ const createVote = asyncHandler( (req, res, next) => {
   }
 });
 
-const updateVote = asyncHandler( (req, res, next) => {z
+const updateVote = asyncHandler( (req, res, next) => {
   try {
     const row =  voteService.updateVote(req.params.id, req.body);
     if (!row) return res.status(404).json({ error: 'Vote not found' });
@@ -83,15 +83,14 @@ const addNominee = asyncHandler( (req, res, next) => {
   }
 });
 
-const setNomineeVotes = asyncHandler( (req, res, next) => {
+
+const vote = asyncHandler( (req, res, next) => {
   try {
     const { voteId, nomineeId } = req.params;
-    const { votes } = req.body;
-    if (typeof votes !== 'number') {
-      return res.status(400).json({ error: 'votes must be a number' });
-    }
-    const row =  voteService.setNomineeVotes(voteId, nomineeId, votes);
-    if (!row) return res.status(404).json({ error: 'Nominee not found' });
+    const { userId } = req.body; 
+    const row =  voteService.setNomineeVoter(voteId, nomineeId, userId);
+    if (row === -1) return res.status(404).json({ error: 'Nominee not found' });
+    if (row === -2) return res.status(400).json({ error: 'User already voted'});
     res.json(mappers.voteNominee(row));
   } catch (err) {
     next(err);
@@ -117,6 +116,6 @@ module.exports = {
   deleteVote,
   listNominees,
   addNominee,
-  setNomineeVotes,
+  vote,
   removeNominee,
 };

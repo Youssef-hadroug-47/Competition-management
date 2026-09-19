@@ -128,7 +128,7 @@ const participantJoinSql = `
 `;
 
 const addParticipantTeam = asyncHandler((req, res) => {
-  const tournament = access.getTournamentOrThrow(req.params.id);
+  const tournament = access.getTournamentOrThrow(req.params.tournamentId);
   const { teamId, seed, nickname } = req.body || {};
   if (!teamId) throw httpError(400, 'teamId is required');
   const team = db.prepare('SELECT * FROM teams WHERE id = ?').get(teamId);
@@ -143,7 +143,7 @@ const addParticipantTeam = asyncHandler((req, res) => {
 });
 
 const listParticipantTeams = asyncHandler((req, res) => {
-  const tournament = access.getTournamentOrThrow(req.params.id);
+  const tournament = access.getTournamentOrThrow(req.params.tournamentId);
   access.requireTournamentInspect(tournament, req.user);
   const rows = db
     .prepare(`${participantJoinSql} WHERE pt.tournament_id = ? ORDER BY pt.seed, t.name`)

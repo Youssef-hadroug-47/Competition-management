@@ -14,7 +14,7 @@ function tokenFor(user) {
 const register = asyncHandler((req, res) => {
   const { email, password, name, role } = req.body || {};
   if (!email || !password || !name) throw httpError(400, 'email, password and name are required');
-  const allowed = ['user', 'referee'];
+  const allowed = ['user'];
   const chosen = role && allowed.includes(role) ? role : 'user';
   const userId = id();
   db.prepare(
@@ -46,7 +46,7 @@ const listUsers = asyncHandler((req, res) => {
 
 const updateRole = asyncHandler((req, res) => {
   const { role } = req.body || {};
-  if (!['admin', 'referee', 'user'].includes(role)) throw httpError(400, 'Invalid role');
+  if (!['admin', 'user'].includes(role)) throw httpError(400, 'Invalid role');
   const info = db.prepare('UPDATE users SET role = ? WHERE id = ?').run(role, req.params.id);
   if (!info.changes) throw httpError(404, 'User not found');
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
