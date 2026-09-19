@@ -137,6 +137,22 @@ For `knockout` stages, entries in `groups` are inserted as **rounds** (using `na
 ```
 **Errors**: `400` invalid stage type.
 
+### `GET /tournaments/:tournamentId/stages/:id/standing` — Optional
+Added after the initial reference. Returns each group's final ranking — as an ordered list of `participantTeamId`s only — computed server-side by the standings service against the stage's own configured tiebreakers (`stage.settings.tiebreakers`). The frontend resolves those IDs against the `participant-teams` data it already has (team name, nickname, running stats) and renders them in the order given; it does not recompute or re-sort anything itself, and the service never has to re-fetch or re-serialize team rows the client already holds.
+
+**Response `200`**
+```json
+{
+  "stageId": "string",
+  "groups": [
+    { "groupId": "string", "order": ["participantTeamId1", "participantTeamId2", "..."] }
+  ]
+}
+```
+`order` is expected to already be in final ranked order (index 0 = 1st place).
+
+> Deliberately **does not** accept a `tiebreakers` parameter from the client. The stage already persists its own tiebreak order; letting a request override it would mean two viewers of the same public standings could see different orderings, or a client could omit/substitute its own. If an admin-facing "preview a different tiebreak order" tool is ever needed, it should be a distinct, authenticated action rather than a parameter on this read.
+
 ### `PATCH /tournaments/:tournamentId/stages/:id` — Auth + tournament role `moderator`
 **Body** *(all optional)*
 ```json

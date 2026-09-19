@@ -25,6 +25,7 @@ router.post('/tournaments', requireAuth, tournaments.create);
 router.patch('/tournaments/:tournamentId', requireAuth, requireTournamentRole('moderator'), tournaments.update);
 router.delete('/tournaments/:tournamentId', requireAuth, requireTournamentRole('moderator'), tournaments.remove);
 
+router.get('/tournaments/:tournamentId/stages/:id/standing', authOptional, tournaments.getStanding);
 router.get('/tournaments/:tournamentId/stages/:id', authOptional, tournaments.getStage);
 router.post('/tournaments/:tournamentId/stages', requireAuth, requireTournamentRole('moderator'), tournaments.addStage);
 router.patch('/tournaments/:tournamentId/stages/:id', requireAuth, requireTournamentRole('moderator'), tournaments.updateStage);

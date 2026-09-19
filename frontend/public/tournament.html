@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tournament — Tournly</title>
+<meta http-equiv="Content-Security-Policy"
+  content="default-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src https://fonts.gstatic.com; script-src 'self'; connect-src 'self' http://localhost:* https:; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Work+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+<div class="page">
+  <header class="topbar">
+    <a class="logo" href="/index.html"><span class="logo__mark" aria-hidden="true"></span>Tournly</a>
+    <div class="topbar__actions" id="topbar-actions"></div>
+  </header>
+
+  <main>
+    <a class="back-link" href="/index.html">&larr; All tournaments</a>
+
+    <div id="banner" class="banner" hidden role="alert"></div>
+
+    <!-- Populated once the tournament loads; hidden while loading/errored -->
+    <section class="panel" id="hero-panel" hidden>
+      <div class="tournament-hero">
+        <div>
+          <div class="tournament-hero__title">
+            <h1 id="hero-name"></h1>
+            <span class="badge" id="hero-visibility"></span>
+          </div>
+          <div class="tournament-hero__meta" id="hero-meta"></div>
+        </div>
+        <div id="hero-actions"></div>
+      </div>
+    </section>
+
+    <section class="panel" id="loading-panel">
+      <p class="empty-state">Loading tournament…</p>
+    </section>
+
+    <!-- Matches / Standings & bracket / Top scorers — one tab visible at a time -->
+    <section class="panel" id="tabs-panel" hidden>
+      <div class="tabs" id="content-tabs" role="tablist"></div>
+      <div id="content-body" style="margin-top:18px;"></div>
+    </section>
+  </main>
+
+  <footer class="page__footer">Tournly — a small tournament organizer.</footer>
+</div>
+
+<script src="/js/config.js"></script>
+<script src="/js/session.js"></script>
+<script src="/js/ui.js"></script>
+<script src="/js/api.js"></script>
+<script src="/js/header.js"></script>
+<script src="/js/tournament.js"></script>
+</body>
+</html>

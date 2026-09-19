@@ -9,7 +9,7 @@
  *    only, so there's nothing for the browser to attach, and this also
  *    means CSRF (which relies on ambient cookie auth) isn't a meaningful
  *    attack surface for these requests
- *  - on a 401, clears the local session and redirects to /login.html,
+ *  - on a 401, clears the local session and redirects to /login,
  *    since a 401 means the server has already stopped trusting the token
  *  - throws a typed ApiError with the server's own message when available,
  *    and a generic one otherwise (never leaks raw response bodies/stack
@@ -28,6 +28,20 @@ function apiBaseUrl() {
   const base = window.__APP_CONFIG__?.API_BASE_URL;
   if (!base) throw new Error('API_BASE_URL is not configured — run `npm run build:config`.');
   return base;
+}
+
+
+/**
+ * Encodes a value used as a path segment. Every ID we pass into a URL is
+ * either something the API itself gave us back, or something a user
+ * typed into a query string (e.g. ?id=...) — either way, encoding it
+ * here means it can only ever occupy exactly one path segment, so it
+ * can't smuggle in a "/" to redirect the request to a different route,
+ * a "?" to inject extra query params, or any other URL-structural
+ * character.
+ */
+function enc(value) {
+  return encodeURIComponent(String(value));
 }
 
 async function request(method, path, { body, auth = true, query } = {}) {
@@ -53,16 +67,15 @@ async function request(method, path, { body, auth = true, query } = {}) {
       credentials: 'omit',
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
-    console.log(`${method} ${url.toString()}`);
   } catch (networkErr) {
     throw new ApiError('Unable to reach the server.', 0);
   }
 
   if (res.status === 401) {
     window.Session.end();
-    if (!location.pathname.endsWith('/login.html')) {
+    if (!location.pathname.endsWith('/login')) {
       const next = encodeURIComponent(location.pathname + location.search);
-      location.href = `/login.html?next=${next}`;
+      location.href = `/login?next=${next}`;
     }
     throw new ApiError('Your session has expired. Please sign in again.', 401);
   }
@@ -86,7 +99,6 @@ async function request(method, path, { body, auth = true, query } = {}) {
     throw new ApiError(message, res.status);
   }
 
-  console.log(data)
   return data;
 }
 
@@ -100,100 +112,102 @@ const Api = {
 
   users: {
     list: () => request('GET', '/users'),
-    updateRole: (id, role) => request('PATCH', `/users/${id}/role`, { body: { role } }),
+    updateRole: (id, role) => request('PATCH', `/users/${enc(id)}/role`, { body: { role } }),
   },
 
   // ---- Tournaments ----
   tournaments: {
     list: () => request('GET', '/tournaments', { auth: false }),
-    get: (tournamentId) => request('GET', `/tournaments/${tournamentId}`, { auth: false }),
+    get: (tournamentId) => request('GET', `/tournaments/${enc(tournamentId)}`, { auth: false }),
     create: (payload) => request('POST', '/tournaments', { body: payload }),
-    update: (tournamentId, payload) => request('PATCH', `/tournaments/${tournamentId}`, { body: payload }),
-    remove: (tournamentId) => request('DELETE', `/tournaments/${tournamentId}`),
+    update: (tournamentId, payload) => request('PATCH', `/tournaments/${enc(tournamentId)}`, { body: payload }),
+    remove: (tournamentId) => request('DELETE', `/tournaments/${enc(tournamentId)}`),
   },
 
   stages: {
-    get: (tournamentId, stageId) => request('GET', `/tournaments/${tournamentId}/stages/${stageId}`, { auth: false }),
-    add: (tournamentId, payload) => request('POST', `/tournaments/${tournamentId}/stages`, { body: payload }),
+    get: (tournamentId, stageId) => request('GET', `/tournaments/${enc(tournamentId)}/stages/${enc(stageId)}`, { auth: false }),
+    standings: (tournamentId, stageId) =>
+      request('GET', `/tournaments/${enc(tournamentId)}/stages/${enc(stageId)}/standing`, { auth: false }),
+    add: (tournamentId, payload) => request('POST', `/tournaments/${enc(tournamentId)}/stages`, { body: payload }),
     update: (tournamentId, stageId, payload) =>
-      request('PATCH', `/tournaments/${tournamentId}/stages/${stageId}`, { body: payload }),
-    remove: (tournamentId, stageId) => request('DELETE', `/tournaments/${tournamentId}/stages/${stageId}`),
+      request('PATCH', `/tournaments/${enc(tournamentId)}/stages/${enc(stageId)}`, { body: payload }),
+    remove: (tournamentId, stageId) => request('DELETE', `/tournaments/${enc(tournamentId)}/stages/${enc(stageId)}`),
   },
 
   groups: {
     add: (tournamentId, stageId, payload) =>
-      request('POST', `/tournaments/${tournamentId}/stages/${stageId}/groups`, { body: payload }),
+      request('POST', `/tournaments/${enc(tournamentId)}/stages/${enc(stageId)}/groups`, { body: payload }),
     update: (tournamentId, groupId, payload) =>
-      request('PATCH', `/tournaments/${tournamentId}/groups/${groupId}`, { body: payload }),
-    remove: (tournamentId, groupId) => request('DELETE', `/tournaments/${tournamentId}/groups/${groupId}`),
+      request('PATCH', `/tournaments/${enc(tournamentId)}/groups/${enc(groupId)}`, { body: payload }),
+    remove: (tournamentId, groupId) => request('DELETE', `/tournaments/${enc(tournamentId)}/groups/${enc(groupId)}`),
   },
 
   rounds: {
     add: (tournamentId, stageId, payload) =>
-      request('POST', `/tournaments/${tournamentId}/stages/${stageId}/rounds`, { body: payload }),
+      request('POST', `/tournaments/${enc(tournamentId)}/stages/${enc(stageId)}/rounds`, { body: payload }),
     update: (tournamentId, roundId, payload) =>
-      request('PATCH', `/tournaments/${tournamentId}/rounds/${roundId}`, { body: payload }),
-    remove: (tournamentId, roundId) => request('DELETE', `/tournaments/${tournamentId}/rounds/${roundId}`),
+      request('PATCH', `/tournaments/${enc(tournamentId)}/rounds/${enc(roundId)}`, { body: payload }),
+    remove: (tournamentId, roundId) => request('DELETE', `/tournaments/${enc(tournamentId)}/rounds/${enc(roundId)}`),
   },
 
   // ---- Catalog: teams & players ----
   teams: {
     list: () => request('GET', '/teams', { auth: false }),
-    get: (id) => request('GET', `/teams/${id}`, { auth: false }),
+    get: (id) => request('GET', `/teams/${enc(id)}`, { auth: false }),
     create: (payload) => request('POST', '/teams', { body: payload }),
-    update: (id, payload) => request('PATCH', `/teams/${id}`, { body: payload }),
-    remove: (id) => request('DELETE', `/teams/${id}`),
+    update: (id, payload) => request('PATCH', `/teams/${enc(id)}`, { body: payload }),
+    remove: (id) => request('DELETE', `/teams/${enc(id)}`),
   },
 
   players: {
     list: () => request('GET', '/players', { auth: false }),
-    get: (id) => request('GET', `/players/${id}`, { auth: false }),
+    get: (id) => request('GET', `/players/${enc(id)}`, { auth: false }),
     create: (payload) => request('POST', '/players', { body: payload }),
-    update: (id, payload) => request('PATCH', `/players/${id}`, { body: payload }),
-    remove: (id) => request('DELETE', `/players/${id}`),
+    update: (id, payload) => request('PATCH', `/players/${enc(id)}`, { body: payload }),
+    remove: (id) => request('DELETE', `/players/${enc(id)}`),
   },
 
   participantTeams: {
-    list: (tournamentId) => request('GET', `/tournaments/${tournamentId}/participant-teams`, { auth: false }),
+    list: (tournamentId) => request('GET', `/tournaments/${enc(tournamentId)}/participant-teams`, { auth: false }),
     add: (tournamentId, payload) =>
-      request('POST', `/tournaments/${tournamentId}/participant-teams`, { body: payload }),
+      request('POST', `/tournaments/${enc(tournamentId)}/participant-teams`, { body: payload }),
     update: (tournamentId, id, payload) =>
-      request('PATCH', `/tournaments/${tournamentId}/participant-teams/${id}`, { body: payload }),
-    remove: (tournamentId, id) => request('DELETE', `/tournaments/${tournamentId}/participant-teams/${id}`),
+      request('PATCH', `/tournaments/${enc(tournamentId)}/participant-teams/${enc(id)}`, { body: payload }),
+    remove: (tournamentId, id) => request('DELETE', `/tournaments/${enc(tournamentId)}/participant-teams/${enc(id)}`),
   },
 
   participantPlayers: {
     list: (tournamentId, participantTeamId) =>
-      request('GET', `/tournaments/${tournamentId}/participant-teams/${participantTeamId}/players`, { auth: false }),
+      request('GET', `/tournaments/${enc(tournamentId)}/participant-teams/${enc(participantTeamId)}/players`, { auth: false }),
     add: (tournamentId, participantTeamId, payload) =>
-      request('POST', `/tournaments/${tournamentId}/participant-teams/${participantTeamId}/players`, {
+      request('POST', `/tournaments/${enc(tournamentId)}/participant-teams/${enc(participantTeamId)}/players`, {
         body: payload,
       }),
     update: (tournamentId, id, payload) =>
-      request('PATCH', `/tournaments/${tournamentId}/participant-players/${id}`, { body: payload }),
-    remove: (tournamentId, id) => request('DELETE', `/tournaments/${tournamentId}/participant-players/${id}`),
+      request('PATCH', `/tournaments/${enc(tournamentId)}/participant-players/${enc(id)}`, { body: payload }),
+    remove: (tournamentId, id) => request('DELETE', `/tournaments/${enc(tournamentId)}/participant-players/${enc(id)}`),
   },
 
   // ---- Draw / matches / simulation ----
   draw: {
-    run: (tournamentId, stageId) => request('POST', `/tournaments/${tournamentId}/draw`, { body: { stageId } }),
+    run: (tournamentId, stageId) => request('POST', `/tournaments/${enc(tournamentId)}/draw`, { body: { stageId } }),
   },
 
   matches: {
-    list: (tournamentId) => request('GET', `/tournaments/${tournamentId}/matches`, { auth: false }),
-    get: (tournamentId, id) => request('GET', `/tournaments/${tournamentId}/matches/${id}`, { auth: false }),
+    list: (tournamentId) => request('GET', `/tournaments/${enc(tournamentId)}/matches`, { auth: false }),
+    get: (tournamentId, id) => request('GET', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}`, { auth: false }),
     start: (tournamentId, id, payload) =>
-      request('POST', `/tournaments/${tournamentId}/matches/${id}/start`, { body: payload }),
+      request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/start`, { body: payload }),
     update: (tournamentId, id, payload) =>
-      request('PATCH', `/tournaments/${tournamentId}/matches/${id}`, { body: payload }),
+      request('PATCH', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}`, { body: payload }),
     finish: (tournamentId, id, payload) =>
-      request('POST', `/tournaments/${tournamentId}/matches/${id}/finish`, { body: payload }),
+      request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/finish`, { body: payload }),
   },
 
   simulation: {
-    match: (matchId) => request('POST', `/matches/${matchId}/simulate`),
-    stage: (stageId) => request('POST', `/stages/${stageId}/simulate`),
-    tournament: (tournamentId) => request('POST', `/tournaments/${tournamentId}/simulate`),
+    match: (matchId) => request('POST', `/matches/${enc(matchId)}/simulate`),
+    stage: (stageId) => request('POST', `/stages/${enc(stageId)}/simulate`),
+    tournament: (tournamentId) => request('POST', `/tournaments/${enc(tournamentId)}/simulate`),
   },
 
   // ---- Follows ----
@@ -201,32 +215,32 @@ const Api = {
     // Must be requested with a real session — the backend keys this off
     // the caller's own user id, there's no other way to scope it.
     listFollowed: () => request('GET', '/tournaments/followed'),
-    follow: (tournamentId) => request('POST', `/tournaments/${tournamentId}/follow`),
-    unfollow: (tournamentId) => request('DELETE', `/tournaments/${tournamentId}/follow`),
-    listFollowers: (tournamentId) => request('GET', `/tournaments/${tournamentId}/followers`),
+    follow: (tournamentId) => request('POST', `/tournaments/${enc(tournamentId)}/follow`),
+    unfollow: (tournamentId) => request('DELETE', `/tournaments/${enc(tournamentId)}/follow`),
+    listFollowers: (tournamentId) => request('GET', `/tournaments/${enc(tournamentId)}/followers`),
     moderate: (tournamentId, userId, status) =>
-      request('PATCH', `/tournaments/${tournamentId}/follow-requests/${userId}`, { body: { status } }),
+      request('PATCH', `/tournaments/${enc(tournamentId)}/follow-requests/${enc(userId)}`, { body: { status } }),
   },
 
   // ---- Votes / nominees ----
   votes: {
-    list: (tournamentId) => request('GET', `/tournaments/${tournamentId}/votes`, { auth: false }),
-    get: (tournamentId, id) => request('GET', `/tournaments/${tournamentId}/votes/${id}`, { auth: false }),
-    create: (tournamentId, payload) => request('POST', `/tournaments/${tournamentId}/votes`, { body: payload }),
+    list: (tournamentId) => request('GET', `/tournaments/${enc(tournamentId)}/votes`, { auth: false }),
+    get: (tournamentId, id) => request('GET', `/tournaments/${enc(tournamentId)}/votes/${enc(id)}`, { auth: false }),
+    create: (tournamentId, payload) => request('POST', `/tournaments/${enc(tournamentId)}/votes`, { body: payload }),
     update: (tournamentId, id, payload) =>
-      request('PATCH', `/tournaments/${tournamentId}/votes/${id}`, { body: payload }),
-    remove: (tournamentId, id) => request('DELETE', `/tournaments/${tournamentId}/votes/${id}`),
+      request('PATCH', `/tournaments/${enc(tournamentId)}/votes/${enc(id)}`, { body: payload }),
+    remove: (tournamentId, id) => request('DELETE', `/tournaments/${enc(tournamentId)}/votes/${enc(id)}`),
   },
 
   nominees: {
     list: (tournamentId, voteId) =>
-      request('GET', `/tournaments/${tournamentId}/votes/${voteId}/nominees`, { auth: false }),
+      request('GET', `/tournaments/${enc(tournamentId)}/votes/${enc(voteId)}/nominees`, { auth: false }),
     add: (tournamentId, voteId, nomineeId) =>
-      request('POST', `/tournaments/${tournamentId}/votes/${voteId}/nominees`, { body: { nomineeId } }),
+      request('POST', `/tournaments/${enc(tournamentId)}/votes/${enc(voteId)}/nominees`, { body: { nomineeId } }),
     castVote: (tournamentId, voteId, nomineeId, userId) =>
-      request('POST', `/tournaments/${tournamentId}/votes/${voteId}/nominees/${nomineeId}`, { body: { userId } }),
+      request('POST', `/tournaments/${enc(tournamentId)}/votes/${enc(voteId)}/nominees/${enc(nomineeId)}`, { body: { userId } }),
     remove: (tournamentId, voteId, nomineeId) =>
-      request('DELETE', `/tournaments/${tournamentId}/votes/${voteId}/nominees/${nomineeId}`),
+      request('DELETE', `/tournaments/${enc(tournamentId)}/votes/${enc(voteId)}/nominees/${enc(nomineeId)}`),
   },
 };
 

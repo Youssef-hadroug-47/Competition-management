@@ -7,5 +7,8 @@
     "build:config": "node scripts/generate-config.js",
     "start": "npm run build:config && npx --yes serve public -l ${APP_PORT:-5173}",
     "dev": "npm run start"
+  },
+  "dependencies": {
+    "qs": "^6.16.0"
   }
 }

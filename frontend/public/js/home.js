@@ -1,7 +1,6 @@
 (function () {
-
-  let favoriteTournaments = [];
   const { el, clear, showBanner, friendlyErrorMessage } = UI;
+  let favoriteTournaments = [];
 
   const topbarActions = document.getElementById('topbar-actions');
   const banner = document.getElementById('banner');
@@ -17,67 +16,12 @@
 
   let cancelExpiryTimer = () => {};
 
-  function initials(name) {
-    if (!name) return '?';
-    return name
-      .trim()
-      .split(/\s+/)
-      .slice(0, 2)
-      .map((part) => part[0]?.toUpperCase())
-      .join('');
-  }
-
   // ---------------------------------------------------------------
   // Header: login/register buttons (left wireframe) vs profile menu
-  // (right wireframe)
+  // (right wireframe) — shared with tournament via header.js
   // ---------------------------------------------------------------
   function renderHeader() {
-    clear(topbarActions);
-    const user = Session.getUser();
-
-    if (!user) {
-      topbarActions.appendChild(
-        el('div', { class: 'topbar__actions' }, [
-          el('a', { class: 'btn btn--ghost', href: '/login.html', text: 'Log in' }),
-          el('a', { class: 'btn btn--primary', href: '/register.html', text: 'Register' }),
-        ])
-      );
-      return;
-    }
-
-    const menu = el('div', { class: 'profile__menu', role: 'menu', hidden: true }, [
-      el('div', { class: 'profile__menu-name', text: user.name || 'Account' }),
-      el('div', { class: 'profile__menu-email', text: user.email || '' }),
-      el('button', { type: 'button', text: 'Log out', onclick: handleLogout }),
-    ]);
-
-    const button = el('button', {
-      class: 'profile__button',
-      type: 'button',
-      'aria-haspopup': 'true',
-      'aria-expanded': 'false',
-      text: initials(user.name || user.email),
-      onclick: () => {
-        const isHidden = menu.hidden;
-        menu.hidden = !isHidden;
-        button.setAttribute('aria-expanded', String(isHidden));
-      },
-    });
-
-    document.addEventListener('click', (e) => {
-      if (!menu.hidden && !menu.contains(e.target) && e.target !== button) {
-        menu.hidden = true;
-        button.setAttribute('aria-expanded', 'false');
-      }
-    });
-
-    topbarActions.appendChild(el('div', { class: 'profile' }, [button, menu]));
-  }
-
-  function handleLogout() {
-    Session.end();
-    cancelExpiryTimer();
-    location.href = '/index.html';
+    Header.render(topbarActions);
   }
 
   // ---------------------------------------------------------------
@@ -89,7 +33,7 @@
       createBody.appendChild(
         el('div', {}, [
           el('p', { text: 'Sign in to set up your own tournament — brackets, groups, matches and all.' }),
-          el('a', { class: 'btn btn--primary', href: '/login.html', text: 'Log in to create one' }),
+          el('a', { class: 'btn btn--primary', href: '/login', text: 'Log in to create one' }),
         ])
       );
       return;
@@ -161,29 +105,29 @@
   // ---------------------------------------------------------------
   // "des tournois publiques"
   // ---------------------------------------------------------------
+  // Every place a tournament is shown links to its detail page — this is
+  // the one function that builds that link, so the URL shape only lives
+  // in one place. `id` comes back from our own API responses, but we
+  // still encode it before it ever touches a URL, on general principle.
+  function tournamentHref(id) {
+    return `/tournament?id=${encodeURIComponent(id)}`;
+  }
+
   function tournamentRow(t) {
     const isPrivate = t.visibility === 'private' || t.restricted;
     const right = [el('span', { class: `badge ${isPrivate ? 'badge--private' : ''}`, text: isPrivate ? 'Private' : 'Public' })];
 
     if (Session.isAuthenticated()) {
-      const isFollowed = favoriteTournaments.map(tour => tour.id).includes(t.id);
-      const followBtn = el(
-        'button',
-        {
-          class: 'btn btn--ghost',
-          id: t.id,
-          type: 'button',
-          text: isFollowed ? 'Following' : 'Follow',
-        }
-      );
+      const isFollowed = favoriteTournaments.map( tour => tour.id).includes(t.id);
+      const followBtn = el('button', { id: t.id, class: 'btn btn--ghost', type: 'button', text: isFollowed ? 'Following' : 'Follow'});
       followBtn.disabled = isFollowed;
 
       followBtn.addEventListener('click', async () => {
         followBtn.disabled = true;
-        followBtn.textContent = 'Following';
+        followBtn.textContent = 'Following…';
         try {
           await Api.follows.follow(t.id);
-          followBtn.textContent = 'Following…';
+          followBtn.textContent = 'Following';
           await loadFavorites();
         } catch (err) {
           showBanner(banner, friendlyErrorMessage(err));
@@ -195,7 +139,7 @@
     }
 
     return el('li', { class: 'tournament-row' }, [
-      el('div', {}, [
+      el('a', { class: 'tournament-row__link', href: tournamentHref(t.id) }, [
         el('div', { class: 'tournament-row__name', text: t.name }),
         el('div', { class: 'tournament-row__meta', text: [t.place, t.status].filter(Boolean).join(' · ') }),
       ]),
@@ -208,9 +152,6 @@
     publicBody.appendChild(el('p', { class: 'empty-state', text: 'Loading…' }));
     try {
       const data = await Api.tournaments.list();
-      if (Session.isAuthenticated()) {
-        favoriteTournaments = await Api.follows.listFollowed();
-      }
       const items = (data?.tournaments || []).filter((t) => !t.restricted);
       clear(publicBody);
       if (!items.length) {
@@ -240,11 +181,13 @@
     unfollowBtn.addEventListener('click', async () => {
       unfollowBtn.disabled = true;
       unfollowBtn.textContent = 'Unfollowing…';
-      const button = document.querySelector(`#public-body [id="${t.id}"]`);
-      if (button) {
-        button.textContent = 'Follow';
-        button.disabled = false;
+
+      const tourBtn = document.querySelector(`#public-body [id="${t.id}"]`);
+      if (tourBtn) {
+        tourBtn.textContent = 'Follow';
+        tourBtn.disabled = false;
       }
+
       try {
         await Api.follows.unfollow(t.id);
         await loadFavorites();
@@ -256,8 +199,10 @@
     });
 
     return el('div', { class: 'favorite-card' }, [
-      el('div', { class: 'tournament-row__name', text: t.name }),
-      el('div', { class: 'tournament-row__meta', text: [t.place, t.status].filter(Boolean).join(' · ') }),
+      el('a', { class: 'tournament-row__link', href: tournamentHref(t.id) }, [
+        el('div', { class: 'tournament-row__name', text: t.name }),
+        el('div', { class: 'tournament-row__meta', text: [t.place, t.status].filter(Boolean).join(' · ') }),
+      ]),
       unfollowBtn,
     ]);
   }

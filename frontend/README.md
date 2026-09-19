@@ -25,18 +25,57 @@ the static server is still running — refresh the browser afterwards.
 | File | Maps to |
 |---|---|
 | `public/index.html` | Home — left wireframe (logged out: logo, login/register buttons, "création des tournois" CTA, public tournaments) or right wireframe (logged in: logo, profile circle with a menu, "les tournois favoris", "création des tournois", public tournaments) depending on session state |
+| `public/tournament.html` | One tournament — info, matches, standings/bracket (stage-scoped toggle), top scorers/assisters. Reachable from every tournament row/card on the site. |
 | `public/login.html` | Sign in |
 | `public/register.html` | Create account |
+
+## Tournament detail page (`tournament.html?id=<tournamentId>`)
+
+Linked from every tournament reference on the site — public list rows and
+favorite cards both wrap the tournament name in a link built by
+`tournamentHref()` in `home.js`, so there's exactly one place that owns
+the URL shape.
+
+- **Info**: name, visibility, place, status, team count, created date,
+  plus a Follow/Unfollow toggle when signed in.
+- **Matches**: a flat, sorted list — every match in the tournament,
+  independent of the stage toggle below.
+- **Standings / bracket**: one tab per stage; only the selected stage's
+  content is ever rendered. A `league` stage shows a standings table per
+  group (computed client-side from `participant_teams`' running stats —
+  there's no dedicated standings endpoint). A `knockout` stage shows a
+  round-by-round bracket built from `rounds` + the matches whose
+  `groupId` points at that round. See the comment above
+  `standingsSort()` in `tournament.js` for the (deliberately simplified —
+  no head-to-head) tiebreak order.
+- **Top scorers / assisters**: there's no aggregate endpoint for this
+  either, so the page fetches every participant team's roster in
+  parallel (`Promise.allSettled`, so one team's failure doesn't blank the
+  whole list) and ranks client-side. Fine for normal tournament sizes;
+  would want a real backend aggregate if rosters get very large.
+
+**Security specifics for this page** (in addition to the app-wide notes
+below): the `?id=` value is checked against a strict allow-list pattern
+before any request is made, and — like every other id anywhere in this
+app — is passed through `enc()` in `api.js`, which `encodeURIComponent`s
+it so it can only ever fill one path segment. Private-tournament access
+is enforced entirely server-side; this page just relays whatever the API
+decides (200 renders it, 403 shows the server's own message, 404 says
+so) rather than guessing at visibility itself.
 
 ## Code layout
 
 - `public/js/config.js` — generated, browser-safe (`API_BASE_URL` only)
 - `public/js/session.js` — all JWT/session storage and expiry logic
 - `public/js/api.js` — the only file that calls `fetch`; one function per
-  backend endpoint in `API_REFERENCE.md`, grouped by resource
+  backend endpoint in `API_REFERENCE.md`, grouped by resource. Every ID
+  interpolated into a URL goes through `enc()` (`encodeURIComponent`).
 - `public/js/ui.js` — safe DOM helpers (`textContent`, never `innerHTML`,
   for anything that touches API or user data)
-- `public/js/home.js`, `login.js`, `register.js` — one controller per page
+- `public/js/header.js` — the shared topbar/profile-menu, used by every
+  page so the auth-state UI only exists in one place
+- `public/js/home.js`, `login.js`, `register.js`, `tournament.js` — one
+  controller per page
 
 ## Security decisions, and their limits
 

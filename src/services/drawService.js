@@ -342,9 +342,9 @@ function sortTeamsWithTiebreakers(teams, sortedTiebreakers, idx, groupId) {
 // any manual adjustment — deductions, forfeits, bonus points — is
 // respected; only goal_difference is derived, and only cards/head-to-head
 // pull from other tables.
-function rankGroupTeams(group, tiebreakers) {
+function rankGroupTeams(groupId, tiebreakers) {
   const sortedTbs = [...tiebreakers].sort((a, b) => a.priority - b.priority);
-  const teams = db.prepare('SELECT * FROM participant_teams WHERE group_id = ?').all(group.id);
+  const teams = db.prepare('SELECT * FROM participant_teams WHERE group_id = ?').all(groupId);
   if (!teams.length) return teams;
 
   const cardRows = getCardsForTeams(teams);
@@ -359,7 +359,7 @@ function rankGroupTeams(group, tiebreakers) {
     team.goal_difference = (team.goals_for || 0) - (team.goals_against || 0);
   }
 
-  return sortTeamsWithTiebreakers(teams, sortedTbs, 0, group.id);
+  return sortTeamsWithTiebreakers(teams, sortedTbs, 0, groupId);
 }
 
 // Computes and persists promotions out of a finished league stage.
@@ -398,7 +398,7 @@ function finalizeLeagueStage(stage) {
   const rankingCandidates = []; // { team, targetStageId }
 
   for (const grp of groups) {
-    const ranked = rankGroupTeams(grp, tiebreakers);
+    const ranked = rankGroupTeams(grp.id, tiebreakers);
     const rules = parseJson(grp.promotion_rules, []);
     for (const rule of rules) {
       if (!rule || !rule.stage) continue;
@@ -796,4 +796,5 @@ module.exports = {
   finalizeStageIfComplete,
   getIncomingParticipants,
   isStageComplete,
+  rankGroupTeams,
 };

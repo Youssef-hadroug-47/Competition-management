@@ -6,6 +6,7 @@ const map = require('../services/mappers');
 const access = require('../services/access');
 const { getRoles, getRole, addRole, deleteRole } = require('../services/tournamentRolesService');
 const { updateRole } = require('./authController');
+const { rankGroupTeams } = require('../services/drawService');
 
 function insertStageWithGroups(tournamentId, stageInput, index) {
   if (!['league', 'knockout'].includes(stageInput.type)) {
@@ -129,6 +130,29 @@ const list = asyncHandler((req, res) => {
     };
   });
   res.json({ tournaments: items });
+});
+
+const getStanding = asyncHandler((req, res) => {
+  const stageId = req.params.id;
+  const groups = db.prepare('SELECT id FROM groups WHERE stage_id = ?').all(stageId);
+  const settings = parseJson(db.prepare('SELECT settings FROM stages WHERE id = ?').get(stageId).settings)
+  const tiebreakers = settings.tiebreakers;
+
+  console.log(settings);
+  if (!tiebreakers|| groups.length === 0)
+    throw httpError(404, 'stage is not found');
+  
+  const rankedGroups = {
+    "stageId": stageId,
+    "groups" : [],
+  }
+  for (const group of groups ) {
+    const id = group.id;
+    rankedGroups.groups.push({groupId: id, order: rankGroupTeams(id, tiebreakers).map(t => t.id)});
+  }
+
+  res.json(rankedGroups);
+
 });
 
 const getStage = asyncHandler((req, res) => {
@@ -379,4 +403,5 @@ module.exports = {
   removeGroup,
   removeRound,
   loadFormat,
+  getStanding,
 };

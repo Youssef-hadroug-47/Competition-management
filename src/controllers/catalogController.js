@@ -4,6 +4,7 @@ const { asyncHandler } = require('../utils/asyncHandler');
 const { httpError } = require('../middleware/error');
 const map = require('../services/mappers');
 const access = require('../services/access');
+const { rankGroupTeams } = require('../services/drawService');
 
 const listTeams = asyncHandler((req, res) => {
   const rows = db.prepare('SELECT * FROM teams ORDER BY name').all();
@@ -145,10 +146,15 @@ const addParticipantTeam = asyncHandler((req, res) => {
 const listParticipantTeams = asyncHandler((req, res) => {
   const tournament = access.getTournamentOrThrow(req.params.tournamentId);
   access.requireTournamentInspect(tournament, req.user);
-  const rows = db
+  
+  const rows =
+    db
     .prepare(`${participantJoinSql} WHERE pt.tournament_id = ? ORDER BY pt.seed, t.name`)
     .all(tournament.id);
+
   res.json({ participantTeams: rows.map(map.participantTeam) });
+  
+
 });
 
 const updateParticipantTeam = asyncHandler((req, res) => {
