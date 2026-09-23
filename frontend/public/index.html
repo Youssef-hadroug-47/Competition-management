@@ -20,6 +20,12 @@
 <div class="page">
   <header class="topbar">
     <a class="logo" href="/index"><span class="logo__mark" aria-hidden="true"></span>Tournly</a>
+    <form class="tournament-search" id="tournament-search-form" role="search">
+      <label class="sr-only" for="tournament-search-input">Search tournament by exact name</label>
+      <input id="tournament-search-input" name="name" type="search" maxlength="120"
+        placeholder="Search exact tournament name" autocomplete="off" required />
+      <button class="btn btn--primary" type="submit">Search</button>
+    </form>
     <div class="topbar__actions" id="topbar-actions">
       <!-- filled by home.js: either login/register buttons, or the profile menu -->
     </div>
@@ -36,6 +42,13 @@
       <div id="favorites-body"><p class="empty-state">Loading…</p></div>
     </section>
 
+    <section class="panel" id="my-tournaments-panel" hidden>
+      <div class="panel__head">
+        <h2>My tournaments</h2>
+      </div>
+      <div id="my-tournaments-body"><p class="empty-state">Loading…</p></div>
+    </section>
+
     <!-- "création des tournois" -->
     <section class="panel panel--accent" id="create-panel">
       <div class="panel__head">
@@ -49,44 +62,12 @@
       <div class="panel__head">
         <h2>Public tournaments</h2>
       </div>
+      <div id="tournament-search-result" aria-live="polite"></div>
       <div id="public-body"><p class="empty-state">Loading…</p></div>
     </section>
   </main>
 
   <footer class="page__footer">Tournly — a small tournament organizer.</footer>
-</div>
-
-<!-- Create-tournament modal -->
-<div class="modal-backdrop" id="create-modal" hidden>
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="create-modal-title">
-    <h3 id="create-modal-title">New tournament</h3>
-    <div id="create-modal-banner" class="banner" hidden role="alert"></div>
-    <form id="create-form" novalidate>
-      <div class="field">
-        <label for="ct-name">Name</label>
-        <input id="ct-name" name="name" type="text" required maxlength="120" autocomplete="off" />
-      </div>
-      <div class="field">
-        <label for="ct-place">Place</label>
-        <input id="ct-place" name="place" type="text" maxlength="120" autocomplete="off" />
-      </div>
-      <div class="field">
-        <label for="ct-teams">Number of teams</label>
-        <input id="ct-teams" name="numberOfTeams" type="number" min="2" max="256" />
-      </div>
-      <div class="field">
-        <label for="ct-visibility">Visibility</label>
-        <select id="ct-visibility" name="visibility">
-          <option value="public" selected>Public</option>
-          <option value="private">Private</option>
-        </select>
-      </div>
-      <div class="modal__actions">
-        <button type="button" class="btn btn--ghost" id="create-modal-cancel">Cancel</button>
-        <button type="submit" class="btn btn--primary" id="create-modal-submit">Create tournament</button>
-      </div>
-    </form>
-  </div>
 </div>
 
 <script src="/js/config.js"></script>

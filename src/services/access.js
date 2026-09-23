@@ -1,5 +1,6 @@
 const { db } = require('../db');
 const { httpError } = require('../middleware/error');
+const { getRole } = require('./tournamentRolesService');
 
 function getFollow(tournamentId, userId) {
   if (!userId) return null;
@@ -14,6 +15,7 @@ function canInspectTournament(tournament, user) {
   if (!user) return false;
   if (user.role === 'admin') return true;
   if (user.id === tournament.created_by) return true;
+  if (getRole(tournament.id, user.id) === 'moderator') return true;
   const follow = getFollow(tournament.id, user.id);
   return Boolean(follow && follow.status === 'accepted');
 }

@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Create tournament — Tournly</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src https://fonts.gstatic.com; script-src 'self'; connect-src 'self' http://localhost:* https:; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'" />
+<link rel="preconnect" href="https://fonts.googleapis.com" /><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Work+Sans:wght@400;500;600&display=swap" rel="stylesheet" /><link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body><div class="page"><header class="topbar"><a class="logo" href="/index.html"><span class="logo__mark" aria-hidden="true"></span>Tournly</a><div class="topbar__actions" id="topbar-actions"></div></header>
+<main><a class="back-link" href="/index.html">&larr; All tournaments</a><div id="banner" class="banner" hidden role="alert"></div>
+<section class="panel create-wizard"><div class="wizard__head"><div><p class="eyebrow">Tournament setup</p><h1>Create a tournament</h1><p>Set up the competition structure now. Teams and players can be added afterwards.</p></div><div class="wizard-steps" id="wizard-steps" aria-label="Creation phases"></div></div>
+<form id="create-wizard-form" novalidate><section id="phase-general" class="wizard-phase"></section><section id="phase-format" class="wizard-phase" hidden></section>
+<div class="wizard__actions"><a class="btn btn--ghost" href="/index.html">Cancel</a><button type="button" class="btn btn--ghost" id="wizard-back" hidden>Back</button><button type="submit" class="btn btn--primary" id="wizard-next">Build format</button></div></form></section></main>
+<footer class="page__footer">Tournly — a small tournament organizer.</footer></div>
+<script src="/js/config.js"></script><script src="/js/session.js"></script><script src="/js/ui.js"></script><script src="/js/api.js"></script><script src="/js/header.js"></script><script src="/js/create-tournament.js"></script>
+</body></html>

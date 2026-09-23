@@ -14,14 +14,17 @@ function requireTournamentRole(...roles) {
     if (!tournamentId)
       return next(httpError(400, 'Bad Request'));
 
-    let role = req.user.tournamentRoles[tournamentId] || null;
+    const tournamentRoles = req.user.tournamentRoles || {};
+    let role = tournamentRoles[tournamentId] || null;
 
     if (!role)
       role = getRole(tournamentId, req.user.id);
     
     if (!roles.includes(role))
       return next(httpError(403, 'forbidden access'));
-    req.user.tournamentRoles[tournamentId] = role; 
+    req.user.tournamentRoles = tournamentRoles;
+    req.user.tournamentRoles[tournamentId] = role;
+    return next();
   }
 
 }
@@ -35,8 +38,9 @@ function requireOwner(req, _, next) {
   if (!tournamentId)
     return next(httpError(400, 'Bad Request'));
 
-  const creator = db.prepare('SELECT created_by FROM tournaments t WHERE id = ?').get(tournamentId);
-  return (creator != req.user.id) ? next(httpError(403, 'Forbidden Access')) : next();
+  const creator = db.prepare('SELECT created_by FROM tournaments WHERE id = ?').get(tournamentId);
+  if (!creator) return next(httpError(404, 'Tournament not found'));
+  return creator.created_by !== req.user.id ? next(httpError(403, 'Forbidden Access')) : next();
 }
 
 function authOptional(req, _, next) {

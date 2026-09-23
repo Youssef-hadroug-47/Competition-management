@@ -4,8 +4,7 @@ const { asyncHandler } = require('../utils/asyncHandler');
 const { httpError } = require('../middleware/error');
 const map = require('../services/mappers');
 const access = require('../services/access');
-const { getRoles, getRole, addRole, deleteRole } = require('../services/tournamentRolesService');
-const { updateRole } = require('./authController');
+const { getRoles, getRole, addRole, updateRole, deleteRole } = require('../services/tournamentRolesService');
 const { rankGroupTeams } = require('../services/drawService');
 
 function insertStageWithGroups(tournamentId, stageInput, index) {
@@ -40,13 +39,14 @@ function insertStageWithGroups(tournamentId, stageInput, index) {
       );
     } else {
       db.prepare(
-        'INSERT INTO groups (id, stage_id, name, sequence_order, number_teams, promotion_rules) VALUES (?, ?, ?, ?, ?, ?)'
+        'INSERT INTO groups (id, stage_id, name, sequence_order, number_teams, advancing_teams, promotion_rules) VALUES (?, ?, ?, ?, ?, ?, ?)'
       ).run(
         id(),
         stageId,
         g.name,
         sequenceOrder,
         g.number_teams ?? g.numberOfTeams,
+        g.advancing_teams ?? g.advancingTeams ?? 0,
         g.promotion_rules ?? '[]'
       );
     }
@@ -114,22 +114,50 @@ const create = asyncHandler((req, res) => {
 });
 
 const list = asyncHandler((req, res) => {
-  const rows = db.prepare('SELECT * FROM tournaments ORDER BY created_at DESC').all();
-  const items = rows.map((row) => {
-    const visible = access.canInspectTournament(row, req.user);
-    const base = map.tournament(row);
-    if (visible) return base;
-    return {
-      id: base.id,
-      name: base.name,
-      slug: base.slug,
-      visibility: 'private',
-      status: base.status,
-      place: base.place,
-      restricted: true,
-    };
-  });
+  const rows = db.prepare(
+    `SELECT * FROM tournaments
+     WHERE visibility = 'public'
+     ORDER BY created_at DESC`
+  ).all();
+  const items = rows.map(map.tournament);
   res.json({ tournaments: items });
+});
+
+const listMine = asyncHandler((req, res) => {
+  if (!req.user) throw httpError(401, 'Authentication required');
+  const rows = db.prepare(
+    `SELECT DISTINCT t.*
+     FROM tournaments t
+     LEFT JOIN tournament_role tr
+       ON tr.tournament_id = t.id AND tr.user_id = ?
+     WHERE t.created_by = ? OR tr.role = 'moderator'
+     ORDER BY t.created_at DESC`
+  ).all(req.user.id, req.user.id);
+  res.json({ tournaments: rows.map(map.tournament) });
+});
+
+const searchByName = asyncHandler((req, res) => {
+  const name = typeof req.query.name === 'string' ? req.query.name.trim() : '';
+  if (!name) throw httpError(400, 'Tournament name is required');
+
+  const row = db.prepare(
+    `SELECT * FROM tournaments
+     WHERE name = ? COLLATE BINARY
+     LIMIT 1`
+  ).get(name);
+  if (!row) throw httpError(404, 'Tournament not found');
+  res.json({
+    tournament: map.tournament(row),
+    locked: !access.canInspectTournament(row, req.user),
+  });
+});
+
+const findStaffUser = asyncHandler((req, res) => {
+  const email = typeof req.query.email === 'string' ? req.query.email.trim().toLowerCase() : '';
+  if (!email) throw httpError(400, 'User email is required');
+  const user = db.prepare('SELECT id, name FROM users WHERE email = ?').get(email);
+  if (!user) throw httpError(404, 'No user found with that email');
+  res.json({ user });
 });
 
 const getStanding = asyncHandler((req, res) => {
@@ -146,6 +174,7 @@ const getStanding = asyncHandler((req, res) => {
     "stageId": stageId,
     "groups" : [],
   }
+
   for (const group of groups ) {
     const id = group.id;
     rankedGroups.groups.push({groupId: id, order: rankGroupTeams(id, tiebreakers).map(t => t.id)});
@@ -163,9 +192,13 @@ const getStage = asyncHandler((req, res) => {
 const getOne = asyncHandler((req, res) => {
   const row = access.getTournamentOrThrow(req.params.tournamentId);
   access.requireTournamentInspect(row, req.user);
+  const viewerRole = req.user?.role === 'admin' || req.user?.id === row.created_by
+    ? 'moderator'
+    : getRole(row.id, req.user?.id);
   res.json({
     tournament: map.tournament(row),
     stages: loadFormat(row.id),
+    viewerRole,
   });
 });
 
@@ -235,12 +268,13 @@ const addGroup = asyncHandler((req, res) => {
     throw httpError(400, 'number of teams is required');
 
   const groupId = id();
-  db.prepare(`INSERT INTO groups (id, stage_id, name, sequence_order, number_teams, promotion_rules) VALUES (?, ?, ?, ?, ?, ?)`).run(
+  db.prepare(`INSERT INTO groups (id, stage_id, name, sequence_order, number_teams, advancing_teams, promotion_rules) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
     groupId,
     stage.id,
     req.body.name,
     req.body.sequenceOrder ?? 1,
     req.body.number_teams,
+    req.body.advancing_teams ?? 0,
     req.body.promotion_rules ?? JSON.stringify([{from: 1, to: req.body.number_teams, stage: null}])
   );
 
@@ -305,6 +339,16 @@ const removeRound = asyncHandler((req, res) => {
   res.status(204).end();
 })
 
+const getUserRole = asyncHandler((req, res) => {
+  const tournamentId = req.params.tournamentId || null;
+
+  if (!tournamentId)
+    throw httpError(400, 'tournaments id is required');
+
+  const role = getRole(tournamentId, req.user.id);
+  res.json({role});
+});
+
 const getAllTournamentRole = asyncHandler((req, res) => {
   const tournamentId = req.params.tournamentId || null;
 
@@ -312,10 +356,7 @@ const getAllTournamentRole = asyncHandler((req, res) => {
     throw httpError(400, 'tournaments id is required');
 
   const roles = getRoles(tournamentId);
-  if (!roles || roles.length === 0 )
-    throw httpError(404, 'Requested tournament does not exist or tournament roles are not set');
-  
-  res.json(roles);
+  res.json(roles || []);
 
 });
 
@@ -339,6 +380,12 @@ const addTournamentRole = asyncHandler((req, res) => {
   if (!userId || !tournamentId || !role )  
     throw httpError(400, 'userId, tournamentId and role are required');
 
+  const tournament = access.getTournamentOrThrow(tournamentId);
+  const targetUser = db.prepare('SELECT id FROM users WHERE id = ?').get(userId);
+  if (!targetUser) throw httpError(404, 'User not found');
+  if (userId === tournament.created_by && role !== 'moderator') {
+    throw httpError(400, 'The tournament creator must remain a moderator');
+  }
 
   if (!['referee', 'moderator'].includes(role))
     throw httpError(400, 'only referee and moderator roles are available');
@@ -359,6 +406,11 @@ const updateTournamentRole = asyncHandler((req, res) => {
   if (!userId || !tournamentId || !role) 
     throw httpError(400, 'userId, tournamentId and role are required');
 
+  const tournament = access.getTournamentOrThrow(tournamentId);
+  if (userId === tournament.created_by) {
+    throw httpError(400, 'The tournament creator must remain a moderator');
+  }
+
   if (!['referee', 'moderator'].includes(role))
     throw httpError(400, 'only referee and moderator roles are available');
 
@@ -375,6 +427,11 @@ const deleteTournamentRole = asyncHandler((req, res) => {
   if (!userId || !tournamentId) 
     throw httpError(400, 'userId and tournamentId are required');
 
+  const tournament = access.getTournamentOrThrow(tournamentId);
+  if (userId === tournament.created_by) {
+    throw httpError(400, 'The tournament creator must remain a moderator');
+  }
+
   if (!deleteRole(tournamentId, userId))
     throw httpError(404, 'tournament or user does not exist');
 
@@ -389,6 +446,9 @@ module.exports = {
   deleteTournamentRole,
   create,
   list,
+  listMine,
+  searchByName,
+  findStaffUser,
   getOne,
   update,
   remove,
@@ -404,4 +464,5 @@ module.exports = {
   removeRound,
   loadFormat,
   getStanding,
+  getUserRole,
 };

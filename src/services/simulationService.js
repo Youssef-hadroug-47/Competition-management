@@ -63,6 +63,59 @@ function getParticipant(participantTeamId) {
   return db.prepare('SELECT * FROM participant_teams WHERE id = ?').get(participantTeamId);
 }
 
+function rosterForTeam(teamId) {
+  return db.prepare(
+    `SELECT pp.id, pp.player_id
+     FROM participant_players pp
+     WHERE pp.participant_team_id = ?
+       AND pp.status NOT IN ('ineligible', 'suspended')`
+  ).all(teamId);
+}
+
+function randomRosterPlayer(roster, excludedId = null) {
+  if (!roster.length) return null;
+  const candidates = roster.filter((player) => player.id !== excludedId);
+  const source = candidates.length ? candidates : roster;
+  return source[Math.floor(Math.random() * source.length)];
+}
+
+function applySimulatedEvents(home, away, homeGoals, awayGoals) {
+  const homeRoster = rosterForTeam(home?.id);
+  const awayRoster = rosterForTeam(away?.id);
+  const update = db.prepare(
+    `UPDATE participant_players
+     SET goals = goals + ?, assists = assists + ?, yellow_cards = yellow_cards + ?, red_cards = red_cards + ?
+     WHERE id = ?`
+  );
+
+  const assignGoals = (roster, count) => {
+    for (let i = 0; i < count; i += 1) {
+      // Own goals affect the score but deliberately have no player event.
+      if (Math.random() < 0.1 || !roster.length) continue;
+      const scorer = randomRosterPlayer(roster);
+      const assister = Math.random() < 0.75 ? randomRosterPlayer(roster, scorer.id) : null;
+      update.run(1, 0, 0, 0, scorer.id);
+      if (assister) update.run(0, 1, 0, 0, assister.id);
+    }
+  };
+
+  const assignCards = (roster) => {
+    if (!roster.length) return;
+    const yellowCount = 1 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < yellowCount; i += 1) {
+      update.run(0, 0, 1, 0, randomRosterPlayer(roster).id);
+    }
+    if (Math.random() < 0.08) {
+      update.run(0, 0, 0, 1, randomRosterPlayer(roster).id);
+    }
+  };
+
+  assignGoals(homeRoster, homeGoals);
+  assignGoals(awayRoster, awayGoals);
+  assignCards(homeRoster);
+  assignCards(awayRoster);
+}
+
 // Simulates one match: generates a random-weighted score, finishes it the
 // same way a referee would, and — for knockout ties still level after
 // normal time — keeps resolving with extra time and then penalties
@@ -115,7 +168,50 @@ function simulateMatch(matchId, { actorId } = {}) {
     match = db.prepare('SELECT * FROM matches WHERE id = ?').get(match.id);
   }
 
+  applySimulatedEvents(
+    home,
+    away,
+    homeScore + (et?.homeScore || 0),
+    awayScore + (et?.awayScore || 0)
+  );
+  match = db.prepare('SELECT * FROM matches WHERE id = ?').get(match.id);
   return { match: map.match(match), advance };
+}
+
+function simulateMatchCollection(matchRows, { actorId, maxRounds = 40 } = {}) {
+  let matchesSimulated = 0;
+  let lastAdvance = null;
+  for (let round = 0; round < maxRounds; round += 1) {
+    const pending = matchRows()
+      .filter((match) => match.status !== 'finished');
+    if (!pending.length) break;
+    pending.forEach((match) => {
+      const result = simulateMatch(match.id, { actorId });
+      if (!result.skipped) matchesSimulated += 1;
+      if (result.advance) lastAdvance = result.advance;
+    });
+  }
+  return { matchesSimulated, advance: lastAdvance };
+}
+
+function simulateGroup(groupId, { actorId } = {}) {
+  const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId);
+  if (!group) throw httpError(404, 'Group not found');
+  const result = simulateMatchCollection(
+    () => db.prepare('SELECT * FROM matches WHERE group_id = ? ORDER BY matchday ASC, created_at ASC').all(group.id),
+    { actorId }
+  );
+  return { groupId: group.id, ...result };
+}
+
+function simulateRound(roundId, { actorId } = {}) {
+  const round = db.prepare('SELECT * FROM rounds WHERE id = ?').get(roundId);
+  if (!round) throw httpError(404, 'Round not found');
+  const result = simulateMatchCollection(
+    () => db.prepare('SELECT * FROM matches WHERE group_id = ? ORDER BY matchday ASC, created_at ASC').all(round.id),
+    { actorId }
+  );
+  return { roundId: round.id, ...result };
 }
 
 // Simulates every remaining match in a stage. Draws the stage first if it
@@ -134,27 +230,19 @@ function simulateStage(stageId, { actorId, maxRounds = 40 } = {}) {
     drawResult = runDraw({ tournamentId: stage.tournament_id, stageId: stage.id });
   }
 
-  let matchesSimulated = 0;
-  let lastAdvance = null;
-  for (let round = 0; round < maxRounds; round += 1) {
-    const pending = db
-      .prepare(`SELECT * FROM matches WHERE stage_id = ? AND status != 'finished' ORDER BY matchday ASC, created_at ASC`)
-      .all(stage.id);
-    if (!pending.length) break;
-    for (const m of pending) {
-      const result = simulateMatch(m.id, { actorId });
-      if (!result.skipped) matchesSimulated += 1;
-      if (result.advance) lastAdvance = result.advance;
-    }
-  }
+  const result = simulateMatchCollection(
+    () => db.prepare(`SELECT * FROM matches WHERE stage_id = ? AND status != 'finished'
+      ORDER BY matchday ASC, created_at ASC`).all(stage.id),
+    { actorId, maxRounds }
+  );
 
   return {
     stageId: stage.id,
     stageType: stage.type,
     sequenceOrder: stage.sequence_order,
     drew: Boolean(drawResult),
-    matchesSimulated,
-    advance: lastAdvance,
+    matchesSimulated: result.matchesSimulated,
+    advance: result.advance,
   };
 }
 
@@ -185,6 +273,8 @@ function simulateTournament(tournamentId, { actorId, maxStages = 20 } = {}) {
 
 module.exports = {
   simulateMatch,
+  simulateGroup,
+  simulateRound,
   simulateStage,
   simulateTournament,
   randomScoreline,

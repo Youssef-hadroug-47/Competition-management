@@ -49,4 +49,75 @@ function friendlyErrorMessage(err) {
   return 'We couldn\u2019t reach the server. Check your connection and try again.';
 }
 
-window.UI = { el, clear, showBanner, friendlyErrorMessage };
+function confirmAction(title, message, confirmLabel = 'Confirm') {
+  return new Promise((resolve) => {
+    const cancel = () => finish(false);
+    const confirm = () => finish(true);
+    const backdrop = el('div', { class: 'modal-backdrop app-confirm-backdrop' }, [
+      el('section', { class: 'modal app-confirm', role: 'alertdialog', 'aria-modal': 'true', 'aria-labelledby': 'app-confirm-title' }, [
+        el('h2', { id: 'app-confirm-title', text: title }),
+        el('p', { class: 'app-confirm__message', text: message }),
+        el('div', { class: 'modal__actions' }, [
+          el('button', { class: 'btn btn--ghost', type: 'button', text: 'Cancel', onclick: cancel }),
+          el('button', { class: 'btn btn--primary', type: 'button', text: confirmLabel, onclick: confirm }),
+        ]),
+      ]),
+    ]);
+
+    function finish(value) {
+      backdrop.remove();
+      document.removeEventListener('keydown', onKeyDown);
+      resolve(value);
+    }
+
+    function onKeyDown(event) {
+      if (event.key === 'Escape') cancel();
+    }
+
+    backdrop.addEventListener('click', (event) => {
+      if (event.target === backdrop) cancel();
+    });
+    document.addEventListener('keydown', onKeyDown);
+    document.body.appendChild(backdrop);
+    backdrop.querySelector('button.btn--primary').focus();
+  });
+}
+
+function pageState(scope) {
+  const key = `tournament_app.page-state.${scope}.${location.pathname}${location.search}`;
+  let saved = {};
+  try {
+    saved = JSON.parse(sessionStorage.getItem(key) || '{}') || {};
+  } catch {
+    saved = {};
+  }
+
+  function save(patch = {}) {
+    saved = { ...saved, ...patch, scrollY: window.scrollY };
+    sessionStorage.setItem(key, JSON.stringify(saved));
+  }
+
+  const persistScroll = () => save();
+  window.addEventListener('pagehide', persistScroll);
+
+  return {
+    get(name, fallback = null) {
+      return saved[name] ?? fallback;
+    },
+    save,
+    restoreScroll() {
+      const scrollY = Number(saved.scrollY);
+      if (!Number.isFinite(scrollY) || scrollY < 1) return;
+      const restore = (attempt = 0) => {
+        const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+        window.scrollTo({ top: Math.min(scrollY, maxScroll), behavior: 'auto' });
+        if (attempt < 8 && maxScroll < scrollY) {
+          requestAnimationFrame(() => restore(attempt + 1));
+        }
+      };
+      requestAnimationFrame(() => restore());
+    },
+  };
+}
+
+window.UI = { el, clear, showBanner, friendlyErrorMessage, confirmAction, pageState };

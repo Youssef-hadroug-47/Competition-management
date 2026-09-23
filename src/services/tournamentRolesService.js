@@ -1,4 +1,4 @@
-const db = require('../db');
+const { db } = require('../db');
 
 function getRoles(tournamentId) {
   return (tournamentId) ?
@@ -6,8 +6,10 @@ function getRoles(tournamentId) {
 }
 
 function getRole(tournamentId, userId) {
-  return  (tournamentId && userId) ? 
-    db.prepare('SELECT role FROM tournament_role WHERE tournament_id = ? AND user_id = ?').get(tournamentId, userId) : null ;
+  const row = (tournamentId && userId)
+    ? db.prepare('SELECT role FROM tournament_role WHERE tournament_id = ? AND user_id = ?').get(tournamentId, userId)
+    : null;
+  return row?.role || null;
 }
 
 function addRole(tournamentId, userId, role) {

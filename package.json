@@ -5,8 +5,10 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js",
-    "seed": "node scripts/seed.js"
+    "seed": "node scripts/seed.js",
+    "start:api": "npm start",
+    "start:ui": "cd frontend; npm start", 
+    "dev": "concurrently -k -p \"[{name}]\" -n \"API,UI\" -c \"cyan,magenta\" \"npm run start:api\" \"npm run start:ui\""
   },
   "engines": {
     "node": ">=22.5"
@@ -18,5 +20,8 @@
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0"
+  },
+  "devDependencies": {
+    "concurrency": "^0.1.4"
   }
 }

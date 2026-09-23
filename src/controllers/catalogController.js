@@ -4,7 +4,6 @@ const { asyncHandler } = require('../utils/asyncHandler');
 const { httpError } = require('../middleware/error');
 const map = require('../services/mappers');
 const access = require('../services/access');
-const { rankGroupTeams } = require('../services/drawService');
 
 const listTeams = asyncHandler((req, res) => {
   const rows = db.prepare('SELECT * FROM teams ORDER BY name').all();
@@ -134,6 +133,10 @@ const addParticipantTeam = asyncHandler((req, res) => {
   if (!teamId) throw httpError(400, 'teamId is required');
   const team = db.prepare('SELECT * FROM teams WHERE id = ?').get(teamId);
   if (!team) throw httpError(404, 'Team not found');
+  if (db.prepare('SELECT 1 FROM participant_teams WHERE tournament_id = ? AND team_id = ?')
+    .get(tournament.id, teamId)) {
+    throw httpError(409, 'Team is already registered in this tournament');
+  }
   const ptId = id();
   db.prepare(
     `INSERT INTO participant_teams (id, tournament_id, team_id, seed, nickname, status)
@@ -141,6 +144,43 @@ const addParticipantTeam = asyncHandler((req, res) => {
   ).run(ptId, tournament.id, teamId, seed ?? null, nickname || null);
   const row = db.prepare(`${participantJoinSql} WHERE pt.id = ?`).get(ptId);
   res.status(201).json({ participantTeam: map.participantTeam(row) });
+});
+
+const autoAddParticipantTeams = asyncHandler((req, res) => {
+  const tournament = access.getTournamentOrThrow(req.params.tournamentId);
+  const target = Number(req.body?.count ?? tournament.number_of_teams);
+  if (!Number.isInteger(target) || target < 0) throw httpError(400, 'count must be a non-negative integer');
+
+  const registered = db.prepare('SELECT team_id FROM participant_teams WHERE tournament_id = ?').all(tournament.id);
+  const registeredIds = new Set(registered.map((row) => row.team_id));
+  let teams = db.prepare('SELECT * FROM teams ORDER BY name').all();
+  let nextNumber = teams.length + 1;
+
+  while (teams.length < target) {
+    let slug = `auto-team-${nextNumber}`;
+    while (db.prepare('SELECT 1 FROM teams WHERE slug = ?').get(slug)) {
+      nextNumber += 1;
+      slug = `auto-team-${nextNumber}`;
+    }
+    const teamId = id();
+    db.prepare(
+      'INSERT INTO teams (id, name, slug, short_name) VALUES (?, ?, ?, ?)'
+    ).run(teamId, `Team ${nextNumber}`, slug, `T${nextNumber}`);
+    teams.push(db.prepare('SELECT * FROM teams WHERE id = ?').get(teamId));
+    nextNumber += 1;
+  }
+
+  const missing = Math.max(0, target - registered.length);
+  const available = teams.filter((team) => !registeredIds.has(team.id)).slice(0, missing);
+  const insert = db.prepare(
+    `INSERT INTO participant_teams (id, tournament_id, team_id, seed, status)
+     VALUES (?, ?, ?, ?, 'registered')`
+  );
+  available.forEach((team, index) => insert.run(id(), tournament.id, team.id, registered.length + index + 1));
+
+  const rows = db.prepare(`${participantJoinSql} WHERE pt.tournament_id = ? ORDER BY pt.seed, t.name`)
+    .all(tournament.id);
+  res.status(201).json({ participantTeams: rows.map(map.participantTeam) });
 });
 
 const listParticipantTeams = asyncHandler((req, res) => {
@@ -160,6 +200,7 @@ const listParticipantTeams = asyncHandler((req, res) => {
 const updateParticipantTeam = asyncHandler((req, res) => {
   const row = db.prepare('SELECT * FROM participant_teams WHERE id = ?').get(req.params.id);
   if (!row) throw httpError(404, 'Participant team not found');
+  if (row.tournament_id !== req.params.tournamentId) throw httpError(404, 'Participant team not found');
   const body = req.body || {};
   db.prepare(
     `UPDATE participant_teams SET seed = ?, nickname = ?, status = ?, group_id = ? WHERE id = ?`
@@ -175,6 +216,8 @@ const updateParticipantTeam = asyncHandler((req, res) => {
 });
 
 const removeParticipantTeam = asyncHandler((req, res) => {
+  const row = db.prepare('SELECT tournament_id FROM participant_teams WHERE id = ?').get(req.params.id);
+  if (!row || row.tournament_id !== req.params.tournamentId) throw httpError(404, 'Participant team not found');
   const info = db.prepare('DELETE FROM participant_teams WHERE id = ?').run(req.params.id);
   if (!info.changes) throw httpError(404, 'Participant team not found');
   res.status(204).end();
@@ -189,10 +232,19 @@ const playerJoinSql = `
 const addParticipantPlayer = asyncHandler((req, res) => {
   const pt = db.prepare('SELECT * FROM participant_teams WHERE id = ?').get(req.params.id);
   if (!pt) throw httpError(404, 'Participant team not found');
+  if (pt.tournament_id !== req.params.tournamentId) throw httpError(404, 'Participant team not found');
   const body = req.body || {};
   if (!body.playerId) throw httpError(400, 'playerId is required');
   const player = db.prepare('SELECT * FROM players WHERE id = ?').get(body.playerId);
   if (!player) throw httpError(404, 'Player not found');
+  if (db.prepare(
+    `SELECT 1
+     FROM participant_players pp
+     JOIN participant_teams pt ON pt.id = pp.participant_team_id
+     WHERE pt.tournament_id = ? AND pp.player_id = ?`
+  ).get(pt.tournament_id, body.playerId)) {
+    throw httpError(409, 'Player is already registered in this tournament');
+  }
   const ppId = id();
   db.prepare(
     `INSERT INTO participant_players (id, participant_team_id, player_id, shirt_number, role, status)
@@ -209,9 +261,65 @@ const addParticipantPlayer = asyncHandler((req, res) => {
   res.status(201).json({ participantPlayer: map.participantPlayer(row) });
 });
 
+const autoAddParticipantPlayers = asyncHandler((req, res) => {
+  const participantTeam = db.prepare('SELECT * FROM participant_teams WHERE id = ?').get(req.params.id);
+  if (!participantTeam || participantTeam.tournament_id !== req.params.tournamentId) {
+    throw httpError(404, 'Participant team not found');
+  }
+  const target = Number(req.body?.count);
+  if (!Number.isInteger(target) || target < 0) throw httpError(400, 'count must be a non-negative integer');
+
+  const existing = db.prepare(
+    `SELECT pp.player_id
+     FROM participant_players pp
+     JOIN participant_teams pt ON pt.id = pp.participant_team_id
+     WHERE pt.tournament_id = ?`
+  ).all(participantTeam.tournament_id);
+  const currentTeamCount = db.prepare(
+    'SELECT COUNT(*) AS count FROM participant_players WHERE participant_team_id = ?'
+  ).get(participantTeam.id).count;
+  const existingIds = new Set(existing.map((row) => row.player_id));
+  let players = db.prepare('SELECT * FROM players ORDER BY name').all();
+  let nextNumber = players.length + 1;
+  const missing = Math.max(0, target - currentTeamCount);
+
+  while (players.filter((player) => !existingIds.has(player.id)).length < missing) {
+    let slug = `auto-player-${nextNumber}`;
+    while (db.prepare('SELECT 1 FROM players WHERE slug = ?').get(slug)) {
+      nextNumber += 1;
+      slug = `auto-player-${nextNumber}`;
+    }
+    const playerId = id();
+    db.prepare(
+      `INSERT INTO players (id, name, slug, nickname, position)
+       VALUES (?, ?, ?, ?, 'player')`
+    ).run(playerId, `Player ${nextNumber}`, slug, `P${nextNumber}`);
+    players.push(db.prepare('SELECT * FROM players WHERE id = ?').get(playerId));
+    nextNumber += 1;
+  }
+
+  const available = players.filter((player) => !existingIds.has(player.id)).slice(0, missing);
+  const insert = db.prepare(
+    `INSERT INTO participant_players
+       (id, participant_team_id, player_id, shirt_number, role, status)
+     VALUES (?, ?, ?, ?, 'player', 'active')`
+  );
+  available.forEach((player, index) => insert.run(
+    id(),
+    participantTeam.id,
+    player.id,
+    currentTeamCount + index + 1
+  ));
+
+  const rows = db.prepare(`${playerJoinSql} WHERE pp.participant_team_id = ? ORDER BY pp.shirt_number`)
+    .all(participantTeam.id);
+  res.status(201).json({ participantPlayers: rows.map(map.participantPlayer) });
+});
+
 const listParticipantPlayers = asyncHandler((req, res) => {
   const pt = db.prepare('SELECT * FROM participant_teams WHERE id = ?').get(req.params.id);
   if (!pt) throw httpError(404, 'Participant team not found');
+  if (pt.tournament_id !== req.params.tournamentId) throw httpError(404, 'Participant team not found');
   const tournament = access.getTournamentOrThrow(pt.tournament_id);
   access.requireTournamentInspect(tournament, req.user);
   const rows = db.prepare(`${playerJoinSql} WHERE pp.participant_team_id = ? ORDER BY pp.shirt_number`).all(pt.id);
@@ -221,6 +329,8 @@ const listParticipantPlayers = asyncHandler((req, res) => {
 const updateParticipantPlayer = asyncHandler((req, res) => {
   const row = db.prepare('SELECT * FROM participant_players WHERE id = ?').get(req.params.id);
   if (!row) throw httpError(404, 'Participant player not found');
+  const pt = db.prepare('SELECT tournament_id FROM participant_teams WHERE id = ?').get(row.participant_team_id);
+  if (!pt || pt.tournament_id !== req.params.tournamentId) throw httpError(404, 'Participant player not found');
   const body = req.body || {};
   db.prepare(
     `UPDATE participant_players SET shirt_number = ?, role = ?, status = ?, yellow_cards = ?, red_cards = ?, goals = ?, assists = ?
@@ -241,6 +351,13 @@ const updateParticipantPlayer = asyncHandler((req, res) => {
 });
 
 const removeParticipantPlayer = asyncHandler((req, res) => {
+  const row = db.prepare(`
+    SELECT pp.id, pt.tournament_id
+    FROM participant_players pp
+    JOIN participant_teams pt ON pt.id = pp.participant_team_id
+    WHERE pp.id = ?
+  `).get(req.params.id);
+  if (!row || row.tournament_id !== req.params.tournamentId) throw httpError(404, 'Participant player not found');
   const info = db.prepare('DELETE FROM participant_players WHERE id = ?').run(req.params.id);
   if (!info.changes) throw httpError(404, 'Participant player not found');
   res.status(204).end();
@@ -258,10 +375,12 @@ module.exports = {
   updatePlayer,
   removePlayer,
   addParticipantTeam,
+  autoAddParticipantTeams,
   listParticipantTeams,
   updateParticipantTeam,
   removeParticipantTeam,
   addParticipantPlayer,
+  autoAddParticipantPlayers,
   listParticipantPlayers,
   updateParticipantPlayer,
   removeParticipantPlayer,

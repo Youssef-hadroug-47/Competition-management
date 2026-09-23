@@ -144,45 +144,50 @@ function groupByMatchday(matches) {
 }
 
 // Resolves the winner of a knockout tie (one match, or several legs sharing
-// the same matchday). Aggregates normal-time goals across legs, then falls
-// back to extra time and penalties if the tie is level. Returns null if the
-// tie can't be resolved yet (still needs a result, extra time or penalties).
+// the same matchday). Aggregates regulation goals across every leg, then
+// uses extra time and penalties only from the final ordered leg if the
+// aggregate is level. This models extra time/penalties as a one-match
+// decider rather than adding them from every leg.
 function resolveTieWinner(tieMatches) {
   if (!tieMatches.length) return null;
   const teamX = tieMatches[0].home_participant_team_id;
+  const teamIds = new Set();
   let scoreX = 0;
   let scoreY = 0;
   let etX = 0;
   let etY = 0;
-  let penX = 0;
-  let penY = 0;
-  let hasEt = false;
-  let hasPen = false;
 
   for (const m of tieMatches) {
     if (m.home_score == null || m.away_score == null) return null;
+    teamIds.add(m.home_participant_team_id);
+    teamIds.add(m.away_participant_team_id);
+    if (teamIds.size > 2) return null;
     const homeIsX = m.home_participant_team_id === teamX;
     scoreX += homeIsX ? m.home_score : m.away_score;
     scoreY += homeIsX ? m.away_score : m.home_score;
-    if (m.extra_time_home != null && m.extra_time_away != null) {
-      hasEt = true;
-      etX += homeIsX ? m.extra_time_home : m.extra_time_away;
-      etY += homeIsX ? m.extra_time_away : m.extra_time_home;
-    }
-    if (m.penalties_home != null && m.penalties_away != null) {
-      hasPen = true;
-      penX = homeIsX ? m.penalties_home : m.penalties_away;
-      penY = homeIsX ? m.penalties_away : m.penalties_home;
-    }
   }
 
-  const teamY = tieMatches[0].home_participant_team_id === teamX
-    ? tieMatches[0].away_participant_team_id
-    : tieMatches[0].home_participant_team_id;
+  if (teamIds.size !== 2) return null;
+  const teamY = [...teamIds].find((teamId) => teamId !== teamX);
 
   if (scoreX !== scoreY) return scoreX > scoreY ? teamX : teamY;
-  if (hasEt && etX !== etY) return etX > etY ? teamX : teamY;
-  if (hasPen && penX !== penY) return penX > penY ? teamX : teamY;
+  const decider = tieMatches[tieMatches.length - 1];
+  const deciderHomeIsX = decider.home_participant_team_id === teamX;
+  if (decider.extra_time_home != null && decider.extra_time_away != null) {
+    etX = deciderHomeIsX ? decider.extra_time_home : decider.extra_time_away;
+    etY = deciderHomeIsX ? decider.extra_time_away : decider.extra_time_home;
+    if (etX !== etY) return etX > etY ? teamX : teamY;
+  }
+  let penalties = null;
+  if (decider.penalties_home != null && decider.penalties_away != null) {
+    penalties = {
+      x: deciderHomeIsX ? decider.penalties_home : decider.penalties_away,
+      y: deciderHomeIsX ? decider.penalties_away : decider.penalties_home,
+    };
+  }
+  if (penalties && penalties.x !== penalties.y) {
+    return penalties.x > penalties.y ? teamX : teamY;
+  }
   return null;
 }
 
@@ -298,6 +303,7 @@ function splitIntoBuckets(teams, type, groupId) {
       // teams played against each other — a fresh mini-league per bucket,
       // not the group's overall table.
       const stats = computeMiniLeagueStats(teams, groupId);
+      console.log(stats);
       return bucketByComposite(teams, (t) => {
         const s = stats[t.id] || { pts: 0, gf: 0, ga: 0 };
         return [s.pts, s.gf - s.ga, s.gf];
@@ -327,7 +333,9 @@ function sortTeamsWithTiebreakers(teams, sortedTiebreakers, idx, groupId) {
     return [...teams].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   }
 
+  console.log(sortedTiebreakers[idx].type);
   const buckets = splitIntoBuckets(teams, sortedTiebreakers[idx].type, groupId);
+  console.log(buckets);
   const result = [];
   for (const bucket of buckets) {
     if (bucket.length === 1) result.push(...bucket);
@@ -360,6 +368,15 @@ function rankGroupTeams(groupId, tiebreakers) {
   }
 
   return sortTeamsWithTiebreakers(teams, sortedTbs, 0, groupId);
+}
+
+function setStageStatus(stageId, status) {
+  if (!stageId || !status) return false;
+
+  if (!["finished"].includes(status)) return false;
+  
+  db.prepare("UPDATE STAGES SET status = ? WHERE id = ?").run(status, stageId);
+  return true;
 }
 
 // Computes and persists promotions out of a finished league stage.
@@ -462,7 +479,10 @@ function finalizeLeagueStage(stage) {
         rankPosition: p.rankPosition,
       });
     }
+    setStageStatus(stage.id, "finished");
   });
+
+  
 
   return {
     promoted: directPromotions.length + rankedPromotions.length,
@@ -530,6 +550,7 @@ function drawKnockoutStage(tournament, stage, groups, participants) {
   runInTransaction(() => {
     if (!roundGroups.length) {
       const names = knockoutRounds(shuffled.length);
+      console.log(names);
       const insertGroup = db.prepare(
         `INSERT INTO rounds (id, stage_id, name, sequence_order) VALUES (?, ?, ?, ?)`
       );
@@ -683,7 +704,6 @@ function advanceKnockoutStage(stageId) {
           : tieMatches[0].home_participant_team_id;
       resolved.push({ winnerId, loserId });
     }
-
     const isFinalRound = i === groups.length - 1;
     if (isFinalRound) {
       // Knockout stages still promote their winner(s) straight to the next
@@ -727,6 +747,8 @@ function advanceKnockoutStage(stageId) {
           );
         }
       });
+
+      setStageStatus(stage.id, "finished");
 
       return { finalized: true, round: round.name, champion: resolved[0]?.winnerId || null };
     }

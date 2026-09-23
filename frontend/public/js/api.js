@@ -44,7 +44,7 @@ function enc(value) {
   return encodeURIComponent(String(value));
 }
 
-async function request(method, path, { body, auth = true, query } = {}) {
+async function request(method, path, { body, query } = {}) {
   const url = new URL(apiBaseUrl() + path);
   if (query) {
     for (const [k, v] of Object.entries(query)) {
@@ -54,10 +54,8 @@ async function request(method, path, { body, auth = true, query } = {}) {
 
   const headers = { Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
-  if (auth) {
-    const token = window.Session.getToken();
-    if (token) headers.Authorization = `Bearer ${token}`;
-  }
+  const token = window.Session.getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
 
   let res;
   try {
@@ -65,6 +63,7 @@ async function request(method, path, { body, auth = true, query } = {}) {
       method,
       headers,
       credentials: 'omit',
+      cache: 'no-store',
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch (networkErr) {
@@ -117,17 +116,30 @@ const Api = {
 
   // ---- Tournaments ----
   tournaments: {
-    list: () => request('GET', '/tournaments', { auth: false }),
-    get: (tournamentId) => request('GET', `/tournaments/${enc(tournamentId)}`, { auth: false }),
+    list: () => request('GET', '/tournaments'),
+    mine: () => request('GET', '/tournaments/mine'),
+    searchByName: (name) => request('GET', '/tournaments/search', { query: { name } }),
+    get: (tournamentId) => request('GET', `/tournaments/${enc(tournamentId)}`),
     create: (payload) => request('POST', '/tournaments', { body: payload }),
     update: (tournamentId, payload) => request('PATCH', `/tournaments/${enc(tournamentId)}`, { body: payload }),
     remove: (tournamentId) => request('DELETE', `/tournaments/${enc(tournamentId)}`),
+    myRole: (tournamentId) =>
+      request('GET', `/tournaments/${enc(tournamentId)}/roles/me`),
+    listRoles: (tournamentId) => request('GET', `/tournaments/${enc(tournamentId)}/roles`),
+    findStaffUser: (tournamentId, email) =>
+      request('GET', `/tournaments/${enc(tournamentId)}/staff-users`, { query: { email } }),
+    addRole: (tournamentId, userId, role) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/roles/${enc(userId)}`, { body: { role } }),
+    updateRole: (tournamentId, userId, role) =>
+      request('PATCH', `/tournaments/${enc(tournamentId)}/roles/${enc(userId)}`, { body: { role } }),
+    removeRole: (tournamentId, userId) =>
+      request('DELETE', `/tournaments/${enc(tournamentId)}/roles/${enc(userId)}`),
   },
 
   stages: {
-    get: (tournamentId, stageId) => request('GET', `/tournaments/${enc(tournamentId)}/stages/${enc(stageId)}`, { auth: false }),
+    get: (tournamentId, stageId) => request('GET', `/tournaments/${enc(tournamentId)}/stages/${enc(stageId)}`),
     standings: (tournamentId, stageId) =>
-      request('GET', `/tournaments/${enc(tournamentId)}/stages/${enc(stageId)}/standing`, { auth: false }),
+      request('GET', `/tournaments/${enc(tournamentId)}/stages/${enc(stageId)}/standing`),
     add: (tournamentId, payload) => request('POST', `/tournaments/${enc(tournamentId)}/stages`, { body: payload }),
     update: (tournamentId, stageId, payload) =>
       request('PATCH', `/tournaments/${enc(tournamentId)}/stages/${enc(stageId)}`, { body: payload }),
@@ -152,25 +164,27 @@ const Api = {
 
   // ---- Catalog: teams & players ----
   teams: {
-    list: () => request('GET', '/teams', { auth: false }),
-    get: (id) => request('GET', `/teams/${enc(id)}`, { auth: false }),
+    list: () => request('GET', '/teams'),
+    get: (id) => request('GET', `/teams/${enc(id)}`),
     create: (payload) => request('POST', '/teams', { body: payload }),
     update: (id, payload) => request('PATCH', `/teams/${enc(id)}`, { body: payload }),
     remove: (id) => request('DELETE', `/teams/${enc(id)}`),
   },
 
   players: {
-    list: () => request('GET', '/players', { auth: false }),
-    get: (id) => request('GET', `/players/${enc(id)}`, { auth: false }),
+    list: () => request('GET', '/players'),
+    get: (id) => request('GET', `/players/${enc(id)}`),
     create: (payload) => request('POST', '/players', { body: payload }),
     update: (id, payload) => request('PATCH', `/players/${enc(id)}`, { body: payload }),
     remove: (id) => request('DELETE', `/players/${enc(id)}`),
   },
 
   participantTeams: {
-    list: (tournamentId) => request('GET', `/tournaments/${enc(tournamentId)}/participant-teams`, { auth: false }),
+    list: (tournamentId) => request('GET', `/tournaments/${enc(tournamentId)}/participant-teams`),
     add: (tournamentId, payload) =>
       request('POST', `/tournaments/${enc(tournamentId)}/participant-teams`, { body: payload }),
+    autoAdd: (tournamentId, payload) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/participant-teams/auto`, { body: payload }),
     update: (tournamentId, id, payload) =>
       request('PATCH', `/tournaments/${enc(tournamentId)}/participant-teams/${enc(id)}`, { body: payload }),
     remove: (tournamentId, id) => request('DELETE', `/tournaments/${enc(tournamentId)}/participant-teams/${enc(id)}`),
@@ -178,9 +192,13 @@ const Api = {
 
   participantPlayers: {
     list: (tournamentId, participantTeamId) =>
-      request('GET', `/tournaments/${enc(tournamentId)}/participant-teams/${enc(participantTeamId)}/players`, { auth: false }),
+      request('GET', `/tournaments/${enc(tournamentId)}/participant-teams/${enc(participantTeamId)}/players`),
     add: (tournamentId, participantTeamId, payload) =>
       request('POST', `/tournaments/${enc(tournamentId)}/participant-teams/${enc(participantTeamId)}/players`, {
+        body: payload,
+      }),
+    autoAdd: (tournamentId, participantTeamId, payload) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/participant-teams/${enc(participantTeamId)}/players/auto`, {
         body: payload,
       }),
     update: (tournamentId, id, payload) =>
@@ -194,8 +212,8 @@ const Api = {
   },
 
   matches: {
-    list: (tournamentId) => request('GET', `/tournaments/${enc(tournamentId)}/matches`, { auth: false }),
-    get: (tournamentId, id) => request('GET', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}`, { auth: false }),
+    list: (tournamentId) => request('GET', `/tournaments/${enc(tournamentId)}/matches`),
+    get: (tournamentId, id) => request('GET', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}`),
     start: (tournamentId, id, payload) =>
       request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/start`, { body: payload }),
     update: (tournamentId, id, payload) =>
@@ -206,6 +224,8 @@ const Api = {
 
   simulation: {
     match: (matchId) => request('POST', `/matches/${enc(matchId)}/simulate`),
+    group: (groupId) => request('POST', `/groups/${enc(groupId)}/simulate`),
+    round: (roundId) => request('POST', `/rounds/${enc(roundId)}/simulate`),
     stage: (stageId) => request('POST', `/stages/${enc(stageId)}/simulate`),
     tournament: (tournamentId) => request('POST', `/tournaments/${enc(tournamentId)}/simulate`),
   },
@@ -224,8 +244,8 @@ const Api = {
 
   // ---- Votes / nominees ----
   votes: {
-    list: (tournamentId) => request('GET', `/tournaments/${enc(tournamentId)}/votes`, { auth: false }),
-    get: (tournamentId, id) => request('GET', `/tournaments/${enc(tournamentId)}/votes/${enc(id)}`, { auth: false }),
+    list: (tournamentId) => request('GET', `/tournaments/${enc(tournamentId)}/votes`),
+    get: (tournamentId, id) => request('GET', `/tournaments/${enc(tournamentId)}/votes/${enc(id)}`),
     create: (tournamentId, payload) => request('POST', `/tournaments/${enc(tournamentId)}/votes`, { body: payload }),
     update: (tournamentId, id, payload) =>
       request('PATCH', `/tournaments/${enc(tournamentId)}/votes/${enc(id)}`, { body: payload }),
@@ -234,7 +254,7 @@ const Api = {
 
   nominees: {
     list: (tournamentId, voteId) =>
-      request('GET', `/tournaments/${enc(tournamentId)}/votes/${enc(voteId)}/nominees`, { auth: false }),
+      request('GET', `/tournaments/${enc(tournamentId)}/votes/${enc(voteId)}/nominees`),
     add: (tournamentId, voteId, nomineeId) =>
       request('POST', `/tournaments/${enc(tournamentId)}/votes/${enc(voteId)}/nominees`, { body: { nomineeId } }),
     castVote: (tournamentId, voteId, nomineeId, userId) =>

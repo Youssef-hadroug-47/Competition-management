@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS stages (
   type TEXT NOT NULL CHECK (type IN ('league', 'knockout')),
   sequence_order INTEGER NOT NULL,
   settings TEXT NOT NULL DEFAULT '{}',
+  status TEXT CHECK (status IN ('finished')),
   UNIQUE (tournament_id, sequence_order)
 );
 
@@ -57,7 +58,7 @@ CREATE TABLE IF NOT EXISTS groups (
   promotion_rules TEXT NOT NULL DEFAULT '[]',
   sequence_order INTEGER NOT NULL DEFAULT 1,
   number_teams INTEGER NOT NULL CHECK ( number_teams >= 3 ),
-  advancing_teams INTEGER NOT NULL CHECK (advancing_teams < number_teams),
+  advancing_teams INTEGER NOT NULL DEFAULT 0 CHECK (advancing_teams < number_teams),
   advancing_teams_to_ranking INTEGER NOT NULL DEFAULT 0
     CHECK (advancing_teams + advancing_teams_to_ranking <= number_teams)
 );

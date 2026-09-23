@@ -24,8 +24,9 @@ the static server is still running — refresh the browser afterwards.
 
 | File | Maps to |
 |---|---|
-| `public/index.html` | Home — left wireframe (logged out: logo, login/register buttons, "création des tournois" CTA, public tournaments) or right wireframe (logged in: logo, profile circle with a menu, "les tournois favoris", "création des tournois", public tournaments) depending on session state |
-| `public/tournament.html` | One tournament — info, matches, standings/bracket (stage-scoped toggle), top scorers/assisters. Reachable from every tournament row/card on the site. |
+| `public/index.html` | Home — left wireframe (logged out: logo, login/register buttons, exact-name tournament search, "création des tournois" CTA, public tournaments) or right wireframe (logged in: logo, profile circle with a menu, "My tournaments", "les tournois favoris", exact-name tournament search, "création des tournois", public tournaments) depending on session state. Private tournaments are excluded from the normal list, but exact-name search can reveal a locked private result. |
+| `public/tournament.html` | One tournament — info, role-protected draw control, matches, standings/bracket (stage-scoped toggle), top scorers/assisters, registered teams/rosters, private-tournament follower moderation, and creator-only staff management. Reachable from every tournament row/card on the site. |
+| `public/create-tournament.html` | Authenticated two-phase tournament builder. Collects general information, then uses a stage navigator with balanced team-count presets, league points, responsive group cards, direct advancement defaults for ranks 1–2, optional best-ranking places and knockout rounds before submitting through the existing API helpers. |
 | `public/login.html` | Sign in |
 | `public/register.html` | Create account |
 
@@ -37,7 +38,23 @@ favorite cards both wrap the tournament name in a link built by
 the URL shape.
 
 - **Info**: name, visibility, place, status, team count, created date,
-  plus a Follow/Unfollow toggle when signed in.
+  plus a Follow/Unfollow toggle when signed in. The tournament creator also
+  gets a permanent-delete action protected by the in-app confirmation modal;
+  moderators do not get this control.
+- **Private followers**: private tournaments expose a Followers tab to the
+  creator and tournament moderators. It lists follower statuses and lets
+  moderators accept or reject pending requests through the protected API.
+- **Staff management**: the creator gets a Staff management tab backed by the
+  tournament role endpoints. It finds users by exact email through a
+  creator-only lookup that returns minimal profile data, then assigns a user
+  as a moderator or referee, changes assignments, and removes assignments.
+  User IDs remain internal identifiers rather than credentials, and the
+  creator's own moderator assignment is protected in the UI and backend.
+- **Navigation state**: page views persist their scroll position in the
+  current browser tab. The tournament page also persists the selected primary
+  tab, standings stage, and match grouping filter, so refreshes and
+  simulation/actions return to the same browsing context without moving
+  keyboard focus.
 - **Matches**: a flat, sorted list — every match in the tournament,
   independent of the stage toggle below.
 - **Standings / bracket**: one tab per stage; only the selected stage's
@@ -48,20 +65,33 @@ the URL shape.
   `groupId` points at that round. See the comment above
   `standingsSort()` in `tournament.js` for the (deliberately simplified —
   no head-to-head) tiebreak order.
+  Knockout pairings with multiple legs are shown as one aggregate card with
+  the combined regulation score and each leg listed beneath it. Extra time
+  and penalties are treated as deciders from the final leg only.
 - **Top scorers / assisters**: there's no aggregate endpoint for this
   either, so the page fetches every participant team's roster in
   parallel (`Promise.allSettled`, so one team's failure doesn't blank the
   whole list) and ranks client-side. Fine for normal tournament sizes;
   would want a real backend aggregate if rosters get very large.
+- **Teams & players**: all viewers who can inspect a tournament can see
+  the available catalog plus registered teams and rosters. Tournament
+  moderators can register catalog teams and assign catalog players, including
+  seed, nickname, shirt number, role, and status. Global admins can use the
+  reuse-first automatic filling actions for the tournament team count and a
+  selected roster size; placeholder catalog records are created only when
+  necessary.
+  Admins also get forms on this tab to create reusable catalog teams and
+  players.
 
 **Security specifics for this page** (in addition to the app-wide notes
 below): the `?id=` value is checked against a strict allow-list pattern
 before any request is made, and — like every other id anywhere in this
 app — is passed through `enc()` in `api.js`, which `encodeURIComponent`s
 it so it can only ever fill one path segment. Private-tournament access
-is enforced entirely server-side; this page just relays whatever the API
-decides (200 renders it, 403 shows the server's own message, 404 says
-so) rather than guessing at visibility itself.
+is enforced entirely server-side; creators and users with an accepted follow
+can inspect private tournaments, while other users need approval. This page just relays whatever the API decides (200
+renders it, 403 shows the server's own message, 404 says so) rather than
+guessing at visibility itself.
 
 ## Code layout
 
@@ -145,7 +175,11 @@ is backed by `GET /tournaments/followed` (`Api.follows.listFollowed` in
 directly. Each public-list row also gets a **Follow** button once
 signed in, and each favorite card gets an **Unfollow** button — both
 call the existing `POST`/`DELETE /tournaments/:id/follow` endpoints and
-then re-fetch the favorites panel.
+then re-fetch the favorites panel. Public tournaments appear in the normal
+home list; private tournaments are discoverable only by exact-name search and
+create a pending request until a moderator accepts it. An inaccessible
+private search result is visibly locked, while its detail page still enforces
+the server-side inspection check.
 
 ⚠️ If you register the new route in `index.js`, put it **before**
 `router.get('/tournaments/:tournamentId', ...)`. Express matches routes

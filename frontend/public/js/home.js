@@ -1,18 +1,17 @@
 (function () {
   const { el, clear, showBanner, friendlyErrorMessage } = UI;
   let favoriteTournaments = [];
+  let publicTournaments = [];
+  const navigationState = UI.pageState('home');
 
   const topbarActions = document.getElementById('topbar-actions');
   const banner = document.getElementById('banner');
   const favoritesPanel = document.getElementById('favorites-panel');
   const favoritesBody = document.getElementById('favorites-body');
+  const myTournamentsPanel = document.getElementById('my-tournaments-panel');
+  const myTournamentsBody = document.getElementById('my-tournaments-body');
   const createBody = document.getElementById('create-body');
   const publicBody = document.getElementById('public-body');
-
-  const modal = document.getElementById('create-modal');
-  const modalBanner = document.getElementById('create-modal-banner');
-  const createForm = document.getElementById('create-form');
-  const createSubmit = document.getElementById('create-modal-submit');
 
   let cancelExpiryTimer = () => {};
 
@@ -41,66 +40,10 @@
     createBody.appendChild(
       el('div', {}, [
         el('p', { text: 'Give it a name and you can add stages, teams and players afterwards.' }),
-        el('button', {
-          class: 'btn btn--primary',
-          type: 'button',
-          text: 'New tournament',
-          onclick: openCreateModal,
-        }),
+        el('a', { class: 'btn btn--primary', href: '/create-tournament.html', text: 'New tournament' }),
       ])
     );
   }
-
-  function openCreateModal() {
-    createForm.reset();
-    showBanner(modalBanner, '');
-    modal.hidden = false;
-    document.getElementById('ct-name').focus();
-  }
-
-  function closeCreateModal() {
-    modal.hidden = true;
-  }
-
-  document.getElementById('create-modal-cancel').addEventListener('click', closeCreateModal);
-  modal.addEventListener('click', (e) => {
-    if (e.target === modal) closeCreateModal();
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !modal.hidden) closeCreateModal();
-  });
-
-  createForm.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    showBanner(modalBanner, '');
-
-    const name = createForm.name.value.trim();
-    if (!name) {
-      showBanner(modalBanner, 'Name is required.');
-      return;
-    }
-
-    const payload = {
-      name,
-      place: createForm.place.value.trim() || undefined,
-      visibility: createForm.visibility.value,
-      numberOfTeams: createForm.numberOfTeams.value ? Number(createForm.numberOfTeams.value) : undefined,
-    };
-
-    createSubmit.disabled = true;
-    createSubmit.textContent = 'Creating…';
-    try {
-      await Api.tournaments.create(payload);
-      closeCreateModal();
-      showBanner(banner, `“${name}” was created.`, 'success');
-      await loadPublicTournaments();
-    } catch (err) {
-      showBanner(modalBanner, friendlyErrorMessage(err));
-    } finally {
-      createSubmit.disabled = false;
-      createSubmit.textContent = 'Create tournament';
-    }
-  });
 
   // ---------------------------------------------------------------
   // "des tournois publiques"
@@ -115,54 +58,160 @@
 
   function tournamentRow(t) {
     const isPrivate = t.visibility === 'private' || t.restricted;
-    const right = [el('span', { class: `badge ${isPrivate ? 'badge--private' : ''}`, text: isPrivate ? 'Private' : 'Public' })];
+    const right = [el('span', {
+      class: `badge ${isPrivate ? 'badge--private' : ''}`,
+      text: isPrivate ? (t.locked ? 'Locked · Private' : 'Private') : 'Public',
+    })];
 
     if (Session.isAuthenticated()) {
       const isFollowed = favoriteTournaments.map( tour => tour.id).includes(t.id);
-      const followBtn = el('button', { id: t.id, class: 'btn btn--ghost', type: 'button', text: isFollowed ? 'Following' : 'Follow'});
+      const followBtn = el('button', {
+        id: t.id,
+        class: 'btn btn--ghost',
+        type: 'button',
+        text: isFollowed ? 'Following' : 'Follow',
+      });
       followBtn.disabled = isFollowed;
 
       followBtn.addEventListener('click', async () => {
         followBtn.disabled = true;
-        followBtn.textContent = 'Following…';
+        followBtn.textContent = isPrivate ? 'Requesting…' : 'Following…';
         try {
-          await Api.follows.follow(t.id);
-          followBtn.textContent = 'Following';
-          await loadFavorites();
+          const data = await Api.follows.follow(t.id);
+          const pending = data?.follow?.status === 'pending';
+          followBtn.textContent = pending ? 'Request pending' : 'Following';
+          if (!pending) await loadFavorites();
         } catch (err) {
           showBanner(banner, friendlyErrorMessage(err));
           followBtn.disabled = false;
           followBtn.textContent = 'Follow';
         }
+
       });
       right.push(followBtn);
     }
 
-    return el('li', { class: 'tournament-row' }, [
+    const row = el('li', { class: `tournament-row${t.locked ? ' tournament-row--locked' : ''}` }, [
       el('a', { class: 'tournament-row__link', href: tournamentHref(t.id) }, [
         el('div', { class: 'tournament-row__name', text: t.name }),
-        el('div', { class: 'tournament-row__meta', text: [t.place, t.status].filter(Boolean).join(' · ') }),
+        el('div', {
+          class: 'tournament-row__meta',
+          text: [t.place, t.status, t.locked ? 'Inspection access required' : null].filter(Boolean).join(' · '),
+        }),
       ]),
       el('div', { style: 'display:flex; align-items:center; gap:10px;' }, right),
     ]);
+    row.dataset.tournamentId = t.id;
+    return row;
   }
 
+  function renderPublicList(items) {
+    clear(publicBody);
+    if (!items.length) {
+      publicBody.appendChild(el('p', { class: 'empty-state', text: 'No public tournaments yet — be the first to create one.' }));
+      return;
+    }
+    publicBody.appendChild(el('ul', { class: 'tournament-list' }, items.map(tournamentRow)));
+  }
+
+  function highlightTournament(tournamentId) {
+    const row = [...publicBody.querySelectorAll('[data-tournament-id]')]
+      .find((item) => item.dataset.tournamentId === tournamentId);
+    if (!row) return;
+    row.classList.remove('tournament-row--search-hit');
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    requestAnimationFrame(() => row.classList.add('tournament-row--search-hit'));
+  }
+
+  function myTournamentCard(t) {
+    const visibility = t.visibility === 'private' ? 'Private' : 'Public';
+    return el('li', { class: 'tournament-row' }, [
+      el('a', { class: 'tournament-row__link', href: tournamentHref(t.id) }, [
+        el('div', { class: 'tournament-row__name', text: t.name }),
+        el('div', {
+          class: 'tournament-row__meta',
+          text: [t.place, t.status, visibility].filter(Boolean).join(' · '),
+        }),
+      ]),
+      el('span', { class: `badge ${t.visibility === 'private' ? 'badge--private' : ''}`, text: visibility }),
+    ]);
+  }
+
+  async function loadMyTournaments() {
+    if (!Session.isAuthenticated()) {
+      myTournamentsPanel.hidden = true;
+      return;
+    }
+    myTournamentsPanel.hidden = false;
+    clear(myTournamentsBody);
+    myTournamentsBody.appendChild(el('p', { class: 'empty-state', text: 'Loading…' }));
+    try {
+      const data = await Api.tournaments.mine();
+      const items = data?.tournaments || [];
+      clear(myTournamentsBody);
+      myTournamentsBody.appendChild(items.length
+        ? el('ul', { class: 'tournament-list' }, items.map(myTournamentCard))
+        : el('p', { class: 'empty-state', text: 'You do not own or moderate any tournaments yet.' }));
+    } catch (err) {
+      clear(myTournamentsBody);
+      myTournamentsBody.appendChild(el('p', { class: 'empty-state', text: friendlyErrorMessage(err) }));
+    }
+  }
   async function loadPublicTournaments() {
     clear(publicBody);
     publicBody.appendChild(el('p', { class: 'empty-state', text: 'Loading…' }));
     try {
       const data = await Api.tournaments.list();
-      const items = (data?.tournaments || []).filter((t) => !t.restricted);
-      clear(publicBody);
-      if (!items.length) {
-        publicBody.appendChild(el('p', { class: 'empty-state', text: 'No public tournaments yet — be the first to create one.' }));
-        return;
-      }
-      publicBody.appendChild(el('ul', { class: 'tournament-list' }, items.map(tournamentRow)));
+      const items = (data?.tournaments || []).filter((t) => t.visibility !== 'private' && !t.restricted);
+      publicTournaments = items;
+      renderPublicList(items);
     } catch (err) {
       clear(publicBody);
       showBanner(banner, friendlyErrorMessage(err));
     }
+  }
+
+  function setupTournamentSearch() {
+    const form = document.getElementById('tournament-search-form');
+    const input = document.getElementById('tournament-search-input');
+    const result = document.getElementById('tournament-search-result');
+    if (!form || !input || !result) return;
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const name = input.value.trim();
+      if (!name) return;
+      clear(result);
+      result.appendChild(el('p', { class: 'empty-state', text: 'Searching…' }));
+      const cached = publicTournaments.find((tournament) => tournament.name === name);
+      if (cached) {
+        clear(result);
+        highlightTournament(cached.id);
+        return;
+      }
+      try {
+        const data = await Api.tournaments.searchByName(name);
+        clear(result);
+        if (!data?.tournament) {
+          result.appendChild(el('p', { class: 'empty-state', text: 'No tournament has that exact name.' }));
+          return;
+        }
+        const fetched = { ...data.tournament, locked: Boolean(data.locked) };
+        if (!publicTournaments.some((tournament) => tournament.id === fetched.id)) {
+          publicTournaments = [...publicTournaments, fetched];
+          renderPublicList(publicTournaments);
+        }
+        highlightTournament(fetched.id);
+      } catch (err) {
+        clear(result);
+        if (err.status === 404) {
+          result.appendChild(el('p', { class: 'empty-state', text: 'No tournament has that exact name.' }));
+        } else {
+          result.appendChild(el('p', { class: 'empty-state', text: friendlyErrorMessage(err) }));
+          showBanner(banner, friendlyErrorMessage(err));
+        }
+      }
+    });
   }
 
   // ---------------------------------------------------------------
@@ -216,8 +265,9 @@
     clear(favoritesBody);
     favoritesBody.appendChild(el('p', { class: 'empty-state', text: 'Loading…' }));
     try {
-      favoriteTournaments = await Api.follows.listFollowed();
-      const items = Array.isArray(favoriteTournaments) ? favoriteTournaments : favoriteTournaments?.tournaments || [];
+      const followed = await Api.follows.listFollowed();
+      const items = Array.isArray(followed) ? followed : followed?.tournaments || [];
+      favoriteTournaments = items;
       clear(favoritesBody);
       if (!items.length) {
         favoritesBody.appendChild(
@@ -240,12 +290,21 @@
       showBanner(banner, 'You were signed out because your session expired.', 'error');
       renderHeader();
       renderCreatePanel();
+      setupTournamentSearch();
       loadFavorites();
+      loadMyTournaments();
     });
 
     renderHeader();
     renderCreatePanel();
-    await Promise.all([loadPublicTournaments(), loadFavorites()]);
+    // Load followed tournaments first so public rows are rendered with the
+    // current follow state instead of the initial empty array. The two
+    // requests used to race, leaving public-row buttons stale on first load.
+    setupTournamentSearch();
+    await loadFavorites();
+    await loadMyTournaments();
+    await loadPublicTournaments();
+    navigationState.restoreScroll();
   }
 
   init();
