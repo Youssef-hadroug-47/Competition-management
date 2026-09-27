@@ -166,7 +166,6 @@ const getStanding = asyncHandler((req, res) => {
   const settings = parseJson(db.prepare('SELECT settings FROM stages WHERE id = ?').get(stageId).settings)
   const tiebreakers = settings.tiebreakers;
 
-  console.log(settings);
   if (!tiebreakers|| groups.length === 0)
     throw httpError(404, 'stage is not found');
   

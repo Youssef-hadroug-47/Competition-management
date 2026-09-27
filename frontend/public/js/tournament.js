@@ -83,7 +83,7 @@
   }
 
   function isAdmin() {
-    return Session.getUser()?.role === 'admin';
+    return String(Session.getUser()?.role || '').toLowerCase() === 'admin';
   }
 
   function simulationButton(label, simulate, disabled = false) {
@@ -157,7 +157,7 @@
       loadViewerRole(tournamentId),
     ]);
     loadingPanel.hidden = true;
-    renderHero(detail.tournament, tournamentId, stages, matches);
+    renderHero(detail.tournament, tournamentId, stages, matches, viewerRole);
 
     const teamNameById = new Map(
       participantTeams.map((pt) => [pt.id, pt.team?.name || pt.nickname || `Seed ${pt.seed ?? '?'}`])
@@ -208,7 +208,7 @@
   // ---------------------------------------------------------------
   // Hero
   // ---------------------------------------------------------------
-  function renderHero(tournament, tournamentId, stages, matches) {
+  function renderHero(tournament, tournamentId, stages, matches, viewerRole) {
     heroPanel.hidden = false;
     heroName.textContent = tournament.name;
     const isPrivate = tournament.visibility === 'private';
@@ -229,7 +229,9 @@
       const actionGroups = el('div', { class: 'tournament-hero__actions' });
       heroActions.appendChild(actionGroups);
       renderFollowButton(tournamentId, actionGroups);
-      renderDrawButton(tournamentId, stages, matches, actionGroups);
+      if (viewerRole === 'moderator' || isAdmin()) {
+        renderDrawButton(tournamentId, stages, matches, actionGroups);
+      }
       const tournamentFinished = ['completed', 'cancelled'].includes(tournament.status);
       const simulate = simulationButton(
         'Simulate tournament',
@@ -277,6 +279,12 @@
       text: 'Run draw',
     });
     const controls = [drawButton];
+    const resetButton = el('button', {
+      class: 'btn btn--danger',
+      type: 'button',
+      text: 'Reset stage',
+    });
+    controls.push(resetButton);
     let stageSelect = null;
 
     if (stages.length > 1) {
@@ -294,10 +302,13 @@
     actionContainer.appendChild(controlGroup);
     const updateDrawState = () => {
       const stageId = stageSelect?.value || stages[0]?.id;
-      const alreadyDrawn = matches.some((match) => match.stageId === stageId);
-      drawButton.disabled = alreadyDrawn;
-      drawButton.textContent = alreadyDrawn ? 'Already drawn' : 'Run draw';
-      drawButton.title = alreadyDrawn ? 'This stage already has matches.' : '';
+      const stageMatches = matches.filter((match) => match.stageId === stageId);
+      const started = stageMatches.some((match) => !['scheduled', 'postponed', 'cancelled'].includes(match.status));
+      const hasMatches = stageMatches.length > 0;
+      drawButton.disabled = started;
+      drawButton.textContent = hasMatches ? 'Redraw' : 'Run draw';
+      drawButton.title = started ? 'This stage has started. Reset it before drawing again.' : '';
+      resetButton.disabled = false;
     };
     stageSelect?.addEventListener('change', updateDrawState);
     updateDrawState();
@@ -309,7 +320,7 @@
       }
       if (!await confirmAction(
         'Confirm draw',
-        'Run the draw for this stage? A stage cannot be redrawn after matches are created.',
+        'Run or replace the scheduled draw for this stage? Redraw is unavailable after the stage starts.',
         'Run draw'
       )) return;
 
@@ -323,7 +334,23 @@
         showBanner(banner, friendlyErrorMessage(err));
         drawButton.disabled = false;
         if (stageSelect) stageSelect.disabled = false;
-        drawButton.textContent = 'Run draw';
+        drawButton.textContent = 'Redraw';
+      }
+    });
+    resetButton.addEventListener('click', async () => {
+      const stageId = stageSelect?.value || stages[0]?.id;
+      if (!await confirmAction(
+        'Reset stage',
+        'This clears the stage matches, recorded events, generated promotions, and dependent downstream schedules. The stage, groups, and rounds are preserved.',
+        'Reset stage'
+      )) return;
+      resetButton.disabled = true;
+      try {
+        await Api.draw.reset(tournamentId, stageId);
+        location.reload();
+      } catch (err) {
+        showBanner(banner, friendlyErrorMessage(err));
+        updateDrawState();
       }
     });
   }
@@ -398,6 +425,7 @@
       { id: 'standings', label: 'Standings & bracket', render: renderStandingsView },
       { id: 'leaders', label: 'Top scorers', render: renderLeadersView },
       { id: 'teams', label: 'Teams & players', render: renderTeamsView },
+      { id: 'votes', label: 'Voting', render: renderVotesView },
     ];
     if (state.tournament.visibility === 'private' && state.viewerRole === 'moderator') {
       tabs.push({ id: 'followers', label: 'Followers', render: renderFollowersView });
@@ -653,6 +681,560 @@
     container.appendChild(list);
   }
 
+  async function loadVoteNominees(state, vote) {
+    const data = await Api.nominees.list(state.tournamentId, vote.id);
+    return data?.nominees || [];
+  }
+
+  async function loadVoteCandidates(state) {
+    const rosters = await Promise.allSettled(
+      state.participantTeams.map((team) => Api.participantPlayers.list(state.tournamentId, team.id))
+    );
+    return rosters.flatMap((result) => result.status === 'fulfilled' ? result.value?.participantPlayers || [] : []);
+  }
+
+  function voteNomineeLabel(nominee) {
+    return nominee.player?.name || 'Unknown player';
+  }
+
+  function renderVoteCard(state, vote, nominees, candidates, refresh) {
+    const isModerator = state.viewerRole === 'moderator' || Session.getUser()?.role === 'admin';
+    const finished = vote.status === 'finished';
+    const authenticated = Session.isAuthenticated();
+    const selectedNominee = nominees.find((nominee) => nominee.selectedByViewer);
+    const selected = selectedNominee?.nomineeId || null;
+    const card = el('article', { class: `vote-card${finished ? ' vote-card--finished' : ''}` });
+    const total = nominees.reduce((sum, nominee) => sum + (nominee.votes || 0), 0);
+    const winnerVotes = nominees.reduce((max, nominee) => Math.max(max, nominee.votes || 0), 0);
+    const winnerIds = new Set(nominees.filter((nominee) => (nominee.votes || 0) === winnerVotes && winnerVotes > 0).map((nominee) => nominee.nomineeId));
+
+    card.appendChild(el('div', { class: 'vote-card__head' }, [
+      el('div', {}, [
+        el('span', { class: 'vote-card__eyebrow', text: vote.award }),
+        el('h3', { text: vote.name }),
+      ]),
+      el('span', { class: `vote-status vote-status--${vote.status}`, text: finished ? 'Finished' : 'Open' }),
+    ]));
+    card.appendChild(el('p', { class: 'vote-card__summary', text: finished ? `${total} vote${total === 1 ? '' : 's'} · final result` : `${total} vote${total === 1 ? '' : 's'} · choose one nominee` }));
+
+    const nomineeList = el('div', { class: 'vote-card__nominees' });
+    if (!nominees.length) {
+      nomineeList.appendChild(el('p', { class: 'empty-state', text: 'No nominees have been added yet.' }));
+    } else {
+      nominees.forEach((nominee) => {
+        const isSelected = selected === nominee.nomineeId || nominee.selectedByViewer;
+        const percent = total ? Math.round((nominee.votes / total) * 100) : 0;
+        const button = el('button', {
+          class: `vote-nominee${!finished && authenticated ? ' vote-nominee--interactive' : ''}${isSelected ? ' vote-nominee--selected' : ''}${winnerIds.has(nominee.nomineeId) && finished ? ' vote-nominee--winner' : ''}`,
+          type: 'button',
+          disabled: !authenticated || finished,
+        }, [
+          el('span', { class: 'vote-nominee__name', text: voteNomineeLabel(nominee) }),
+          el('span', { class: 'vote-nominee__position', text: nominee.player?.position || 'Player' }),
+          el('span', { class: 'vote-nominee__bar', style: `--vote-percent:${percent}%` }),
+          el('strong', { class: 'vote-nominee__count', text: `${nominee.votes} · ${percent}%` }),
+        ]);
+        button.addEventListener('click', async () => {
+          button.disabled = true;
+          try {
+            await Api.nominees.castVote(state.tournamentId, vote.id, nominee.nomineeId);
+            await refresh();
+          } catch (err) {
+            button.disabled = false;
+            showBanner(banner, friendlyErrorMessage(err));
+          }
+        });
+        nomineeList.appendChild(button);
+      });
+    }
+    card.appendChild(nomineeList);
+
+    if (!Session.isAuthenticated()) {
+      card.appendChild(el('p', { class: 'vote-card__notice', text: 'Sign in to cast one vote.' }));
+    } else if (selected && !finished) {
+      card.appendChild(el('p', { class: 'vote-card__notice vote-card__notice--success', text: 'Your vote has been recorded.' }));
+    }
+
+    if (isModerator) {
+      const management = el('div', { class: 'vote-card__management' });
+      if (!finished) {
+        const existing = new Set(nominees.map((nominee) => nominee.nomineeId));
+        const select = el('select', { class: 'vote-card__candidate', 'aria-label': 'Choose a player nominee' }, [
+          el('option', { value: '', text: candidates.length ? 'Choose a player to add' : 'No registered players available' }),
+          ...candidates.filter((candidate) => !existing.has(candidate.id)).map((candidate) =>
+            el('option', { value: candidate.id, text: candidate.player?.name || 'Unknown player' })
+          ),
+        ]);
+        const add = el('button', { class: 'btn btn--ghost', type: 'button', text: 'Add nominee', disabled: candidates.length ? null : 'disabled' });
+        add.addEventListener('click', async () => {
+          if (!select.value) return;
+          add.disabled = true;
+          try {
+            await Api.nominees.add(state.tournamentId, vote.id, select.value);
+            await refresh();
+          } catch (err) {
+            add.disabled = false;
+            showBanner(banner, friendlyErrorMessage(err));
+          }
+        });
+        management.append(el('div', { class: 'vote-card__nominee-editor' }, [select, add]));
+        if (nominees.length) {
+          management.appendChild(el('div', { class: 'vote-card__nominee-removals' }, nominees.map((nominee) => {
+            const remove = el('button', { class: 'btn btn--ghost', type: 'button', text: `Remove ${voteNomineeLabel(nominee)}` });
+            remove.addEventListener('click', async () => {
+              remove.disabled = true;
+              try {
+                await Api.nominees.remove(state.tournamentId, vote.id, nominee.nomineeId);
+                await refresh();
+              } catch (err) {
+                remove.disabled = false;
+                showBanner(banner, friendlyErrorMessage(err));
+              }
+            });
+            return remove;
+          })));
+        }
+        const finish = el('button', { class: 'btn btn--ghost', type: 'button', text: 'Finish vote' });
+        finish.addEventListener('click', async () => {
+          if (!await confirmAction('Finish vote', 'This closes the ballot and reveals its final result.', 'Finish vote')) return;
+          finish.disabled = true;
+          try { await Api.votes.finish(state.tournamentId, vote.id); await refresh(); }
+          catch (err) { finish.disabled = false; showBanner(banner, friendlyErrorMessage(err)); }
+        });
+        management.appendChild(finish);
+      }
+      card.appendChild(management);
+    }
+    return card;
+  }
+
+  async function renderVotesView(container, state) {
+    clear(container);
+    container.appendChild(el('div', { class: 'votes-view__intro' }, [
+      el('div', {}, [
+        el('p', { class: 'eyebrow', text: 'Community awards' }),
+        el('h2', { text: 'Tournament voting' }),
+        el('p', { class: 'field__hint', text: 'Celebrate the players who shaped this tournament. Each signed-in user can vote once per award.' }),
+      ]),
+    ]));
+    const isModerator = state.viewerRole === 'moderator' || Session.getUser()?.role === 'admin';
+    const controls = el('div', { class: 'votes-view__controls' });
+    const list = el('div', { class: 'votes-list' });
+    container.append(controls, list);
+
+    if (isModerator) {
+      const name = el('input', { type: 'text', placeholder: 'Vote title', required: 'required' });
+      const award = el('input', { type: 'text', placeholder: 'Award label', required: 'required' });
+      const create = el('button', { class: 'btn btn--primary', type: 'submit', text: 'Create vote' });
+      const form = el('form', { class: 'vote-create-form' }, [
+        el('h3', { text: 'Create an award' }),
+        el('div', { class: 'form-grid' }, [name, award]),
+        create,
+      ]);
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        create.disabled = true;
+        try { await Api.votes.create(state.tournamentId, { name: name.value, award: award.value }); await renderVotesView(container, state); }
+        catch (err) { create.disabled = false; showBanner(banner, friendlyErrorMessage(err)); }
+      });
+      controls.appendChild(form);
+    }
+
+    list.appendChild(el('p', { class: 'empty-state', text: 'Loading votes…' }));
+    try {
+      const data = await Api.votes.list(state.tournamentId);
+      const votes = data?.votes || [];
+      const candidates = isModerator ? await loadVoteCandidates(state) : [];
+      clear(list);
+      if (!votes.length) {
+        list.appendChild(el('div', { class: 'votes-empty' }, [
+          el('span', { class: 'votes-empty__icon', text: '✦' }),
+          el('h3', { text: 'No awards yet' }),
+          el('p', { class: 'field__hint', text: isModerator ? 'Create the first community award to get the conversation started.' : 'Voting will appear here when tournament staff creates an award.' }),
+        ]));
+        return;
+      }
+      for (const vote of votes) {
+        const nominees = await loadVoteNominees(state, vote);
+        list.appendChild(renderVoteCard(state, vote, nominees, candidates, () => renderVotesView(container, state)));
+      }
+    } catch (err) {
+      clear(list);
+      list.appendChild(el('p', { class: 'empty-state', text: friendlyErrorMessage(err) }));
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Match menu — a modal opened from a match row or bracket card.
+  // Read-only users see full match/team/squad information. Tournament
+  // moderators additionally get lifecycle controls (start, pause,
+  // resume, abandon) and a result editor. This is distinct from the
+  // future referee event-entry menu: it never records per-match
+  // goals/cards, only the aggregate squad stats the API already tracks.
+  // ---------------------------------------------------------------
+  function matchMenuTrigger(matchId, state, label = 'Details') {
+    return el('button', {
+      class: 'btn btn--ghost match-menu-trigger',
+      type: 'button',
+      text: label,
+      onclick: (event) => {
+        event.stopPropagation();
+        openMatchMenu(matchId, state);
+      },
+    });
+  }
+
+  function matchMenuSquadPanel(title, squad) {
+    const rows = squad.length
+      ? squad.map((pp) => {
+          const meta = [`${pp.goals || 0}G`, `${pp.assists || 0}A`];
+          if (pp.yellowCards) meta.push(`${pp.yellowCards}Y`);
+          if (pp.redCards) meta.push(`${pp.redCards}R`);
+          return el('li', { class: 'match-menu__player-row' }, [
+            el('span', { class: 'match-menu__player-shirt', text: pp.shirtNumber != null ? String(pp.shirtNumber) : '\u2014' }),
+            el('span', { class: 'match-menu__player-name', text: pp.player?.name || 'Unknown player' }),
+            pp.role && pp.role !== 'player' ? el('span', { class: 'badge', text: pp.role }) : null,
+            pp.status !== 'active' ? el('span', { class: `status-pill status-pill--${pp.status}`, text: pp.status }) : null,
+            el('span', { class: 'match-menu__player-stats', text: meta.join(' \u00b7 ') }),
+          ]);
+        })
+      : [el('li', { class: 'empty-state', text: 'No players registered.' })];
+    return el('div', { class: 'match-menu__squad' }, [
+      el('h3', { text: title }),
+      el('ul', { class: 'match-menu__player-list' }, rows),
+    ]);
+  }
+
+  function matchMenuAbandonControl(state, detail, refresh, showNotice, disableAll) {
+    const reasonInput = el('input', {
+      type: 'text',
+      placeholder: 'Reason for abandoning (required)',
+      'aria-label': 'Reason for abandoning match',
+    });
+    const cancelButton = el('button', { class: 'btn btn--ghost', type: 'button', text: 'Cancel' });
+    const form = el('form', { class: 'inline-form match-menu__abandon-form', hidden: 'hidden' }, [
+      reasonInput,
+      el('button', { class: 'btn btn--danger', type: 'submit', text: 'Confirm abandon' }),
+      cancelButton,
+    ]);
+    const toggleButton = el('button', { class: 'btn btn--danger', type: 'button', text: 'Abandon match' });
+    toggleButton.addEventListener('click', () => {
+      toggleButton.hidden = true;
+      form.hidden = false;
+      reasonInput.focus();
+    });
+    cancelButton.addEventListener('click', () => {
+      form.hidden = true;
+      toggleButton.hidden = false;
+      reasonInput.value = '';
+    });
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const reason = reasonInput.value.trim();
+      if (!reason) {
+        showNotice('A reason is required to abandon a match.');
+        reasonInput.focus();
+        return;
+      }
+      if (!await confirmAction(
+        'Abandon match',
+        'This clears the current result and returns the match to scheduled. It will not count toward standings or bracket progression until it is resumed and completed.',
+        'Abandon match'
+      )) return;
+      disableAll(true);
+      try {
+        await Api.matches.abandon(state.tournamentId, detail.match.id, { reason });
+        await refresh();
+      } catch (err) {
+        disableAll(false);
+        showNotice(friendlyErrorMessage(err));
+      }
+    });
+    return el('div', { class: 'match-menu__abandon' }, [toggleButton, form]);
+  }
+
+  function matchMenuScoreForm(state, detail, refresh, showNotice, disableAll) {
+    const m = detail.match;
+    const settings = detail.stage?.settings || {};
+    const homeScore = el('input', { type: 'number', min: 0, value: m.score.home ?? '', 'aria-label': 'Home regulation score' });
+    const awayScore = el('input', { type: 'number', min: 0, value: m.score.away ?? '', 'aria-label': 'Away regulation score' });
+    const etHome = el('input', { type: 'number', min: 0, value: m.score.extraTimeHome ?? '', 'aria-label': 'Home extra-time score' });
+    const etAway = el('input', { type: 'number', min: 0, value: m.score.extraTimeAway ?? '', 'aria-label': 'Away extra-time score' });
+    const pHome = el('input', { type: 'number', min: 0, value: m.score.penaltiesHome ?? '', 'aria-label': 'Home penalties' });
+    const pAway = el('input', { type: 'number', min: 0, value: m.score.penaltiesAway ?? '', 'aria-label': 'Away penalties' });
+
+    const rows = [
+      el('div', { class: 'match-menu__score-row' }, [
+        el('span', { class: 'match-menu__score-label', text: 'Regulation' }),
+        homeScore, el('span', { class: 'match-menu__score-sep', text: '\u2013' }), awayScore,
+      ]),
+    ];
+    if (settings.extraTime) {
+      rows.push(el('div', { class: 'match-menu__score-row' }, [
+        el('span', { class: 'match-menu__score-label', text: 'Extra time (optional)' }),
+        etHome, el('span', { class: 'match-menu__score-sep', text: '\u2013' }), etAway,
+      ]));
+    }
+    if (settings.penalties) {
+      rows.push(el('div', { class: 'match-menu__score-row' }, [
+        el('span', { class: 'match-menu__score-label', text: 'Penalties (optional)' }),
+        pHome, el('span', { class: 'match-menu__score-sep', text: '\u2013' }), pAway,
+      ]));
+    }
+
+    const finishedCorrection = m.status === 'finished';
+    const correctionReason = finishedCorrection
+      ? el('input', { class: 'match-menu__correction-reason', type: 'text', required: true, placeholder: 'Reason for correction', 'aria-label': 'Reason for correction' })
+      : null;
+    const saveButton = el('button', { class: 'btn btn--ghost', type: 'submit', text: finishedCorrection ? 'Save correction' : 'Save score' });
+    const finishButton = finishedCorrection
+      ? null
+      : el('button', { class: 'btn btn--primary', type: 'submit', text: 'Finish match' });
+    const form = el('form', { class: 'match-menu__score-form' }, [
+      el('h3', { text: 'Result' }),
+      ...(correctionReason ? [correctionReason] : []),
+      ...rows,
+      el('div', { class: 'match-menu__score-actions' }, [saveButton, finishButton].filter(Boolean)),
+    ]);
+
+    let submitting = false;
+    let lastSubmitter = saveButton;
+    [saveButton, finishButton].filter(Boolean).forEach((button) => {
+      button.addEventListener('click', () => { lastSubmitter = button; });
+    });
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (submitting) return;
+      if (homeScore.value === '' || awayScore.value === '') {
+        showNotice('Enter a regulation score for both teams.');
+        return;
+      }
+      if (correctionReason && !correctionReason.value.trim()) {
+        showNotice('Enter a reason for this finished-match correction.');
+        return;
+      }
+      const payload = {
+        revision: m.revision,
+        homeScore: Number(homeScore.value),
+        awayScore: Number(awayScore.value),
+        extraTimeHome: etHome.value === '' ? null : Number(etHome.value),
+        extraTimeAway: etAway.value === '' ? null : Number(etAway.value),
+        penaltiesHome: pHome.value === '' ? null : Number(pHome.value),
+        penaltiesAway: pAway.value === '' ? null : Number(pAway.value),
+        ...(correctionReason ? { reason: correctionReason.value.trim() } : {}),
+      };
+      const finishing = finishButton && lastSubmitter === finishButton;
+      if (finishing && !await confirmAction(
+        'Finish match',
+        'This finalizes the result and updates standings or bracket progression. It cannot be edited through this menu afterwards.',
+        'Finish match'
+      )) return;
+
+      submitting = true;
+      disableAll(true);
+      try {
+        if (finishing) {
+          await Api.matches.finish(state.tournamentId, m.id, payload);
+        } else {
+          await Api.matches.update(state.tournamentId, m.id, payload);
+        }
+        await refresh();
+      } catch (err) {
+        submitting = false;
+        disableAll(false);
+        showNotice(friendlyErrorMessage(err));
+      }
+    });
+
+    return form;
+  }
+
+  function matchMenuControls(state, detail, refresh) {
+    const status = detail.match.status;
+    const container = el('div', { class: 'match-menu__controls' });
+    const notice = el('div', { class: 'banner', hidden: 'hidden' });
+    container.appendChild(el('h3', { text: 'Monitor & edit' }));
+    container.appendChild(notice);
+
+    function showNotice(message) { showBanner(notice, message); }
+    function disableAll(disabled) {
+      container.querySelectorAll('button, input').forEach((node) => { node.disabled = disabled; });
+    }
+
+    function lifecycleButton(label, kind, apiCall) {
+      const button = el('button', { class: `btn btn--${kind}`, type: 'button', text: label });
+      button.addEventListener('click', async () => {
+        disableAll(true);
+        showNotice(null);
+        try {
+          await apiCall();
+          await refresh();
+        } catch (err) {
+          disableAll(false);
+          showNotice(friendlyErrorMessage(err));
+        }
+      });
+      return button;
+    }
+
+    const actions = el('div', { class: 'match-menu__lifecycle-actions' });
+    const administrator = isAdmin();
+    if (state.viewerRole === 'referee' || administrator) {
+      actions.appendChild(el('a', {
+        class: 'btn btn--primary',
+        href: `/referee?tournamentId=${encodeURIComponent(state.tournamentId)}&matchId=${encodeURIComponent(detail.match.id)}`,
+        text: 'Open referee menu',
+      }));
+    }
+    if (administrator || ['scheduled', 'postponed'].includes(status)) {
+      actions.appendChild(lifecycleButton('Start match', 'primary', () => Api.matches.start(state.tournamentId, detail.match.id)));
+    }
+    if (!administrator && status === 'live') {
+      actions.appendChild(lifecycleButton('Pause', 'ghost', () => Api.matches.pause(state.tournamentId, detail.match.id, detail.match.revision)));
+    }
+    if (!administrator && status === 'paused') {
+      actions.appendChild(lifecycleButton('Resume', 'primary', () => Api.matches.resume(state.tournamentId, detail.match.id, detail.match.revision)));
+    }
+    if (!administrator && ['live', 'paused'].includes(status)) {
+      actions.appendChild(matchMenuAbandonControl(state, detail, refresh, showNotice, disableAll));
+    }
+    if (administrator && !['live', 'paused'].includes(status)) {
+      actions.appendChild(lifecycleButton('Cancel match', 'danger', async () => {
+        if (!await confirmAction('Cancel match', 'This clears the result and permanently marks the match as cancelled.', 'Cancel match')) return;
+        await Api.matches.cancel(state.tournamentId, detail.match.id, 'Cancelled by administrator');
+      }));
+    }
+    if (actions.childNodes.length) container.appendChild(actions);
+
+    if (administrator && ['live', 'finished'].includes(status)) {
+      container.appendChild(el('p', {
+        class: 'field__hint',
+        text: status === 'live'
+          ? 'The assigned referee controls this active match. Administrator editing is available after it is finished.'
+          : 'Administrator correction mode: score fields can be updated, but event/statistical corrections require the finished-match correction workflow.',
+      }));
+    }
+    if ((administrator && ['scheduled', 'finished'].includes(status)) || (!administrator && ['live', 'paused'].includes(status))) {
+      container.appendChild(matchMenuScoreForm(state, detail, refresh, showNotice, disableAll));
+    }
+
+    if (status === 'finished') {
+      container.appendChild(el('p', { class: 'field__hint', text: administrator
+        ? 'Finished match: administrator score corrections are available. Changes should be reviewed before relying on standings or bracket progression.'
+        : 'This match is finished. Its result already counts toward standings/bracket progression and cannot be edited from this menu.' }));
+    }
+
+    return container;
+  }
+
+  function renderMatchMenuContent(shell, state, detail, refresh, close) {
+    clear(shell);
+    const m = detail.match;
+    const homeName = detail.homeTeam?.team?.name || detail.homeTeam?.nickname || 'TBD';
+    const awayName = detail.awayTeam?.team?.name || detail.awayTeam?.nickname || 'TBD';
+
+    const contextParts = [
+      state.stageNameById.get(m.stageId) || null,
+      detail.group?.name || detail.round?.name || null,
+      m.matchday ? `Matchday ${m.matchday}` : null,
+      formatDateTime(m.scheduledAt),
+      m.venue,
+    ].filter(Boolean);
+
+    const hasScore = m.score.home != null && m.score.away != null;
+    const extras = [];
+    if (m.score.extraTimeHome != null || m.score.extraTimeAway != null) {
+      extras.push(`ET ${m.score.extraTimeHome ?? '\u2013'}-${m.score.extraTimeAway ?? '\u2013'}`);
+    }
+    if (m.score.penaltiesHome != null || m.score.penaltiesAway != null) {
+      extras.push(`Pens ${m.score.penaltiesHome ?? '\u2013'}-${m.score.penaltiesAway ?? '\u2013'}`);
+    }
+
+    shell.appendChild(el('div', { class: 'match-menu__header' }, [
+      el('h2', { id: 'match-menu-title', text: `${homeName} vs ${awayName}` }),
+      el('button', { class: 'btn btn--ghost match-menu__close', type: 'button', text: 'Close', 'aria-label': 'Close match details', onclick: close }),
+    ]));
+
+    shell.appendChild(el('div', { class: 'match-menu__meta' }, [
+      statusPill(m.status),
+      contextParts.length ? el('span', { class: 'match-menu__context', text: contextParts.join(' \u00b7 ') }) : null,
+    ]));
+
+    shell.appendChild(el('div', { class: 'match-menu__scoreboard' }, [
+      el('div', { class: 'match-menu__scoreboard-team', text: homeName }),
+      hasScore
+        ? el('div', { class: 'match-menu__scoreboard-score', text: `${m.score.home} \u2013 ${m.score.away}` })
+        : el('div', { class: 'match-menu__scoreboard-score match-menu__scoreboard-score--empty', text: '\u2013' }),
+      el('div', { class: 'match-menu__scoreboard-team', text: awayName }),
+    ]));
+    if (extras.length) {
+      shell.appendChild(el('p', { class: 'match-menu__extra', text: extras.join(' \u00b7 ') }));
+    }
+
+    if (state.viewerRole === 'moderator') {
+      shell.appendChild(matchMenuControls(state, detail, refresh));
+    } else if (state.viewerRole === 'referee') {
+      shell.appendChild(el('div', { class: 'match-menu__controls' }, [
+        el('a', {
+          class: 'btn btn--primary',
+          href: `/referee?tournamentId=${encodeURIComponent(state.tournamentId)}&matchId=${encodeURIComponent(detail.match.id)}`,
+          text: 'Open referee menu',
+        }),
+      ]));
+    }
+
+    shell.appendChild(el('div', { class: 'match-menu__squads' }, [
+      matchMenuSquadPanel(homeName, detail.homeSquad || []),
+      matchMenuSquadPanel(awayName, detail.awaySquad || []),
+    ]));
+  }
+
+  async function openMatchMenu(matchId, state) {
+    const shell = el('section', {
+      class: 'modal match-menu',
+      role: 'dialog',
+      'aria-modal': 'true',
+      'aria-labelledby': 'match-menu-title',
+    });
+    const backdrop = el('div', { class: 'modal-backdrop match-menu-backdrop' }, [shell]);
+
+    function close() {
+      backdrop.remove();
+      document.removeEventListener('keydown', onKeyDown);
+    }
+    function onKeyDown(event) {
+      if (event.key === 'Escape') close();
+    }
+    backdrop.addEventListener('click', (event) => {
+      if (event.target === backdrop) close();
+    });
+    document.addEventListener('keydown', onKeyDown);
+    document.body.appendChild(backdrop);
+
+    async function refresh() {
+      let detail;
+      try {
+        const data = await Api.matches.detail(state.tournamentId, matchId);
+        detail = data?.matchDetail;
+        if (!detail) throw new Error('The server returned no match details.');
+      } catch (err) {
+        clear(shell);
+        shell.appendChild(el('div', { class: 'match-menu__header' }, [
+          el('h2', { id: 'match-menu-title', text: 'Match details' }),
+          el('button', { class: 'btn btn--ghost match-menu__close', type: 'button', text: 'Close', 'aria-label': 'Close match details', onclick: close }),
+        ]));
+        shell.appendChild(el('p', { class: 'empty-state', text: friendlyErrorMessage(err) }));
+        return;
+      }
+      renderMatchMenuContent(shell, state, detail, refresh, close);
+    }
+
+    clear(shell);
+    shell.appendChild(el('p', { class: 'empty-state', text: 'Loading match\u2026' }));
+    await refresh();
+  }
+
   // ---------------------------------------------------------------
   // View: Matches — grouped by All / Stage / Matchday / Group
   // ---------------------------------------------------------------
@@ -683,6 +1265,7 @@
     ];
     const simulate = simulationButton('Simulate', () => Api.simulation.match(m.id), m.status === 'finished');
     if (simulate) children.push(simulate);
+    children.push(matchMenuTrigger(m.id, state));
     return el('li', { class: 'match-row' }, children);
   }
 
@@ -1073,6 +1656,7 @@
         el('span', { class: 'bracket-match__score', text: m.score.away ?? '\u2013' }),
       ]),
       extras.length ? el('div', { class: 'bracket-match__extra', text: extras.join(' · ') }) : null,
+      el('div', { class: 'bracket-match__footer' }, [matchMenuTrigger(m.id, state)]),
     ]);
   }
 
@@ -1128,6 +1712,7 @@
       el('span', { text: `Leg ${index + 1}` }),
       el('span', { text: `${state.teamNameById.get(match.homeParticipantTeamId) || 'TBD'} ${match.score.home ?? '–'}–${match.score.away ?? '–'} ${state.teamNameById.get(match.awayParticipantTeamId) || 'TBD'}` }),
       statusPill(match.status),
+      matchMenuTrigger(match.id, state, 'Details'),
     ]));
 
     return el('div', { class: 'bracket-match bracket-match--tie' }, [

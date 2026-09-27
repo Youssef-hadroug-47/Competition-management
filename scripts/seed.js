@@ -17,9 +17,11 @@ function upsertUser(email, name, role, password) {
 
 upsertUser('admin@tournament.local', 'Admin', 'admin', 'admin123');
 upsertUser('user@tournament.local', 'Fan', 'user', 'user123');
+upsertUser('referee@tournament.local', 'Referee', 'user', 'referee123');
 
 
 
 console.log('Seed complete.');
 console.log('Admin:   admin@tournament.local / admin123');
 console.log('User:    user@tournament.local / user123');
+console.log('Referee: referee@tournament.local / referee123');

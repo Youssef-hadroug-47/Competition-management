@@ -69,6 +69,64 @@ function insertMatch({ tournamentId, stageId, groupId, matchday, homeId, awayId 
   return matchId;
 }
 
+function getPreviousStageOpponentPairs(stage, participantIds) {
+  if (stage.sequence_order <= 1 || !participantIds.length) return new Set();
+
+  const sourceStages = db.prepare(
+    `SELECT DISTINCT source_stage_id
+     FROM stage_promotions
+     WHERE target_stage_id = ?`
+  ).all(stage.id);
+  if (!sourceStages.length) return new Set();
+
+  const placeholders = sourceStages.map(() => '?').join(', ');
+  const matches = db.prepare(
+    `SELECT home_participant_team_id, away_participant_team_id
+     FROM matches
+     WHERE stage_id IN (${placeholders})
+       AND home_participant_team_id IS NOT NULL
+       AND away_participant_team_id IS NOT NULL`
+  ).all(...sourceStages.map((source) => source.source_stage_id));
+  const participants = new Set(participantIds);
+  const pairs = new Set();
+  for (const match of matches) {
+    if (!participants.has(match.home_participant_team_id) || !participants.has(match.away_participant_team_id)) {
+      continue;
+    }
+    const pair = [match.home_participant_team_id, match.away_participant_team_id].sort().join(':');
+    pairs.add(pair);
+  }
+  return pairs;
+}
+
+function pairKnockoutParticipants(participants, forbiddenPairs) {
+  const shuffled = shuffle(participants);
+  const pair = (remaining) => {
+    if (!remaining.length) return [];
+    const home = remaining[0];
+    const candidates = shuffle(remaining.slice(1)).filter((away) => {
+      const key = [home.id, away.id].sort().join(':');
+      return !forbiddenPairs.has(key);
+    });
+
+    for (const away of candidates) {
+      const rest = remaining.filter((participant) => participant !== home && participant !== away);
+      const result = pair(rest);
+      if (result) return [[home, away], ...result];
+    }
+
+    // An unpaired team can receive a bye when the draw has an odd number of
+    // participants, but only after all valid pairings have been attempted.
+    if (remaining.length % 2 === 1) {
+      const result = pair(remaining.slice(1));
+      if (result) return [[home], ...result];
+    }
+    return null;
+  };
+
+  return pair(shuffled);
+}
+
 /* ----------------------------------------------------------------------
  * Stage linking helpers — promotions are no longer computed on the fly at
  * draw time. A group's promotion_rules can send different rank ranges to
@@ -303,7 +361,6 @@ function splitIntoBuckets(teams, type, groupId) {
       // teams played against each other — a fresh mini-league per bucket,
       // not the group's overall table.
       const stats = computeMiniLeagueStats(teams, groupId);
-      console.log(stats);
       return bucketByComposite(teams, (t) => {
         const s = stats[t.id] || { pts: 0, gf: 0, ga: 0 };
         return [s.pts, s.gf - s.ga, s.gf];
@@ -333,9 +390,7 @@ function sortTeamsWithTiebreakers(teams, sortedTiebreakers, idx, groupId) {
     return [...teams].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   }
 
-  console.log(sortedTiebreakers[idx].type);
   const buckets = splitIntoBuckets(teams, sortedTiebreakers[idx].type, groupId);
-  console.log(buckets);
   const result = [];
   for (const bucket of buckets) {
     if (bucket.length === 1) result.push(...bucket);
@@ -539,9 +594,16 @@ function drawLeagueStage(tournament, stage, groups, participants) {
 // matches for rounds after the first are only generated once the round
 // feeding them is complete — see advanceKnockoutStage().
 function drawKnockoutStage(tournament, stage, groups, participants) {
-  const shuffled = shuffle(participants);
   const settings = parseJson(stage.settings, defaultStageSettings('knockout'));
   const legs = Math.max(1, Number(settings.headToHeadMatches) || 1);
+  const forbiddenPairs = getPreviousStageOpponentPairs(stage, participants.map((participant) => participant.id));
+  const pairs = pairKnockoutParticipants(participants, forbiddenPairs);
+  if (!pairs) {
+    throw httpError(
+      409,
+      'Unable to draw this knockout stage without repeating a previous-stage matchup. Adjust the qualified teams or allow rematches.'
+    );
+  }
 
   let roundGroups = groups;
   let firstRound;
@@ -549,8 +611,7 @@ function drawKnockoutStage(tournament, stage, groups, participants) {
 
   runInTransaction(() => {
     if (!roundGroups.length) {
-      const names = knockoutRounds(shuffled.length);
-      console.log(names);
+      const names = knockoutRounds(participants.length);
       const insertGroup = db.prepare(
         `INSERT INTO rounds (id, stage_id, name, sequence_order) VALUES (?, ?, ?, ?)`
       );
@@ -562,15 +623,8 @@ function drawKnockoutStage(tournament, stage, groups, participants) {
     }
 
     firstRound = [...roundGroups].sort((a, b) => a.sequence_order - b.sequence_order)[0];
-    const pairs = [];
-    for (let i = 0; i < shuffled.length; i += 2) {
-      const home = shuffled[i];
-      const away = shuffled[i + 1];
-      if (!away) continue;
-      pairs.push([home, away]);
-    }
-
     pairs.forEach((pair, index) => {
+      if (pair.length < 2) return;
       for (let leg = 0; leg < legs; leg += 1) {
         const home = leg === 0 ? pair[0] : pair[1];
         const away = leg === 0 ? pair[1] : pair[0];
@@ -588,10 +642,10 @@ function drawKnockoutStage(tournament, stage, groups, participants) {
     });
 
     const mark = db.prepare(`UPDATE participant_teams SET status = 'drawn' WHERE id = ?`);
-    for (const pt of shuffled) mark.run(pt.id);
+    for (const pt of participants) mark.run(pt.id);
   });
 
-  return { assigned: shuffled.length, matchesCreated: created.length, firstRound: firstRound.name };
+  return { assigned: participants.length, matchesCreated: created.length, firstRound: firstRound.name };
 }
 
 function runDraw({ tournamentId, stageId }) {
@@ -611,10 +665,11 @@ function runDraw({ tournamentId, stageId }) {
   }
 
   const existingMatches = db
-    .prepare('SELECT COUNT(*) AS c FROM matches WHERE tournament_id = ? AND stage_id = ?')
-    .get(tournamentId, stage.id);
-  if (existingMatches.c > 0) {
-    throw httpError(409, 'A draw already exists for this stage. Delete its matches first to redraw.');
+    .prepare('SELECT id, status FROM matches WHERE tournament_id = ? AND stage_id = ?')
+    .all(tournamentId, stage.id);
+  const startedMatch = existingMatches.find((match) => !['scheduled', 'postponed', 'cancelled'].includes(match.status));
+  if (startedMatch) {
+    throw httpError(409, 'This stage has started. Use Reset stage before creating a new draw.');
   }
 
   // Stage linking: a stage only draws from teams that have already been
@@ -632,6 +687,7 @@ function runDraw({ tournamentId, stageId }) {
         : `No teams have been promoted into stage #${stage.sequence_order} yet. Finish the stage(s) whose promotion_rules target it first.`;
       throw httpError(409, message);
     }
+
   } else {
     participants = db.prepare('SELECT * FROM participant_teams WHERE tournament_id = ?').all(tournamentId);
     const number_of_teams = db.prepare('SELECT * from tournaments WHERE id = ?').get(tournamentId).number_of_teams;
@@ -644,6 +700,10 @@ function runDraw({ tournamentId, stageId }) {
     .prepare(`SELECT * FROM ${ stage.type === "league" ? 'groups' : 'rounds'} WHERE stage_id = ? ORDER BY sequence_order ASC, name ASC`)
     .all(stage.id) ; 
 
+  if (existingMatches.length) {
+    db.prepare('DELETE FROM matches WHERE tournament_id = ? AND stage_id = ?')
+      .run(tournamentId, stage.id);
+  }
 
   const result =
     stage.type === 'knockout'
@@ -664,6 +724,117 @@ function runDraw({ tournamentId, stageId }) {
     sequenceOrder: stage.sequence_order,
     promotedFromStages: stage.sequence_order > 1 ? getFeederStageSequenceOrders(stage) : [],
     ...result,
+  };
+}
+
+function resetStage({ tournamentId, stageId }) {
+  const stage = db.prepare('SELECT * FROM stages WHERE id = ? AND tournament_id = ?').get(stageId, tournamentId);
+  if (!stage) throw httpError(404, 'Stage not found');
+
+  const stageIds = new Set([stage.id]);
+  const pending = [stage.id];
+  while (pending.length) {
+    const sourceStageId = pending.shift();
+    const targets = db.prepare(
+      'SELECT DISTINCT target_stage_id FROM stage_promotions WHERE source_stage_id = ?'
+    ).all(sourceStageId);
+    targets.forEach(({ target_stage_id: targetStageId }) => {
+      if (!stageIds.has(targetStageId)) {
+        stageIds.add(targetStageId);
+        pending.push(targetStageId);
+      }
+    });
+  }
+
+  const ids = [...stageIds];
+  const downstreamIds = ids.filter((id) => id !== stage.id);
+  const placeholders = ids.map(() => '?').join(', ');
+  const matches = db.prepare(
+    `SELECT * FROM matches WHERE tournament_id = ? AND stage_id IN (${placeholders})`
+  ).all(tournamentId, ...ids);
+  const stageGroupIds = db.prepare(
+    `SELECT id FROM groups WHERE stage_id IN (${placeholders})`
+  ).all(...ids).map(({ id }) => id);
+  const assignedTeamIds = new Set(
+    matches.flatMap((match) => [
+      match.home_participant_team_id,
+      match.away_participant_team_id,
+    ]).filter(Boolean)
+  );
+  if (stageGroupIds.length) {
+    const groupPlaceholders = stageGroupIds.map(() => '?').join(', ');
+    db.prepare(
+      `SELECT id FROM participant_teams WHERE tournament_id = ? AND group_id IN (${groupPlaceholders})`
+    ).all(tournamentId, ...stageGroupIds).forEach(({ id }) => assignedTeamIds.add(id));
+  }
+
+  runInTransaction(() => {
+    for (const match of matches) {
+      if (match.status === 'finished') {
+        const stageRow = db.prepare('SELECT type, settings FROM stages WHERE id = ?').get(match.stage_id);
+        if (stageRow?.type === 'league') {
+          const settings = parseJson(stageRow.settings, defaultStageSettings('league'));
+          const home = db.prepare('SELECT * FROM participant_teams WHERE id = ?').get(match.home_participant_team_id);
+          const away = db.prepare('SELECT * FROM participant_teams WHERE id = ?').get(match.away_participant_team_id);
+          if (home && away) {
+            const homeScore = Number(match.home_score || 0);
+            const awayScore = Number(match.away_score || 0);
+            const homeWin = homeScore > awayScore;
+            const draw = homeScore === awayScore;
+            const pts = settings.points || { win: 3, draw: 1, loss: 0 };
+            const reverse = (team, wins, draws, losses, goalsFor, goalsAgainst, points) => db.prepare(
+              `UPDATE participant_teams SET played = MAX(0, played - ?), won = MAX(0, won - ?),
+                drawn = MAX(0, drawn - ?), lost = MAX(0, lost - ?),
+                goals_for = MAX(0, goals_for - ?), goals_against = MAX(0, goals_against - ?),
+                points = MAX(0, points - ?) WHERE id = ?`
+            ).run(1, wins, draws, losses, goalsFor, goalsAgainst, points, team.id);
+            reverse(home, homeWin ? 1 : 0, draw ? 1 : 0, homeWin ? 0 : 1, homeScore, awayScore, homeWin ? pts.win : draw ? pts.draw : pts.loss);
+            reverse(away, homeWin ? 0 : 1, draw ? 1 : 0, homeWin ? 1 : 0, awayScore, homeScore, homeWin ? pts.loss : draw ? pts.draw : pts.win);
+          }
+        }
+      }
+      const events = db.prepare('SELECT type, card, player_id, payload FROM match_events WHERE match_id = ?').all(match.id);
+      events.forEach((event) => {
+        if (!event.player_id) return;
+        const payload = parseJson(event.payload, {});
+        const column = event.type === 'goal' && !payload.ownGoal
+          ? 'goals'
+          : event.type === 'assist' && !payload.skipped
+            ? 'assists'
+            : event.type === 'card'
+              ? (event.card === 'red' ? 'red_cards' : 'yellow_cards')
+              : null;
+        if (column) db.prepare(`UPDATE participant_players SET ${column} = MAX(0, ${column} - 1) WHERE id = ?`).run(event.player_id);
+      });
+    }
+    // Promotions into the selected stage are still valid inputs for a redraw.
+    // Only generated results from this stage and its downstream stages must be
+    // discarded.
+    db.prepare(`DELETE FROM stage_promotions WHERE source_stage_id IN (${placeholders})`)
+      .run(...ids);
+    if (downstreamIds.length) {
+      const downstreamPlaceholders = downstreamIds.map(() => '?').join(', ');
+      db.prepare(`DELETE FROM stage_promotions WHERE target_stage_id IN (${downstreamPlaceholders})`)
+        .run(...downstreamIds);
+    }
+    db.prepare(`DELETE FROM matches WHERE tournament_id = ? AND stage_id IN (${placeholders})`)
+      .run(tournamentId, ...ids);
+    db.prepare(`UPDATE stages SET status = NULL WHERE tournament_id = ? AND id IN (${placeholders})`)
+      .run(tournamentId, ...ids);
+    if (assignedTeamIds.size) {
+      const teamIds = [...assignedTeamIds];
+      const teamPlaceholders = teamIds.map(() => '?').join(', ');
+      db.prepare(
+        `UPDATE participant_teams
+         SET group_id = NULL, status = 'registered', winner = false
+         WHERE tournament_id = ? AND id IN (${teamPlaceholders})`
+      ).run(tournamentId, ...teamIds);
+    }
+  });
+  return {
+    resetStages: ids.length,
+    deletedMatches: matches.length,
+    resetParticipantTeams: assignedTeamIds.size,
   };
 }
 
@@ -812,6 +983,7 @@ function finalizeStageIfComplete(stageId) {
 
 module.exports = {
   runDraw,
+  resetStage,
   roundRobinPairs,
   advanceKnockoutStage,
   finalizeLeagueStage,

@@ -25,7 +25,7 @@ the static server is still running — refresh the browser afterwards.
 | File | Maps to |
 |---|---|
 | `public/index.html` | Home — left wireframe (logged out: logo, login/register buttons, exact-name tournament search, "création des tournois" CTA, public tournaments) or right wireframe (logged in: logo, profile circle with a menu, "My tournaments", "les tournois favoris", exact-name tournament search, "création des tournois", public tournaments) depending on session state. Private tournaments are excluded from the normal list, but exact-name search can reveal a locked private result. |
-| `public/tournament.html` | One tournament — info, role-protected draw control, matches, standings/bracket (stage-scoped toggle), top scorers/assisters, registered teams/rosters, private-tournament follower moderation, and creator-only staff management. Reachable from every tournament row/card on the site. |
+| `public/tournament.html` | One tournament — info, role-protected draw control, match-information menus with moderator monitoring, voting, standings/bracket (stage-scoped toggle), top scorers/assisters, registered teams/rosters, private-tournament follower moderation, and creator-only staff management. Reachable from every tournament row/card on the site. |
 | `public/create-tournament.html` | Authenticated two-phase tournament builder. Collects general information, then uses a stage navigator with balanced team-count presets, league points, responsive group cards, direct advancement defaults for ranks 1–2, optional best-ranking places and knockout rounds before submitting through the existing API helpers. |
 | `public/login.html` | Sign in |
 | `public/register.html` | Create account |
@@ -56,7 +56,39 @@ the URL shape.
   simulation/actions return to the same browsing context without moving
   keyboard focus.
 - **Matches**: a flat, sorted list — every match in the tournament,
-  independent of the stage toggle below.
+  independent of the stage toggle below. Selecting **Details** opens a
+  read-only match menu with the match context, result, both squads, and
+  cumulative player goals, assists, yellow cards, and red cards. Tournament
+  moderators additionally get controls to start, pause, resume, abandon/reset,
+  save a live result, or finish a match with regulation, optional extra-time,
+  and optional penalty values. Abandonment requires a reason, clears the
+  result, and returns the match to `scheduled`; only finishing updates
+  standings or knockout progression. Per-match event entry is intentionally
+  reserved for the future referee menu.
+  Resetting a stage clears its matches and dependent downstream schedules while
+  preserving the stage, groups, and knockout rounds for a later redraw. It also
+  detaches teams from the reset league groups, restores team table totals for
+  those matches and statuses, and reverses player goals, assists, and cards
+  recorded in those matches; roster memberships themselves are preserved.
+  During `live` or `paused` play, the assigned referee has exclusive mutation
+  control: administrators can inspect the match but cannot change its score,
+  events, phase, or lifecycle. Administrators retain scheduled-match controls
+  and can open finished-match score correction controls.
+  Administrators cannot start matches; kickoff remains an assigned-referee
+  operation.
+  Finished-match score corrections require a reason, use an optimistic
+  revision check, reverse and reapply league standings atomically, and are
+  audited. Finished knockout matches must be corrected by resetting and
+  redrawing the stage because direct edits could invalidate bracket
+  advancement. Finished-match event writes are rejected until an equivalent
+  transactional event-correction workflow is used.
+- **Voting**: anonymous viewers can inspect open and finished awards, while
+  signed-in viewers can cast exactly one ballot per award. Tournament
+  moderators and global admins can create awards, add or remove registered
+  participant-player nominees, and finish an individual award. Finished
+  awards reveal their final totals and winners and reject further ballots or
+  nominee changes. This tab does not record match events; that remains part
+  of the future referee workflow.
 - **Standings / bracket**: one tab per stage; only the selected stage's
   content is ever rendered. A `league` stage shows a standings table per
   group (computed client-side from `participant_teams`' running stats —
@@ -187,3 +219,18 @@ in declaration order, so `GET /tournaments/followed` registered after
 the `:tournamentId` route will never be reached — `followed` will be
 captured as a `tournamentId` value instead. See the note in
 `API_REFERENCE.md` under **Follows**.
+
+## Referee match menu
+
+Assigned tournament referees can open `/referee.html?tournamentId=...&matchId=...`
+to run a live match. The menu records goals, cards, phase transitions, and
+penalty-shootout attempts. Regulation and extra-time goals update match/player
+statistics; shootout attempts update only shootout totals and never count as
+goals. Match timing is based on server timestamps, and referee mutations use
+authenticated JSON requests. The event picker uses event squares followed by
+team/player selection. For an own goal, the selected team and player are the
+offender; the goal is added to the opposing team's score and the timeline is
+aligned with that beneficiary without increasing the offender's goal total. Normal
+goals prompt for an optional assister event. A protected SSE endpoint is available for
+read-side live snapshots; clients should reconnect by reloading the snapshot
+after a disconnect.

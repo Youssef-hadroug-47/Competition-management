@@ -209,17 +209,46 @@ const Api = {
   // ---- Draw / matches / simulation ----
   draw: {
     run: (tournamentId, stageId) => request('POST', `/tournaments/${enc(tournamentId)}/draw`, { body: { stageId } }),
+    reset: (tournamentId, stageId) => request('DELETE', `/tournaments/${enc(tournamentId)}/stages/${enc(stageId)}/reset`),
   },
 
   matches: {
     list: (tournamentId) => request('GET', `/tournaments/${enc(tournamentId)}/matches`),
     get: (tournamentId, id) => request('GET', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}`),
+    detail: (tournamentId, id) => request('GET', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/detail`),
     start: (tournamentId, id, payload) =>
       request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/start`, { body: payload }),
+    pause: (tournamentId, id, revision) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/pause`, { body: { revision } }),
+    resume: (tournamentId, id, revision) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/resume`, { body: { revision } }),
+    abandon: (tournamentId, id, payload) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/abandon`, { body: payload }),
+    cancel: (tournamentId, id, reason) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/cancel`, { body: { reason } }),
     update: (tournamentId, id, payload) =>
       request('PATCH', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}`, { body: payload }),
     finish: (tournamentId, id, payload) =>
       request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/finish`, { body: payload }),
+  },
+
+  referee: {
+    detail: (tournamentId, id) =>
+      request('GET', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/referee`),
+    start: (tournamentId, id, payload) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/referee/start`, { body: payload }),
+    event: (tournamentId, id, payload) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/referee/events`, { body: payload }),
+    updateEvent: (tournamentId, id, eventId, payload) =>
+      request('PATCH', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/referee/events/${enc(eventId)}`, { body: payload }),
+    deleteEvent: (tournamentId, id, eventId, payload) =>
+      request('DELETE', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/referee/events/${enc(eventId)}`, { body: payload }),
+    transition: (tournamentId, id, action, revision) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/referee/transition`, { body: { action, revision } }),
+    finishPhase: (tournamentId, id, phase, revision) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/referee/finish-phase`, { body: { phase, revision } }),
+    abandon: (tournamentId, id, reason) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/referee/abandon`, { body: { reason } }),
   },
 
   simulation: {
@@ -249,6 +278,8 @@ const Api = {
     create: (tournamentId, payload) => request('POST', `/tournaments/${enc(tournamentId)}/votes`, { body: payload }),
     update: (tournamentId, id, payload) =>
       request('PATCH', `/tournaments/${enc(tournamentId)}/votes/${enc(id)}`, { body: payload }),
+    finish: (tournamentId, id) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/votes/${enc(id)}/finish`, { body: {} }),
     remove: (tournamentId, id) => request('DELETE', `/tournaments/${enc(tournamentId)}/votes/${enc(id)}`),
   },
 
@@ -257,8 +288,8 @@ const Api = {
       request('GET', `/tournaments/${enc(tournamentId)}/votes/${enc(voteId)}/nominees`),
     add: (tournamentId, voteId, nomineeId) =>
       request('POST', `/tournaments/${enc(tournamentId)}/votes/${enc(voteId)}/nominees`, { body: { nomineeId } }),
-    castVote: (tournamentId, voteId, nomineeId, userId) =>
-      request('POST', `/tournaments/${enc(tournamentId)}/votes/${enc(voteId)}/nominees/${enc(nomineeId)}`, { body: { userId } }),
+    castVote: (tournamentId, voteId, nomineeId) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/votes/${enc(voteId)}/nominees/${enc(nomineeId)}`, { body: {} }),
     remove: (tournamentId, voteId, nomineeId) =>
       request('DELETE', `/tournaments/${enc(tournamentId)}/votes/${enc(voteId)}/nominees/${enc(nomineeId)}`),
   },

@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "seed": "node scripts/seed.js",
+    "test:draw": "node scripts/test-draw-service.js",
     "start:api": "npm start",
     "start:ui": "cd frontend; npm start", 
     "dev": "concurrently -k -p \"[{name}]\" -n \"API,UI\" -c \"cyan,magenta\" \"npm run start:api\" \"npm run start:ui\""

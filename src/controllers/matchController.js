@@ -3,9 +3,39 @@ const { asyncHandler } = require('../utils/asyncHandler');
 const { httpError } = require('../middleware/error');
 const map = require('../services/mappers');
 const access = require('../services/access');
-const { runDraw } = require('../services/drawService');
-const { finishMatchRecord } = require('../services/matchService');
+const { runDraw, resetStage } = require('../services/drawService');
+const {
+  finishMatchRecord,
+  correctFinishedMatchRecord,
+  assertTransition,
+  assertRevision,
+  assertAdministratorMutationAllowed,
+  pauseMatchRecord,
+  resumeMatchRecord,
+  abandonMatchRecord,
+  cancelMatchRecord,
+  getMatchDetail: getMatchDetailRecord,
+} = require('../services/matchService');
 const { getAllFollowedTournaments } = require('../services/followService');
+const { isAdministrator } = require('../middleware/auth');
+
+function getMatchForTournamentOrThrow(matchId, tournamentId) {
+  const row = db.prepare('SELECT * FROM matches WHERE id = ? AND tournament_id = ?').get(matchId, tournamentId);
+  if (!row) throw httpError(404, 'Match not found');
+  return row;
+}
+
+function scoreValue(value, field, { required = false } = {}) {
+  if (value == null || value === '') {
+    if (required) throw httpError(400, `${field} is required`);
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw httpError(400, `${field} must be a non-negative integer`);
+  }
+  return parsed;
+}
 
 const draw = asyncHandler((req, res) => {
   const tournamentId = req.body?.tournamentId || req.params.tournamentId;
@@ -13,6 +43,13 @@ const draw = asyncHandler((req, res) => {
   access.getTournamentOrThrow(tournamentId);
   const result = runDraw({ tournamentId, stageId: req.body?.stageId });
   res.status(201).json({ draw: result });
+});
+
+const resetStageHandler = asyncHandler((req, res) => {
+  const tournamentId = req.params.tournamentId;
+  access.getTournamentOrThrow(tournamentId);
+  const result = resetStage({ tournamentId, stageId: req.params.id });
+  res.json({ reset: result });
 });
 
 const listMatches = asyncHandler((req, res) => {
@@ -25,20 +62,26 @@ const listMatches = asyncHandler((req, res) => {
 });
 
 const getMatch = asyncHandler((req, res) => {
-  const row = db.prepare('SELECT * FROM matches WHERE id = ?').get(req.params.id);
-  if (!row) throw httpError(404, 'Match not found');
-  const tournament = access.getTournamentOrThrow(row.tournament_id);
+  const tournament = access.getTournamentOrThrow(req.params.tournamentId);
+  const row = getMatchForTournamentOrThrow(req.params.id, tournament.id);
   access.requireTournamentInspect(tournament, req.user);
   res.json({ match: map.match(row) });
 });
 
+const getMatchDetailHandler = asyncHandler((req, res) => {
+  const tournament = access.getTournamentOrThrow(req.params.tournamentId);
+  const row = getMatchForTournamentOrThrow(req.params.id, tournament.id);
+  access.requireTournamentInspect(tournament, req.user);
+  res.json({ matchDetail: getMatchDetailRecord(row.id) });
+});
+
 const startMatch = asyncHandler((req, res) => {
-  const row = db.prepare('SELECT * FROM matches WHERE id = ?').get(req.params.id);
-  if (!row) throw httpError(404, 'Match not found');
-  if (row.status === 'finished') throw httpError(400, 'Match already finished');
-  db.prepare(
-    `UPDATE matches SET status = 'live', referee_id = ?, started_at = ?, venue = COALESCE(?, venue) WHERE id = ?`
-  ).run(req.user.id, now(), req.body?.venue || null, row.id);
+  const row = getMatchForTournamentOrThrow(req.params.id, req.params.tournamentId);
+  assertTransition(row.status, 'start');
+  const result = db.prepare(
+    `UPDATE matches SET status = 'live', phase = 'regulation', referee_id = ?, started_at = ?,
+      phase_started_at = ?, phase_elapsed_seconds = 0, venue = COALESCE(?, venue) WHERE id = ?`
+  ).run(req.user.id, now(), now(), req.body?.venue || null, row.id);
   db.prepare(`UPDATE tournaments SET status = 'in_progress', updated_at = ? WHERE id = ?`).run(
     now(),
     row.tournament_id
@@ -47,48 +90,60 @@ const startMatch = asyncHandler((req, res) => {
 });
 
 const updateMatch = asyncHandler((req, res) => {
-  const row = db.prepare('SELECT * FROM matches WHERE id = ?').get(req.params.id);
-  if (!row) throw httpError(404, 'Match not found');
+  const row = getMatchForTournamentOrThrow(req.params.id, req.params.tournamentId);
   const body = req.body || {};
-  db.prepare(
+  if (['homeScore', 'awayScore', 'extraTimeHome', 'extraTimeAway', 'penaltiesHome', 'penaltiesAway']
+    .some((field) => body[field] !== undefined)) {
+    throw httpError(410, 'Manual score updates have been removed. Change the match events instead.');
+  }
+  assertAdministratorMutationAllowed(row.status);
+  if (!isAdministrator(req.user)) assertTransition(row.status, 'update');
+  assertRevision(row, body.revision);
+  const result = db.prepare(
     `UPDATE matches SET
-      home_score = ?, away_score = ?, extra_time_home = ?, extra_time_away = ?,
-      penalties_home = ?, penalties_away = ?, venue = ?, scheduled_at = ?
-     WHERE id = ?`
+      venue = ?, scheduled_at = ?, revision = revision + 1
+     WHERE id = ? AND revision = ?`
   ).run(
-    body.homeScore ?? row.home_score,
-    body.awayScore ?? row.away_score,
-    body.extraTimeHome ?? row.extra_time_home,
-    body.extraTimeAway ?? row.extra_time_away,
-    body.penaltiesHome ?? row.penalties_home,
-    body.penaltiesAway ?? row.penalties_away,
     body.venue ?? row.venue,
     body.scheduledAt ?? row.scheduled_at,
-    row.id
+    row.id,
+    Number(row.revision || 0)
   );
+  if (!result.changes) throw httpError(409, 'Match changed while the update was being saved. Refresh and retry.');
   res.json({ match: map.match(db.prepare('SELECT * FROM matches WHERE id = ?').get(row.id)) });
 });
 
+const pauseMatch = asyncHandler((req, res) => {
+  const row = getMatchForTournamentOrThrow(req.params.id, req.params.tournamentId);
+  const administrator = isAdministrator(req.user);
+  const updated = pauseMatchRecord(row, administrator, req.body?.revision);
+  res.json({ match: map.match(updated) });
+});
+
+const resumeMatch = asyncHandler((req, res) => {
+  const row = getMatchForTournamentOrThrow(req.params.id, req.params.tournamentId);
+  const administrator = isAdministrator(req.user);
+  const updated = resumeMatchRecord(row, administrator, req.body?.revision);
+  res.json({ match: map.match(updated) });
+});
+
+const abandonMatch = asyncHandler((req, res) => {
+  const row = getMatchForTournamentOrThrow(req.params.id, req.params.tournamentId);
+  const reason = req.body?.reason;
+  const administrator = isAdministrator(req.user);
+  const updated = abandonMatchRecord(row, reason, administrator);
+  res.json({ match: map.match(updated), reason: String(reason).trim() });
+});
+
 const finishMatch = asyncHandler((req, res) => {
-  const row = db.prepare('SELECT * FROM matches WHERE id = ?').get(req.params.id);
-  if (!row) throw httpError(404, 'Match not found');
-  if (row.status === 'finished') throw httpError(400, 'Match already finished');
-  const homeScore = req.body?.homeScore ?? row.home_score;
-  const awayScore = req.body?.awayScore ?? row.away_score;
-  if (homeScore == null || awayScore == null) throw httpError(400, 'homeScore and awayScore are required');
+  throw httpError(410, 'Manual score finishing has been removed. Record or correct match events, then finish the phase from the referee controls.');
+});
 
-  const { match: updated, advance } = finishMatchRecord({
-    matchRow: row,
-    homeScore: Number(homeScore),
-    awayScore: Number(awayScore),
-    extraTimeHome: req.body?.extraTimeHome ?? row.extra_time_home,
-    extraTimeAway: req.body?.extraTimeAway ?? row.extra_time_away,
-    penaltiesHome: req.body?.penaltiesHome ?? row.penalties_home,
-    penaltiesAway: req.body?.penaltiesAway ?? row.penalties_away,
-    refereeId: req.user.id,
-  });
-
-  res.json({ match: map.match(updated), advance });
+const cancelMatch = asyncHandler((req, res) => {
+  const row = getMatchForTournamentOrThrow(req.params.id, req.params.tournamentId);
+  assertAdministratorMutationAllowed(row.status);
+  const updated = cancelMatchRecord(row);
+  res.json({ match: map.match(updated), reason: String(req.body?.reason || 'Cancelled by administrator') });
 });
 
 const listFollowedTournaments = asyncHandler(( req, res, next) => {
@@ -158,11 +213,17 @@ const moderateFollow = asyncHandler((req, res) => {
 
 module.exports = {
   draw,
+  resetStage: resetStageHandler,
   listMatches,
   getMatch,
+  getMatchDetail: getMatchDetailHandler,
   startMatch,
+  pauseMatch,
+  resumeMatch,
+  abandonMatch,
   updateMatch,
   finishMatch,
+  cancelMatch,
   follow,
   unfollow,
   listFollowers,

@@ -4,6 +4,10 @@ const config = require('../config');
 const { httpError } = require('./error');
 const { getRole } = require('../services/tournamentRolesService');
 
+function isAdministrator(user) {
+  return Boolean(user && String(user.role).toLowerCase() === 'admin');
+}
+
 function requireTournamentRole(...roles) {
   return (req, _, next) => {
     
@@ -25,10 +29,32 @@ function requireTournamentRole(...roles) {
     req.user.tournamentRoles = tournamentRoles;
     req.user.tournamentRoles[tournamentId] = role;
     return next();
-  }
-
+  };
 }
 
+function requireTournamentModerator(req, _, next) {
+  if (!req.user) return next(httpError(401, 'Authentication required'));
+  if (isAdministrator(req.user)) return next();
+  return requireTournamentRole('moderator')(req, _, next);
+}
+
+function requireTournamentReferee(req, _, next) {
+  if (!req.user) return next(httpError(401, 'Authentication required'));
+  if (isAdministrator(req.user)) return next();
+  const tournamentId = req.params.tournamentId || null;
+  if (!tournamentId) return next(httpError(400, 'Bad Request'));
+  const role = getRole(tournamentId, req.user.id);
+  if (role !== 'referee') return next(httpError(403, 'Assigned tournament referee access required'));
+  req.user.tournamentRoles = req.user.tournamentRoles || {};
+  req.user.tournamentRoles[tournamentId] = role;
+  return next();
+}
+
+function requireTournamentSupervisor(req, _, next) {
+  if (!req.user) return next(httpError(401, 'Authentication required'));
+  if (isAdministrator(req.user)) return next();
+  return requireTournamentRole('moderator')(req, _, next);
+}
 
 function requireOwner(req, _, next) {
   
@@ -77,4 +103,14 @@ function requireRole(...roles) {
   };
 }
 
-module.exports = { authOptional, requireOwner, requireAuth, requireRole, requireTournamentRole};
+module.exports = {
+  authOptional,
+  requireOwner,
+  requireAuth,
+  requireRole,
+  requireTournamentRole,
+  requireTournamentModerator,
+  requireTournamentReferee,
+  requireTournamentSupervisor,
+  isAdministrator,
+};

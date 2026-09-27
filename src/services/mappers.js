@@ -12,6 +12,7 @@ function tournament(row) {
     name: row.name,
     slug: row.slug,
     status: row.status,
+    revision: row.revision || 0,
     visibility: row.visibility,
     // format: row.format,
     numberOfTeams: row.number_of_teams,
@@ -183,6 +184,10 @@ function match(row) {
       penaltiesAway: row.penalties_away,
     },
     refereeId: row.referee_id,
+    durationMinutes: row.duration_minutes,
+    phase: row.phase || (row.status === 'finished' ? 'finished' : row.status === 'live' ? 'regulation' : 'scheduled'),
+    phaseStartedAt: row.phase_started_at,
+    phaseElapsedSeconds: row.phase_elapsed_seconds || 0,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
     createdAt: row.created_at,
@@ -207,6 +212,11 @@ function vote(row) {
     tournamentId: row.tournament_id,
     name: row.name,
     award: row.award,
+    status: row.status || 'open',
+    finishedAt: row.finished_at || null,
+    createdAt: row.created_at || null,
+    ballotCount: Number(row.ballot_count) || 0,
+    selectedNomineeId: row.selected_nominee_id || null,
   };
 }
 
@@ -215,7 +225,13 @@ function voteNominee(row) {
   return {
     voteId: row.vote_id,
     nomineeId: row.nominee_id,
-    userId: row.user_id
+    participantTeamId: row.participant_team_id || null,
+    player: row.player_name ? {
+      name: row.player_name,
+      position: row.player_position || null,
+    } : null,
+    votes: Number(row.votes) || 0,
+    selectedByViewer: Boolean(row.selected_by_viewer),
   };
 }
 

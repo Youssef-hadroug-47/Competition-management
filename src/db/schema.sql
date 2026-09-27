@@ -139,7 +139,7 @@ CREATE TABLE IF NOT EXISTS matches (
   venue TEXT,
   scheduled_at TEXT,
   status TEXT NOT NULL DEFAULT 'scheduled'
-    CHECK (status IN ('scheduled', 'live', 'finished', 'postponed', 'cancelled')),
+    CHECK (status IN ('scheduled', 'live', 'paused', 'finished', 'postponed', 'cancelled')),
   home_score INTEGER,
   away_score INTEGER,
   extra_time_home INTEGER,
@@ -147,10 +147,48 @@ CREATE TABLE IF NOT EXISTS matches (
   penalties_home INTEGER,
   penalties_away INTEGER,
   referee_id TEXT REFERENCES users(id),
+  duration_minutes INTEGER,
+  phase TEXT NOT NULL DEFAULT 'scheduled'
+    CHECK (phase IN ('scheduled', 'regulation', 'extra_time', 'shootout', 'finished', 'abandoned')),
+  phase_started_at TEXT,
+  phase_elapsed_seconds INTEGER NOT NULL DEFAULT 0,
+  revision INTEGER NOT NULL DEFAULT 0,
   started_at TEXT,
   finished_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS match_audit (
+  id TEXT PRIMARY KEY,
+  match_id TEXT NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+  tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+  user_id TEXT REFERENCES users(id),
+  action TEXT NOT NULL,
+  reason TEXT,
+  before_state TEXT NOT NULL DEFAULT '{}',
+  after_state TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_match_audit_match ON match_audit(match_id, created_at);
+
+CREATE TABLE IF NOT EXISTS match_events (
+  id TEXT PRIMARY KEY,
+  match_id TEXT NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+  tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+  type TEXT NOT NULL CHECK (type IN ('goal', 'assist', 'card', 'phase', 'shootout_attempt')),
+  phase TEXT NOT NULL CHECK (phase IN ('regulation', 'extra_time', 'shootout')),
+  team_id TEXT REFERENCES participant_teams(id),
+  player_id TEXT REFERENCES participant_players(id),
+  assister_id TEXT REFERENCES participant_players(id),
+  card TEXT CHECK (card IN ('yellow', 'red')),
+  scored BOOLEAN,
+  minute INTEGER,
+  payload TEXT NOT NULL DEFAULT '{}',
+  client_event_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (match_id, client_event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_match_events_match ON match_events(match_id, created_at);
 
 CREATE TABLE IF NOT EXISTS tournament_follows (
   id TEXT PRIMARY KEY,
@@ -184,7 +222,11 @@ CREATE TABLE IF NOT EXISTS vote (
   id TEXT PRIMARY KEY,
   tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
-  award TEXT NOT NULL
+  award TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open'
+    CHECK (status IN ('open', 'finished')),
+  finished_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS vote_nominees (
@@ -193,6 +235,14 @@ CREATE TABLE IF NOT EXISTS vote_nominees (
   user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
   votes INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (user_id, vote_id)
+);
+
+CREATE TABLE IF NOT EXISTS vote_ballots (
+  vote_id TEXT NOT NULL REFERENCES vote(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  nominee_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (vote_id, user_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_stages_tournament ON stages(tournament_id);
@@ -204,3 +254,4 @@ CREATE INDEX IF NOT EXISTS idx_stage_promotions_source ON stage_promotions(sourc
 CREATE INDEX IF NOT EXISTS idx_stage_promotions_target ON stage_promotions(target_stage_id);
 CREATE INDEX IF NOT EXISTS idx_vote_tournament ON vote(tournament_id);
 CREATE INDEX IF NOT EXISTS idx_vote_nominees_vote ON vote_nominees(vote_id);
+CREATE INDEX IF NOT EXISTS idx_vote_ballots_vote ON vote_ballots(vote_id);

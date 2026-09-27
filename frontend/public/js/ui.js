@@ -11,10 +11,19 @@
 
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
+  const booleanAttributes = new Set([
+    'allowfullscreen', 'async', 'autofocus', 'autoplay', 'checked', 'controls',
+    'defer', 'disabled', 'formnovalidate', 'hidden', 'inert', 'ismap', 'loop',
+    'multiple', 'muted', 'nomodule', 'novalidate', 'open', 'playsinline',
+    'readonly', 'required', 'reversed', 'selected',
+  ]);
   for (const [key, value] of Object.entries(attrs)) {
     if (key === 'class') node.className = value;
     else if (key === 'text') node.textContent = value;
     else if (key.startsWith('on') && typeof value === 'function') node.addEventListener(key.slice(2), value);
+    else if (booleanAttributes.has(key.toLowerCase())) {
+      if (value) node.setAttribute(key, '');
+    }
     else if (value !== undefined && value !== null) node.setAttribute(key, value);
   }
   for (const child of [].concat(children)) {
@@ -41,6 +50,7 @@ function showBanner(node, message, kind = 'error') {
 
 /** Generic, non-leaky error text for anything unexpected from the network layer. */
 function friendlyErrorMessage(err) {
+  console.log(err);
   if (err && err.isApiError) {
     // Server-provided error strings (e.g. "Invalid credentials") are safe
     // to show verbatim — they're written for end users by the API itself.

@@ -1,12 +1,12 @@
 const express = require('express');
-const { requireAuth, requireRole, authOptional, requireTournamentRole, requireOwner } = require('../middleware/auth');
+const { requireAuth, requireRole, authOptional, requireTournamentRole, requireTournamentModerator, requireTournamentReferee, requireTournamentSupervisor, requireOwner } = require('../middleware/auth');
 const auth = require('../controllers/authController');
 const tournaments = require('../controllers/tournamentController');
 const catalog = require('../controllers/catalogController');
 const matches = require('../controllers/matchController');
 const simulation = require('../controllers/simulationController');
-const { listVotes, getVote, vote } = require('../controllers/voteController');
-const { deleteVote, updateVote, listNominees, addNominee, removeNominee, createVote } = require('../services/voteService');
+const votes = require('../controllers/voteController');
+const referee = require('../controllers/refereeController');
 
 const router = express.Router();
 
@@ -66,12 +66,27 @@ router.patch('/tournaments/:tournamentId/participant-players/:id', requireAuth, 
 router.delete('/tournaments/:tournamentId/participant-players/:id', requireAuth, requireTournamentRole('moderator'), catalog.removeParticipantPlayer);
 
 router.post('/tournaments/:tournamentId/draw', requireAuth, requireTournamentRole('moderator'), matches.draw);
+router.delete('/tournaments/:tournamentId/stages/:id/reset', requireAuth, requireTournamentRole('moderator'), matches.resetStage);
 
 router.get('/tournaments/:tournamentId/matches', authOptional, matches.listMatches);
 router.get('/tournaments/:tournamentId/matches/:id', authOptional, matches.getMatch);
-router.post('/tournaments/:tournamentId/matches/:id/start', requireAuth, requireTournamentRole('moderator', 'referee'), matches.startMatch);
-router.patch('/tournaments/:tournamentId/matches/:id', requireAuth, requireTournamentRole('moderator', 'referee'), matches.updateMatch);
-router.post('/tournaments/:tournamentId/matches/:id/finish', requireAuth, requireTournamentRole('moderator', 'referee'), matches.finishMatch);
+router.get('/tournaments/:tournamentId/matches/:id/detail', authOptional, matches.getMatchDetail);
+router.post('/tournaments/:tournamentId/matches/:id/start', requireAuth, requireTournamentSupervisor, matches.startMatch);
+router.post('/tournaments/:tournamentId/matches/:id/pause', requireAuth, requireTournamentSupervisor, matches.pauseMatch);
+router.post('/tournaments/:tournamentId/matches/:id/resume', requireAuth, requireTournamentSupervisor, matches.resumeMatch);
+router.post('/tournaments/:tournamentId/matches/:id/abandon', requireAuth, requireTournamentSupervisor, matches.abandonMatch);
+router.post('/tournaments/:tournamentId/matches/:id/cancel', requireAuth, requireRole('admin'), matches.cancelMatch);
+router.patch('/tournaments/:tournamentId/matches/:id', requireAuth, requireTournamentSupervisor, matches.updateMatch);
+router.post('/tournaments/:tournamentId/matches/:id/finish', requireAuth, requireTournamentSupervisor, matches.finishMatch);
+router.get('/tournaments/:tournamentId/matches/:id/referee', requireAuth, requireTournamentReferee, referee.detail);
+router.get('/tournaments/:tournamentId/matches/:id/referee/stream', requireAuth, requireTournamentReferee, referee.stream);
+router.post('/tournaments/:tournamentId/matches/:id/referee/start', requireAuth, requireTournamentReferee, referee.start);
+router.post('/tournaments/:tournamentId/matches/:id/referee/events', requireAuth, requireTournamentReferee, referee.event);
+router.patch('/tournaments/:tournamentId/matches/:id/referee/events/:eventId', requireAuth, requireTournamentReferee, referee.updateEvent);
+router.delete('/tournaments/:tournamentId/matches/:id/referee/events/:eventId', requireAuth, requireTournamentReferee, referee.deleteEvent);
+router.post('/tournaments/:tournamentId/matches/:id/referee/transition', requireAuth, requireTournamentReferee, referee.transition);
+router.post('/tournaments/:tournamentId/matches/:id/referee/finish-phase', requireAuth, requireTournamentReferee, referee.finishPhase);
+router.post('/tournaments/:tournamentId/matches/:id/referee/abandon', requireAuth, requireTournamentReferee, referee.abandon);
 
 router.post('/matches/:id/simulate', requireAuth, requireRole('admin'), simulation.simulateMatch);
 router.post('/groups/:id/simulate', requireAuth, requireRole('admin'), simulation.simulateGroup);
@@ -90,16 +105,17 @@ router.patch(
 );
 
 
-router.get('/tournaments/:tournamentId/votes', authOptional, listVotes);
-router.get('/tournaments/:tournamentId/votes/:id', authOptional, getVote);
-router.post('/tournaments/:tournamentId/votes', requireAuth, requireTournamentRole('moderator'), createVote);
-router.patch('/tournaments/:tournamentId/votes/:id', requireAuth, requireTournamentRole('moderator'), updateVote);
-router.delete('/tournaments/:tournamentId/votes/:id', requireAuth, requireTournamentRole('moderator'), deleteVote);
+router.get('/tournaments/:tournamentId/votes', authOptional, votes.listVotes);
+router.get('/tournaments/:tournamentId/votes/:id', authOptional, votes.getVote);
+router.post('/tournaments/:tournamentId/votes', requireAuth, requireTournamentModerator, votes.createVote);
+router.patch('/tournaments/:tournamentId/votes/:id', requireAuth, requireTournamentModerator, votes.updateVote);
+router.post('/tournaments/:tournamentId/votes/:id/finish', requireAuth, requireTournamentModerator, votes.finishVote);
+router.delete('/tournaments/:tournamentId/votes/:id', requireAuth, requireTournamentModerator, votes.deleteVote);
 
-router.get('/tournaments/:tournamentId/votes/:voteId/nominees', authOptional, listNominees);
-router.post('/tournaments/:tournamentId/votes/:voteId/nominees', requireAuth, requireTournamentRole('moderator'), addNominee);
-router.post('/tournaments/:tournamentId/votes/:voteId/nominees/:nomineeId', requireAuth, vote);
-router.delete('/tournaments/:tournamentId/votes/:voteId/nominees/:nomineeId', requireAuth, requireTournamentRole('moderator'), removeNominee);
+router.get('/tournaments/:tournamentId/votes/:voteId/nominees', authOptional, votes.listNominees);
+router.post('/tournaments/:tournamentId/votes/:voteId/nominees', requireAuth, requireTournamentModerator, votes.addNominee);
+router.post('/tournaments/:tournamentId/votes/:voteId/nominees/:nomineeId', requireAuth, votes.castVote);
+router.delete('/tournaments/:tournamentId/votes/:voteId/nominees/:nomineeId', requireAuth, requireTournamentModerator, votes.removeNominee);
 
 router.get('/tournaments/:tournamentId/roles', requireAuth ,requireOwner , tournaments.getAllTournamentRole);
 router.get('/tournaments/:tournamentId/roles/me', requireAuth, tournaments.getUserRole);
