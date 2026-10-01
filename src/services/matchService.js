@@ -3,6 +3,7 @@ const map = require('./mappers');
 const { httpError } = require('../middleware/error');
 const { finalizeStageIfComplete } = require('./drawService');
 const { id } = require('../utils/ids');
+const suspension = require('./suspensionService');
 
 // Valid match-lifecycle transitions for the moderator monitoring menu.
 // Keeping this in one place means start/pause/resume/abandon/finish all
@@ -212,6 +213,7 @@ function finishMatchRecord({
   expectedRevision,
 }) {
   assertRevision(matchRow, expectedRevision);
+  const reopened = Boolean(matchRow.finished_at);
   const update = db.prepare(
     `UPDATE matches SET status = 'finished', home_score = ?, away_score = ?,
       extra_time_home = ?, extra_time_away = ?, penalties_home = ?, penalties_away = ?,
@@ -229,19 +231,18 @@ function finishMatchRecord({
     matchRow.id,
     Number(matchRow.revision || 0)
   );
+  if (!update.changes) throw httpError(409, 'Match changed while it was being finished. Refresh and retry.');
 
   const stage = db.prepare('SELECT * FROM stages WHERE id = ?').get(matchRow.stage_id);
   const settings = parseJson(stage?.settings, map.defaultStageSettings(stage?.type));
-  if (stage?.type === 'league') {
+  if (stage?.type === 'league' && !reopened) {
     applyResultToTable(matchRow, Number(homeScore), Number(awayScore), settings.points);
   }
 
   // Knockout stages advance themselves: once every match in the current
   // round is finished, the next round is generated automatically (or the
   // champion is crowned if this was the final round).
-  const advance = finalizeStageIfComplete(stage.id); 
-
-  if (!update.changes) throw httpError(409, 'Match changed while it was being finished. Refresh and retry.');
+  const advance = reopened ? null : finalizeStageIfComplete(stage.id);
   const match = db.prepare('SELECT * FROM matches WHERE id = ?').get(matchRow.id);
   writeAudit({ matchBefore: matchRow, matchAfter: match, userId, action });
   return { match, advance, stage };
@@ -371,6 +372,7 @@ function abandonMatchRecord(matchRow, reason, adminOverride = false) {
         started_at = NULL, finished_at = NULL, phase_started_at = NULL, phase_elapsed_seconds = 0
        WHERE id = ?`
     ).run(matchRow.id);
+    suspension.resetDecisionsForAbandonedMatch(matchRow.id);
     return db.prepare('SELECT * FROM matches WHERE id = ?').get(matchRow.id);
   }
   assertTransition(matchRow.status, 'abandon');
@@ -383,6 +385,7 @@ function abandonMatchRecord(matchRow, reason, adminOverride = false) {
       started_at = NULL, finished_at = NULL
      WHERE id = ?`
   ).run(matchRow.id);
+  suspension.resetDecisionsForAbandonedMatch(matchRow.id);
   return db.prepare('SELECT * FROM matches WHERE id = ?').get(matchRow.id);
 }
 
@@ -440,6 +443,12 @@ function getMatchDetail(matchId) {
 
   const homeTeam = participantTeamWithTeam(row.home_participant_team_id);
   const awayTeam = participantTeamWithTeam(row.away_participant_team_id);
+  const suspensions = suspension.getForMatch(row.id, row.tournament_id);
+  const suspensionByPlayer = new Map(suspensions.map((entry) => [entry.participantPlayerId, entry]));
+  const annotateSquad = (squad) => squad.map((player) => ({
+    ...map.participantPlayer(player),
+    suspension: suspensionByPlayer.get(player.id) || null,
+  }));
 
   return {
     match: map.match(row),
@@ -448,8 +457,9 @@ function getMatchDetail(matchId) {
     round,
     homeTeam: homeTeam ? map.participantTeam(homeTeam) : null,
     awayTeam: awayTeam ? map.participantTeam(awayTeam) : null,
-    homeSquad: squadFor(row.home_participant_team_id).map(map.participantPlayer),
-    awaySquad: squadFor(row.away_participant_team_id).map(map.participantPlayer),
+    homeSquad: annotateSquad(squadFor(row.home_participant_team_id)),
+    awaySquad: annotateSquad(squadFor(row.away_participant_team_id)),
+    suspensions,
   };
 }
 

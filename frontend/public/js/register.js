@@ -4,7 +4,7 @@
   const submitBtn = document.getElementById('submit-btn');
 
   if (window.Session.isAuthenticated()) {
-    location.replace('/index.html');
+    location.replace('/index');
     return;
   }
 
@@ -46,7 +46,7 @@
       const result = await Api.auth.register({ name, email, password });
       window.Session.start(result.token, result.user);
       form.password.value = '';
-      location.href = '/index.html';
+      location.href = '/index';
     } catch (err) {
       UI.showBanner(banner, UI.friendlyErrorMessage(err));
       submitBtn.disabled = false;

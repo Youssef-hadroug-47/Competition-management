@@ -37,6 +37,8 @@ function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
 
+let flashTimer = null;
+
 function showBanner(node, message, kind = 'error') {
   clear(node);
   if (!message) {
@@ -46,6 +48,31 @@ function showBanner(node, message, kind = 'error') {
   node.hidden = false;
   node.className = `banner banner--${kind}`;
   node.textContent = message; // never innerHTML — message may echo user/API input
+}
+
+function flashMessage(message, kind = 'error', duration = 3600) {
+  let node = document.getElementById('app-flash-message');
+  if (!node) {
+    node = el('div', {
+      id: 'app-flash-message',
+      class: 'flash-message',
+      role: 'status',
+      'aria-live': 'polite',
+    });
+    document.body.appendChild(node);
+  }
+  clearTimeout(flashTimer);
+  node.className = `flash-message flash-message--${kind}`;
+  node.textContent = message || '';
+  node.hidden = !message;
+  if (!message) return;
+  requestAnimationFrame(() => node.classList.add('flash-message--visible'));
+  flashTimer = setTimeout(() => {
+    node.classList.remove('flash-message--visible');
+    setTimeout(() => {
+      if (!node.classList.contains('flash-message--visible')) node.hidden = true;
+    }, 220);
+  }, duration);
 }
 
 /** Generic, non-leaky error text for anything unexpected from the network layer. */
@@ -130,4 +157,4 @@ function pageState(scope) {
   };
 }
 
-window.UI = { el, clear, showBanner, friendlyErrorMessage, confirmAction, pageState };
+window.UI = { el, clear, showBanner, flashMessage, friendlyErrorMessage, confirmAction, pageState };

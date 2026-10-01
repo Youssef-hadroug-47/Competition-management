@@ -16,6 +16,7 @@ const {
   cancelMatchRecord,
   getMatchDetail: getMatchDetailRecord,
 } = require('../services/matchService');
+const suspension = require('../services/suspensionService');
 const { getAllFollowedTournaments } = require('../services/followService');
 const { isAdministrator } = require('../middleware/auth');
 
@@ -78,6 +79,7 @@ const getMatchDetailHandler = asyncHandler((req, res) => {
 const startMatch = asyncHandler((req, res) => {
   const row = getMatchForTournamentOrThrow(req.params.id, req.params.tournamentId);
   assertTransition(row.status, 'start');
+  suspension.assertCanStart(row.id, row.tournament_id);
   const result = db.prepare(
     `UPDATE matches SET status = 'live', phase = 'regulation', referee_id = ?, started_at = ?,
       phase_started_at = ?, phase_elapsed_seconds = 0, venue = COALESCE(?, venue) WHERE id = ?`
@@ -86,7 +88,21 @@ const startMatch = asyncHandler((req, res) => {
     now(),
     row.tournament_id
   );
+  suspension.consumeForStart(row.id, row.tournament_id);
   res.json({ match: map.match(db.prepare('SELECT * FROM matches WHERE id = ?').get(row.id)) });
+});
+
+const decideSuspension = asyncHandler((req, res) => {
+  const row = getMatchForTournamentOrThrow(req.params.id, req.params.tournamentId);
+  const include = req.body?.decision === 'include';
+  const suspensions = suspension.decide({
+    matchId: row.id,
+    tournamentId: row.tournament_id,
+    suspensionId: req.params.suspensionId,
+    include,
+    actorId: req.user.id,
+  });
+  res.json({ suspensions });
 });
 
 const updateMatch = asyncHandler((req, res) => {
@@ -218,6 +234,7 @@ module.exports = {
   getMatch,
   getMatchDetail: getMatchDetailHandler,
   startMatch,
+  decideSuspension,
   pauseMatch,
   resumeMatch,
   abandonMatch,

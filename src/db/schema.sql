@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS tournaments (
     -- CHECK (format IN ('stages', 'groups', 'division', 'league', 'knockout', 'custom')),
   number_of_teams INTEGER NOT NULL DEFAULT 0,
   place TEXT,
+  settings TEXT NOT NULL DEFAULT '{}',
   created_by TEXT NOT NULL REFERENCES users(id),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -177,6 +178,7 @@ CREATE TABLE IF NOT EXISTS match_events (
   tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
   type TEXT NOT NULL CHECK (type IN ('goal', 'assist', 'card', 'phase', 'shootout_attempt')),
   phase TEXT NOT NULL CHECK (phase IN ('regulation', 'extra_time', 'shootout')),
+  goal_event_id TEXT REFERENCES match_events(id) ON DELETE CASCADE,
   team_id TEXT REFERENCES participant_teams(id),
   player_id TEXT REFERENCES participant_players(id),
   assister_id TEXT REFERENCES participant_players(id),
@@ -189,6 +191,24 @@ CREATE TABLE IF NOT EXISTS match_events (
   UNIQUE (match_id, client_event_id)
 );
 CREATE INDEX IF NOT EXISTS idx_match_events_match ON match_events(match_id, created_at);
+
+CREATE TABLE IF NOT EXISTS player_match_suspensions (
+  id TEXT PRIMARY KEY,
+  tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+  participant_player_id TEXT NOT NULL REFERENCES participant_players(id) ON DELETE CASCADE,
+  target_match_id TEXT NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+  source_match_id TEXT REFERENCES matches(id) ON DELETE SET NULL,
+  source_event_id TEXT REFERENCES match_events(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('yellow_threshold', 'red_card')),
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'excluded', 'included', 'consumed')),
+  decided_by TEXT REFERENCES users(id),
+  decided_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (participant_player_id, target_match_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_player_match_suspensions_target
+  ON player_match_suspensions(target_match_id, participant_player_id);
 
 CREATE TABLE IF NOT EXISTS tournament_follows (
   id TEXT PRIMARY KEY,

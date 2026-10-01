@@ -230,6 +230,10 @@ const Api = {
       request('PATCH', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}`, { body: payload }),
     finish: (tournamentId, id, payload) =>
       request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/finish`, { body: payload }),
+    decideSuspension: (tournamentId, id, suspensionId, decision) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/suspensions/${enc(suspensionId)}/decision`, {
+        body: { decision },
+      }),
   },
 
   referee: {
@@ -237,12 +241,16 @@ const Api = {
       request('GET', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/referee`),
     start: (tournamentId, id, payload) =>
       request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/referee/start`, { body: payload }),
+    continueFinished: (tournamentId, id, revision) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/referee/continue`, { body: { revision } }),
     event: (tournamentId, id, payload) =>
       request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/referee/events`, { body: payload }),
     updateEvent: (tournamentId, id, eventId, payload) =>
       request('PATCH', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/referee/events/${enc(eventId)}`, { body: payload }),
     deleteEvent: (tournamentId, id, eventId, payload) =>
       request('DELETE', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/referee/events/${enc(eventId)}`, { body: payload }),
+    applyImpact: (tournamentId, id, revision, stageIds) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/referee/impact/apply`, { body: { revision, stageIds } }),
     transition: (tournamentId, id, action, revision) =>
       request('POST', `/tournaments/${enc(tournamentId)}/matches/${enc(id)}/referee/transition`, { body: { action, revision } }),
     finishPhase: (tournamentId, id, phase, revision) =>

@@ -55,6 +55,10 @@ the URL shape.
   tab, standings stage, and match grouping filter, so refreshes and
   simulation/actions return to the same browsing context without moving
   keyboard focus.
+- **Simulation**: administrator simulation generates normal match events
+  (goals, linked assists, cards, extra-time goals, and shootout attempts)
+  rather than writing magical score or player-statistic values. Scores,
+  standings, and player totals are rebuilt from those events.
 - **Matches**: a flat, sorted list — every match in the tournament,
   independent of the stage toggle below. Selecting **Details** opens a
   read-only match menu with the match context, result, both squads, and
@@ -231,6 +235,27 @@ authenticated JSON requests. The event picker uses event squares followed by
 team/player selection. For an own goal, the selected team and player are the
 offender; the goal is added to the opposing team's score and the timeline is
 aligned with that beneficiary without increasing the offender's goal total. Normal
-goals prompt for an optional assister event. A protected SSE endpoint is available for
-read-side live snapshots; clients should reconnect by reloading the snapshot
-after a disconnect.
+goals prompt for an optional assister event. A read-only SSE endpoint is available
+for live snapshots on public tournament timelines, including anonymous viewers.
+The timeline reconnects after a disconnect and falls back to periodic snapshot
+refresh when SSE is unavailable; private tournament views retain the normal
+authenticated detail-request access rules.
+
+Event controls also enforce player eligibility: red-carded players and players
+with two yellow cards are unavailable for the rest of the match, a scorer
+cannot assist the same goal, and each shootout player may take only one
+attempt. The server is authoritative and the picker disables players already
+known to be ineligible. When a player receives a second yellow card, the
+backend appends a visible automatic red-card event; that derived event cannot
+be edited or deleted directly, and correcting the yellow-card events
+recalculates it.
+
+Tournament creation also configures a tournament-wide suspension system. The
+creator can enable or disable the complete suspension mechanic. When enabled,
+the configured yellow-card threshold applies to next-match suspensions and a
+red card creates a pending decision on the player's next match. The assigned
+referee or tournament moderator must choose Include or Exclude in the referee
+menu before kickoff, and both actions require confirmation. Including the
+player removes that fixture-specific lock and records the decision. If the
+target match is abandoned, its Include/Exclude decision returns to pending;
+decisions for other target matches are unchanged.

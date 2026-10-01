@@ -40,7 +40,7 @@
     createBody.appendChild(
       el('div', {}, [
         el('p', { text: 'Give it a name and you can add stages, teams and players afterwards.' }),
-        el('a', { class: 'btn btn--primary', href: '/create-tournament.html', text: 'New tournament' }),
+        el('a', { class: 'btn btn--primary', href: '/create-tournament', text: 'New tournament' }),
       ])
     );
   }

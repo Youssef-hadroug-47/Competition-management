@@ -17,9 +17,19 @@ function tournament(row) {
     // format: row.format,
     numberOfTeams: row.number_of_teams,
     place: row.place,
+    suspensionSystem: parseJson(row.settings, defaultTournamentSettings()).suspensionSystem,
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function defaultTournamentSettings() {
+  return {
+    suspensionSystem: {
+      enabled: true,
+      yellowCardsForSuspension: 2,
+    },
   };
 }
 
@@ -39,11 +49,6 @@ function defaultStageSettings(type) {
     headToHeadMatches: 1,
     extraTime: type === 'knockout',
     penalties: type === 'knockout',
-    suspensionSystem: {
-      enabled: true,
-      yellowCardsForSuspension: 2,
-      redCardMissedMatches: 1,
-    },
     advancingTeamsFromRanking: type == 'league' ? 0 : null,
     points: type == 'league' ? { win: 3, draw: 1, loss: 0 } : null,
     tiebreakers: type === 'league'
@@ -248,6 +253,7 @@ module.exports = {
   match,
   follow,
   defaultStageSettings,
+  defaultTournamentSettings,
   vote,
   voteNominee,
 };

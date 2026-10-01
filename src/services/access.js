@@ -15,7 +15,7 @@ function canInspectTournament(tournament, user) {
   if (!user) return false;
   if (user.role === 'admin') return true;
   if (user.id === tournament.created_by) return true;
-  if (getRole(tournament.id, user.id) === 'moderator') return true;
+  if (['moderator', 'referee'].includes(getRole(tournament.id, user.id))) return true;
   const follow = getFollow(tournament.id, user.id);
   return Boolean(follow && follow.status === 'accepted');
 }

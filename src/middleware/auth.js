@@ -50,6 +50,27 @@ function requireTournamentReferee(req, _, next) {
   return next();
 }
 
+function requireTournamentModeratorOrReferee(req, _, next) {
+  if (!req.user) return next(httpError(401, 'Authentication required'));
+  if (isAdministrator(req.user)) return next();
+  const tournamentId = req.params.tournamentId || null;
+  if (!tournamentId) return next(httpError(400, 'Bad Request'));
+  const tournament = db.prepare('SELECT created_by FROM tournaments WHERE id = ?').get(tournamentId);
+  if (!tournament) return next(httpError(404, 'Tournament not found'));
+  if (tournament.created_by === req.user.id) {
+    req.user.tournamentRoles = req.user.tournamentRoles || {};
+    req.user.tournamentRoles[tournamentId] = 'moderator';
+    return next();
+  }
+  const role = getRole(tournamentId, req.user.id);
+  if (!['moderator', 'referee'].includes(role)) {
+    return next(httpError(403, 'Tournament moderator or referee access required'));
+  }
+  req.user.tournamentRoles = req.user.tournamentRoles || {};
+  req.user.tournamentRoles[tournamentId] = role;
+  return next();
+}
+
 function requireTournamentSupervisor(req, _, next) {
   if (!req.user) return next(httpError(401, 'Authentication required'));
   if (isAdministrator(req.user)) return next();
@@ -111,6 +132,7 @@ module.exports = {
   requireTournamentRole,
   requireTournamentModerator,
   requireTournamentReferee,
+  requireTournamentModeratorOrReferee,
   requireTournamentSupervisor,
   isAdministrator,
 };

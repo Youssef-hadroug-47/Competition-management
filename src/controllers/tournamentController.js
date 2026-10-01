@@ -82,8 +82,8 @@ const create = asyncHandler((req, res) => {
   const visibility = body.visibility === 'private' ? 'private' : 'public';
   const tournamentId = id();
   db.prepare(
-    `INSERT INTO tournaments (id, name, slug, status, visibility, number_of_teams, place, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO tournaments (id, name, slug, status, visibility, number_of_teams, place, settings, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     tournamentId,
     body.name.trim(),
@@ -92,6 +92,14 @@ const create = asyncHandler((req, res) => {
     visibility,
     Number(body.numberOfTeams) || 0,
     body.place || null,
+    JSON.stringify({
+      ...map.defaultTournamentSettings(),
+      ...(body.settings || {}),
+      suspensionSystem: {
+        ...map.defaultTournamentSettings().suspensionSystem,
+        ...(body.settings?.suspensionSystem || {}),
+      },
+    }),
     req.user.id,
     now(),
     now()

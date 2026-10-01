@@ -407,7 +407,15 @@ function sortTeamsWithTiebreakers(teams, sortedTiebreakers, idx, groupId) {
 // pull from other tables.
 function rankGroupTeams(groupId, tiebreakers) {
   const sortedTbs = [...tiebreakers].sort((a, b) => a.priority - b.priority);
-  const teams = db.prepare('SELECT * FROM participant_teams WHERE group_id = ?').all(groupId);
+  const teams = db.prepare(
+    `SELECT DISTINCT pt.*
+     FROM participant_teams pt
+     LEFT JOIN matches m
+       ON m.group_id = ?
+      AND (m.home_participant_team_id = pt.id OR m.away_participant_team_id = pt.id)
+     WHERE pt.group_id = ?
+        OR m.id IS NOT NULL`
+  ).all(groupId, groupId);
   if (!teams.length) return teams;
 
   const cardRows = getCardsForTeams(teams);
@@ -727,23 +735,34 @@ function runDraw({ tournamentId, stageId }) {
   };
 }
 
-function resetStage({ tournamentId, stageId }) {
+function resetStage({ tournamentId, stageId, scopeStageIds = null }) {
   const stage = db.prepare('SELECT * FROM stages WHERE id = ? AND tournament_id = ?').get(stageId, tournamentId);
   if (!stage) throw httpError(404, 'Stage not found');
 
-  const stageIds = new Set([stage.id]);
-  const pending = [stage.id];
-  while (pending.length) {
-    const sourceStageId = pending.shift();
-    const targets = db.prepare(
-      'SELECT DISTINCT target_stage_id FROM stage_promotions WHERE source_stage_id = ?'
-    ).all(sourceStageId);
-    targets.forEach(({ target_stage_id: targetStageId }) => {
-      if (!stageIds.has(targetStageId)) {
-        stageIds.add(targetStageId);
-        pending.push(targetStageId);
-      }
-    });
+  const stageIds = new Set(scopeStageIds?.length ? scopeStageIds : [stage.id]);
+  if (scopeStageIds?.length) {
+    if (stageIds.has(stage.id)) {
+      throw httpError(400, 'Scoped downstream reset cannot include the corrected source stage');
+    }
+    const placeholders = [...stageIds].map(() => '?').join(', ');
+    const validStages = db.prepare(
+      `SELECT id FROM stages WHERE tournament_id = ? AND id IN (${placeholders})`
+    ).all(tournamentId, ...stageIds).map(({ id }) => id);
+    if (validStages.length !== stageIds.size) throw httpError(400, 'Invalid affected stage list');
+  } else {
+    const pending = [stage.id];
+    while (pending.length) {
+      const sourceStageId = pending.shift();
+      const targets = db.prepare(
+        'SELECT DISTINCT target_stage_id FROM stage_promotions WHERE source_stage_id = ?'
+      ).all(sourceStageId);
+      targets.forEach(({ target_stage_id: targetStageId }) => {
+        if (!stageIds.has(targetStageId)) {
+          stageIds.add(targetStageId);
+          pending.push(targetStageId);
+        }
+      });
+    }
   }
 
   const ids = [...stageIds];
@@ -812,7 +831,7 @@ function resetStage({ tournamentId, stageId }) {
     // discarded.
     db.prepare(`DELETE FROM stage_promotions WHERE source_stage_id IN (${placeholders})`)
       .run(...ids);
-    if (downstreamIds.length) {
+    if (downstreamIds.length && !scopeStageIds?.length) {
       const downstreamPlaceholders = downstreamIds.map(() => '?').join(', ');
       db.prepare(`DELETE FROM stage_promotions WHERE target_stage_id IN (${downstreamPlaceholders})`)
         .run(...downstreamIds);
@@ -821,7 +840,7 @@ function resetStage({ tournamentId, stageId }) {
       .run(tournamentId, ...ids);
     db.prepare(`UPDATE stages SET status = NULL WHERE tournament_id = ? AND id IN (${placeholders})`)
       .run(tournamentId, ...ids);
-    if (assignedTeamIds.size) {
+    if (assignedTeamIds.size && !scopeStageIds?.length) {
       const teamIds = [...assignedTeamIds];
       const teamPlaceholders = teamIds.map(() => '?').join(', ');
       db.prepare(
@@ -834,7 +853,7 @@ function resetStage({ tournamentId, stageId }) {
   return {
     resetStages: ids.length,
     deletedMatches: matches.length,
-    resetParticipantTeams: assignedTeamIds.size,
+    resetParticipantTeams: scopeStageIds?.length ? 0 : assignedTeamIds.size,
   };
 }
 
@@ -981,6 +1000,76 @@ function finalizeStageIfComplete(stageId) {
   return stage.type === 'league' ? finalizeLeagueStage(stage) : advanceKnockoutStage(stage.id);
 }
 
+function stagePromotionSnapshot(stageId) {
+  return db.prepare(
+    `SELECT target_stage_id, participant_team_id, via_rank, rank_position
+     FROM stage_promotions WHERE source_stage_id = ?
+     ORDER BY target_stage_id, participant_team_id, via_rank, rank_position`
+  ).all(stageId);
+}
+
+function downstreamImpact(stageId, beforePromotions, afterPromotions) {
+  const before = JSON.stringify(beforePromotions);
+  const after = JSON.stringify(afterPromotions);
+  const changed = before !== after;
+  const sourceStage = db.prepare('SELECT sequence_order FROM stages WHERE id = ?').get(stageId);
+  const targetIds = [...new Set([
+    ...beforePromotions.map((row) => row.target_stage_id),
+    ...afterPromotions.map((row) => row.target_stage_id),
+  ])].filter((targetId) => {
+    const target = db.prepare('SELECT sequence_order FROM stages WHERE id = ?').get(targetId);
+    return target && Number(target.sequence_order) === Number(sourceStage?.sequence_order) + 1;
+  });
+  const affected = [];
+  const pending = [...targetIds];
+  const seen = new Set();
+  while (pending.length) {
+    const currentId = pending.shift();
+    if (seen.has(currentId)) continue;
+    seen.add(currentId);
+    const stage = db.prepare('SELECT id, type, sequence_order FROM stages WHERE id = ?').get(currentId);
+    if (!stage) continue;
+    const matches = db.prepare(
+      'SELECT COUNT(*) AS total, SUM(status = \'finished\') AS finished FROM matches WHERE stage_id = ?'
+    ).get(currentId);
+    const startedMatch = db.prepare(
+      `SELECT 1 FROM matches
+       WHERE stage_id = ? AND status NOT IN ('scheduled', 'postponed', 'cancelled')
+       LIMIT 1`
+    ).get(currentId);
+    const hasDraw = Number(matches?.total || 0) > 0;
+    affected.push({
+      ...stage,
+      matchCount: Number(matches?.total || 0),
+      finishedMatchCount: Number(matches?.finished || 0),
+      hasDraw,
+      started: Boolean(startedMatch),
+      action: !hasDraw ? 'none' : startedMatch ? 'reset' : 'redraw',
+      incomingParticipants: afterPromotions
+        .filter((row) => row.target_stage_id === currentId)
+        .map((row) => row.participant_team_id),
+    });
+  }
+  return {
+    stageId,
+    changed,
+    resetRequired: changed && affected.length > 0,
+    affectedStages: affected,
+    beforePromotions,
+    afterPromotions,
+  };
+}
+
+function reconcileStageOutputs(stageId) {
+  const beforePromotions = stagePromotionSnapshot(stageId);
+  const result = finalizeStageIfComplete(stageId);
+  const afterPromotions = stagePromotionSnapshot(stageId);
+  return {
+    ...downstreamImpact(stageId, beforePromotions, afterPromotions),
+    stageResult: result,
+  };
+}
+
 module.exports = {
   runDraw,
   resetStage,
@@ -988,6 +1077,7 @@ module.exports = {
   advanceKnockoutStage,
   finalizeLeagueStage,
   finalizeStageIfComplete,
+  reconcileStageOutputs,
   getIncomingParticipants,
   isStageComplete,
   rankGroupTeams,

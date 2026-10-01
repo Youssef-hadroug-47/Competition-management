@@ -13,6 +13,11 @@ db.exec('PRAGMA foreign_keys = ON');
 const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
 db.exec(schema);
 
+const tournamentColumns = db.prepare('PRAGMA table_info(tournaments)').all().map((column) => column.name);
+if (!tournamentColumns.includes('settings')) {
+  db.exec(`ALTER TABLE tournaments ADD COLUMN settings TEXT NOT NULL DEFAULT '{}'`);
+}
+
 const matchColumns = db.prepare('PRAGMA table_info(matches)').all().map((column) => column.name);
 if (!matchColumns.includes('revision')) {
   db.exec(`ALTER TABLE matches ADD COLUMN revision INTEGER NOT NULL DEFAULT 0`);
@@ -67,6 +72,7 @@ if (voteSql && !voteSql.includes('finished_at')) {
       tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
       type TEXT NOT NULL CHECK (type IN ('goal', 'assist', 'card', 'phase', 'shootout_attempt')),
       phase TEXT NOT NULL CHECK (phase IN ('regulation', 'extra_time', 'shootout')),
+      goal_event_id TEXT REFERENCES match_events(id) ON DELETE CASCADE,
       team_id TEXT REFERENCES participant_teams(id),
       player_id TEXT REFERENCES participant_players(id),
       assister_id TEXT REFERENCES participant_players(id),
@@ -79,6 +85,7 @@ if (voteSql && !voteSql.includes('finished_at')) {
       UNIQUE (match_id, client_event_id)
     );
     CREATE INDEX IF NOT EXISTS idx_match_events_match ON match_events(match_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_match_events_goal ON match_events(goal_event_id);
   `);
 }
 
@@ -94,6 +101,7 @@ if (matchEventsSql && !matchEventsSql.includes("'assist'")) {
         tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
         type TEXT NOT NULL CHECK (type IN ('goal', 'assist', 'card', 'phase', 'shootout_attempt')),
         phase TEXT NOT NULL CHECK (phase IN ('regulation', 'extra_time', 'shootout')),
+        goal_event_id TEXT REFERENCES match_events(id) ON DELETE CASCADE,
         team_id TEXT REFERENCES participant_teams(id),
         player_id TEXT REFERENCES participant_players(id),
         assister_id TEXT REFERENCES participant_players(id),
@@ -106,13 +114,38 @@ if (matchEventsSql && !matchEventsSql.includes("'assist'")) {
         UNIQUE (match_id, client_event_id)
     );
     INSERT INTO match_events
-      (id, match_id, tournament_id, type, phase, team_id, player_id, assister_id, card, scored, minute, payload, client_event_id, created_at)
-      SELECT id, match_id, tournament_id, type, phase, team_id, player_id, assister_id, card, scored, minute, payload, client_event_id, created_at
+      (id, match_id, tournament_id, type, phase, goal_event_id, team_id, player_id, assister_id, card, scored, minute, payload, client_event_id, created_at)
+      SELECT id, match_id, tournament_id, type, phase, NULL, team_id, player_id, assister_id, card, scored, minute, payload, client_event_id, created_at
       FROM match_events_legacy;
     DROP TABLE match_events_legacy;
     CREATE INDEX IF NOT EXISTS idx_match_events_match ON match_events(match_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_match_events_goal ON match_events(goal_event_id);
   `);
 }
+const matchEventColumns = db.prepare('PRAGMA table_info(match_events)').all().map((column) => column.name);
+if (matchEventColumns.length && !matchEventColumns.includes('goal_event_id')) {
+  db.exec('ALTER TABLE match_events ADD COLUMN goal_event_id TEXT REFERENCES match_events(id) ON DELETE CASCADE');
+}
+db.exec('CREATE INDEX IF NOT EXISTS idx_match_events_goal ON match_events(goal_event_id)');
+db.exec(`
+  CREATE TABLE IF NOT EXISTS player_match_suspensions (
+    id TEXT PRIMARY KEY,
+    tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+    participant_player_id TEXT NOT NULL REFERENCES participant_players(id) ON DELETE CASCADE,
+    target_match_id TEXT NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
+    source_match_id TEXT REFERENCES matches(id) ON DELETE SET NULL,
+    source_event_id TEXT REFERENCES match_events(id) ON DELETE SET NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('yellow_threshold', 'red_card')),
+    status TEXT NOT NULL DEFAULT 'pending'
+      CHECK (status IN ('pending', 'excluded', 'included', 'consumed')),
+    decided_by TEXT REFERENCES users(id),
+    decided_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (participant_player_id, target_match_id, kind)
+  );
+  CREATE INDEX IF NOT EXISTS idx_player_match_suspensions_target
+    ON player_match_suspensions(target_match_id, participant_player_id);
+`);
 db.exec(`
   CREATE TABLE IF NOT EXISTS vote_ballots (
     vote_id TEXT NOT NULL REFERENCES vote(id) ON DELETE CASCADE,

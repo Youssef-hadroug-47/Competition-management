@@ -1,8 +1,10 @@
-const { db, parseJson } = require('../db');
+const { db, parseJson, now } = require('../db');
 const { httpError } = require('../middleware/error');
 const map = require('./mappers');
-const { runDraw, advanceKnockoutStage } = require('./drawService');
-const { finishMatchRecord } = require('./matchService');
+const { runDraw } = require('./drawService');
+const { finishMatchRecord, rebuildTournamentProjections } = require('./matchService');
+const { getProjectedScore } = require('./refereeService');
+const { id } = require('../utils/ids');
 
 // --- Random-weighted result generation --------------------------------
 //
@@ -79,41 +81,105 @@ function randomRosterPlayer(roster, excludedId = null) {
   return source[Math.floor(Math.random() * source.length)];
 }
 
-function applySimulatedEvents(home, away, homeGoals, awayGoals) {
+function distributedMinute(phase, index, total) {
+  const start = phase === 'extra_time' ? 91 : 1;
+  const end = phase === 'extra_time' ? 120 : 90;
+  const span = end - start + 1;
+  const bucket = Math.floor((index / Math.max(1, total)) * span);
+  return Math.min(end, start + bucket + Math.floor(Math.random() * Math.max(1, Math.ceil(span / Math.max(1, total)))));
+}
+
+function insertSimulatedEvent(match, {
+  type, phase, teamId = null, playerId = null, assisterId = null,
+  goalEventId = null, card = null, scored = null, minute = null, payload = {},
+}) {
+  const eventId = id();
+  db.prepare(
+    `INSERT INTO match_events
+      (id, match_id, tournament_id, type, phase, goal_event_id, team_id,
+       player_id, assister_id, card, scored, minute, payload, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    eventId, match.id, match.tournament_id, type, phase, goalEventId, teamId,
+    playerId, assisterId, card, scored == null ? null : (scored ? 1 : 0),
+    minute, JSON.stringify(payload), now()
+  );
+  return eventId;
+}
+
+function applySimulatedEvents(match, home, away, homeGoals, awayGoals, phase = 'regulation') {
   const homeRoster = rosterForTeam(home?.id);
   const awayRoster = rosterForTeam(away?.id);
-  const update = db.prepare(
-    `UPDATE participant_players
-     SET goals = goals + ?, assists = assists + ?, yellow_cards = yellow_cards + ?, red_cards = red_cards + ?
-     WHERE id = ?`
-  );
+  let generated = 0;
 
-  const assignGoals = (roster, count) => {
+  const assignGoals = (roster, count, teamId) => {
     for (let i = 0; i < count; i += 1) {
-      // Own goals affect the score but deliberately have no player event.
-      if (Math.random() < 0.1 || !roster.length) continue;
-      const scorer = randomRosterPlayer(roster);
-      const assister = Math.random() < 0.75 ? randomRosterPlayer(roster, scorer.id) : null;
-      update.run(1, 0, 0, 0, scorer.id);
-      if (assister) update.run(0, 1, 0, 0, assister.id);
+      const scorer = roster.length ? randomRosterPlayer(roster) : null;
+      const assister = scorer && Math.random() < 0.75 ? randomRosterPlayer(roster, scorer.id) : null;
+      const goalId = insertSimulatedEvent(match, {
+        type: 'goal', phase, teamId, playerId: scorer?.id || null,
+        minute: distributedMinute(phase, i, count),
+        payload: { simulated: true },
+      });
+      generated += 1;
+      if (assister) {
+        insertSimulatedEvent(match, {
+          type: 'assist', phase, teamId, playerId: assister.id,
+          goalEventId: goalId, minute: distributedMinute(phase, i, count),
+          payload: { simulated: true },
+        });
+        generated += 1;
+      }
     }
   };
 
-  const assignCards = (roster) => {
+  const assignCards = (roster, teamId) => {
     if (!roster.length) return;
     const yellowCount = 1 + Math.floor(Math.random() * 3);
     for (let i = 0; i < yellowCount; i += 1) {
-      update.run(0, 0, 1, 0, randomRosterPlayer(roster).id);
+      insertSimulatedEvent(match, {
+        type: 'card', phase, teamId, playerId: randomRosterPlayer(roster).id,
+        card: 'yellow', minute: distributedMinute(phase, i, yellowCount),
+        payload: { simulated: true },
+      });
+      generated += 1;
     }
     if (Math.random() < 0.08) {
-      update.run(0, 0, 0, 1, randomRosterPlayer(roster).id);
+      insertSimulatedEvent(match, {
+        type: 'card', phase, teamId, playerId: randomRosterPlayer(roster).id,
+        card: 'red', minute: distributedMinute(phase, yellowCount, yellowCount + 1),
+        payload: { simulated: true },
+      });
+      generated += 1;
     }
   };
 
-  assignGoals(homeRoster, homeGoals);
-  assignGoals(awayRoster, awayGoals);
-  assignCards(homeRoster);
-  assignCards(awayRoster);
+  assignGoals(homeRoster, homeGoals, home.id);
+  assignGoals(awayRoster, awayGoals, away.id);
+  assignCards(homeRoster, home.id);
+  assignCards(awayRoster, away.id);
+  return generated;
+}
+
+function applySimulatedShootout(match, home, away, homeTotal, awayTotal) {
+  const attempts = Math.max(5, homeTotal, awayTotal);
+  let generated = 0;
+  for (let index = 0; index < attempts; index += 1) {
+    const homeScored = index < homeTotal || (index >= 5 && index < homeTotal);
+    const awayScored = index < awayTotal || (index >= 5 && index < awayTotal);
+    insertSimulatedEvent(match, {
+      type: 'shootout_attempt', phase: 'shootout',
+      teamId: home.id, scored: homeScored,
+      minute: index + 1, payload: { simulated: true, scored: homeScored },
+    });
+    insertSimulatedEvent(match, {
+      type: 'shootout_attempt', phase: 'shootout',
+      teamId: away.id, scored: awayScored,
+      minute: index + 1, payload: { simulated: true, scored: awayScored },
+    });
+    generated += 2;
+  }
+  return generated;
 }
 
 // Simulates one match: generates a random-weighted score, finishes it the
@@ -133,49 +199,46 @@ function simulateMatch(matchId, { actorId } = {}) {
   const away = getParticipant(row.away_participant_team_id);
   const { homeScore, awayScore } = randomScoreline(home?.seed, away?.seed);
 
-  let { match, advance } = finishMatchRecord({
+  let generatedEvents = applySimulatedEvents(row, home, away, homeScore, awayScore);
+  let projected = getProjectedScore(row.id);
+  let extraTime = null;
+  let penalties = null;
+
+  if (stage?.type === 'knockout' && projected.home === projected.away && settings.extraTime) {
+    extraTime = randomScoreline(home?.seed, away?.seed);
+    generatedEvents += applySimulatedEvents(
+      row, home, away, Math.min(2, extraTime.homeScore), Math.min(2, extraTime.awayScore), 'extra_time'
+    );
+    projected = getProjectedScore(row.id);
+  }
+
+  if (stage?.type === 'knockout'
+      && projected.home + projected.extraHome === projected.away + projected.extraAway
+      && settings.penalties) {
+    penalties = randomPenalties();
+    generatedEvents += applySimulatedShootout(row, home, away, penalties.home, penalties.away);
+    projected = getProjectedScore(row.id);
+  }
+
+  rebuildTournamentProjections(row.tournament_id);
+  const result = finishMatchRecord({
     matchRow: row,
-    homeScore,
-    awayScore,
-    extraTimeHome: row.extra_time_home,
-    extraTimeAway: row.extra_time_away,
-    penaltiesHome: row.penalties_home,
-    penaltiesAway: row.penalties_away,
+    homeScore: projected.home,
+    awayScore: projected.away,
+    extraTimeHome: projected.extraHome || null,
+    extraTimeAway: projected.extraAway || null,
+    penaltiesHome: projected.penaltiesHome || null,
+    penaltiesAway: projected.penaltiesAway || null,
     refereeId: actorId,
   });
-
-  let et = null;
-  
-  if (stage?.type === 'knockout' && homeScore == awayScore && settings.extraTime) {
-    et = randomScoreline(home?.seed, away?.seed);
-    db.prepare('UPDATE matches SET extra_time_home = ?, extra_time_away = ? WHERE id = ?').run(
-      Math.min(2, et.homeScore),
-      Math.min(2, et.awayScore),
-      match.id
-    );
-    advance = advanceKnockoutStage(stage.id);
-    match = db.prepare('SELECT * FROM matches WHERE id = ?').get(match.id);
-  }
-
-  if (stage?.type === 'knockout' && ( (et && et.awayScore == et.homeScore) || (!et && homeScore == awayScore)) && settings.penalties) {
-    const pens = randomPenalties();
-    db.prepare('UPDATE matches SET penalties_home = ?, penalties_away = ? WHERE id = ?').run(
-      pens.home,
-      pens.away,
-      match.id
-    );
-    advance = advanceKnockoutStage(stage.id);
-    match = db.prepare('SELECT * FROM matches WHERE id = ?').get(match.id);
-  }
-
-  applySimulatedEvents(
-    home,
-    away,
-    homeScore + (et?.homeScore || 0),
-    awayScore + (et?.awayScore || 0)
-  );
-  match = db.prepare('SELECT * FROM matches WHERE id = ?').get(match.id);
-  return { match: map.match(match), advance };
+  rebuildTournamentProjections(row.tournament_id);
+  return {
+    match: map.match(result.match),
+    advance: result.advance,
+    generatedEvents,
+    extraTime: Boolean(extraTime),
+    penalties: Boolean(penalties),
+  };
 }
 
 function simulateMatchCollection(matchRows, { actorId, maxRounds = 40 } = {}) {

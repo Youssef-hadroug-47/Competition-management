@@ -96,7 +96,11 @@
     });
     if (disabled) return button;
     button.addEventListener('click', async () => {
-      if (!await confirmAction('Confirm simulation', `Run ${label.toLowerCase()}?`, 'Run simulation')) return;
+      if (!await confirmAction(
+        'Confirm simulation',
+        `Run ${label.toLowerCase()}? This creates normal match events and recalculates scores and player statistics.`,
+        'Run simulation'
+      )) return;
       button.disabled = true;
       try {
         await simulate();
@@ -936,6 +940,7 @@
         reasonInput.focus();
         return;
       }
+
       if (!await confirmAction(
         'Abandon match',
         'This clears the current result and returns the match to scheduled. It will not count toward standings or bracket progression until it is resumed and completed.',
@@ -951,103 +956,6 @@
       }
     });
     return el('div', { class: 'match-menu__abandon' }, [toggleButton, form]);
-  }
-
-  function matchMenuScoreForm(state, detail, refresh, showNotice, disableAll) {
-    const m = detail.match;
-    const settings = detail.stage?.settings || {};
-    const homeScore = el('input', { type: 'number', min: 0, value: m.score.home ?? '', 'aria-label': 'Home regulation score' });
-    const awayScore = el('input', { type: 'number', min: 0, value: m.score.away ?? '', 'aria-label': 'Away regulation score' });
-    const etHome = el('input', { type: 'number', min: 0, value: m.score.extraTimeHome ?? '', 'aria-label': 'Home extra-time score' });
-    const etAway = el('input', { type: 'number', min: 0, value: m.score.extraTimeAway ?? '', 'aria-label': 'Away extra-time score' });
-    const pHome = el('input', { type: 'number', min: 0, value: m.score.penaltiesHome ?? '', 'aria-label': 'Home penalties' });
-    const pAway = el('input', { type: 'number', min: 0, value: m.score.penaltiesAway ?? '', 'aria-label': 'Away penalties' });
-
-    const rows = [
-      el('div', { class: 'match-menu__score-row' }, [
-        el('span', { class: 'match-menu__score-label', text: 'Regulation' }),
-        homeScore, el('span', { class: 'match-menu__score-sep', text: '\u2013' }), awayScore,
-      ]),
-    ];
-    if (settings.extraTime) {
-      rows.push(el('div', { class: 'match-menu__score-row' }, [
-        el('span', { class: 'match-menu__score-label', text: 'Extra time (optional)' }),
-        etHome, el('span', { class: 'match-menu__score-sep', text: '\u2013' }), etAway,
-      ]));
-    }
-    if (settings.penalties) {
-      rows.push(el('div', { class: 'match-menu__score-row' }, [
-        el('span', { class: 'match-menu__score-label', text: 'Penalties (optional)' }),
-        pHome, el('span', { class: 'match-menu__score-sep', text: '\u2013' }), pAway,
-      ]));
-    }
-
-    const finishedCorrection = m.status === 'finished';
-    const correctionReason = finishedCorrection
-      ? el('input', { class: 'match-menu__correction-reason', type: 'text', required: true, placeholder: 'Reason for correction', 'aria-label': 'Reason for correction' })
-      : null;
-    const saveButton = el('button', { class: 'btn btn--ghost', type: 'submit', text: finishedCorrection ? 'Save correction' : 'Save score' });
-    const finishButton = finishedCorrection
-      ? null
-      : el('button', { class: 'btn btn--primary', type: 'submit', text: 'Finish match' });
-    const form = el('form', { class: 'match-menu__score-form' }, [
-      el('h3', { text: 'Result' }),
-      ...(correctionReason ? [correctionReason] : []),
-      ...rows,
-      el('div', { class: 'match-menu__score-actions' }, [saveButton, finishButton].filter(Boolean)),
-    ]);
-
-    let submitting = false;
-    let lastSubmitter = saveButton;
-    [saveButton, finishButton].filter(Boolean).forEach((button) => {
-      button.addEventListener('click', () => { lastSubmitter = button; });
-    });
-
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      if (submitting) return;
-      if (homeScore.value === '' || awayScore.value === '') {
-        showNotice('Enter a regulation score for both teams.');
-        return;
-      }
-      if (correctionReason && !correctionReason.value.trim()) {
-        showNotice('Enter a reason for this finished-match correction.');
-        return;
-      }
-      const payload = {
-        revision: m.revision,
-        homeScore: Number(homeScore.value),
-        awayScore: Number(awayScore.value),
-        extraTimeHome: etHome.value === '' ? null : Number(etHome.value),
-        extraTimeAway: etAway.value === '' ? null : Number(etAway.value),
-        penaltiesHome: pHome.value === '' ? null : Number(pHome.value),
-        penaltiesAway: pAway.value === '' ? null : Number(pAway.value),
-        ...(correctionReason ? { reason: correctionReason.value.trim() } : {}),
-      };
-      const finishing = finishButton && lastSubmitter === finishButton;
-      if (finishing && !await confirmAction(
-        'Finish match',
-        'This finalizes the result and updates standings or bracket progression. It cannot be edited through this menu afterwards.',
-        'Finish match'
-      )) return;
-
-      submitting = true;
-      disableAll(true);
-      try {
-        if (finishing) {
-          await Api.matches.finish(state.tournamentId, m.id, payload);
-        } else {
-          await Api.matches.update(state.tournamentId, m.id, payload);
-        }
-        await refresh();
-      } catch (err) {
-        submitting = false;
-        disableAll(false);
-        showNotice(friendlyErrorMessage(err));
-      }
-    });
-
-    return form;
   }
 
   function matchMenuControls(state, detail, refresh) {
@@ -1080,14 +988,12 @@
 
     const actions = el('div', { class: 'match-menu__lifecycle-actions' });
     const administrator = isAdmin();
-    if (state.viewerRole === 'referee' || administrator) {
-      actions.appendChild(el('a', {
-        class: 'btn btn--primary',
-        href: `/referee?tournamentId=${encodeURIComponent(state.tournamentId)}&matchId=${encodeURIComponent(detail.match.id)}`,
-        text: 'Open referee menu',
-      }));
-    }
-    if (administrator || ['scheduled', 'postponed'].includes(status)) {
+    actions.appendChild(el('a', {
+      class: 'btn btn--primary',
+      href: `/referee?tournamentId=${encodeURIComponent(state.tournamentId)}&matchId=${encodeURIComponent(detail.match.id)}`,
+      text: 'View match timeline',
+    }));
+    if (!administrator && ['scheduled', 'postponed'].includes(status)) {
       actions.appendChild(lifecycleButton('Start match', 'primary', () => Api.matches.start(state.tournamentId, detail.match.id)));
     }
     if (!administrator && status === 'live') {
@@ -1111,17 +1017,20 @@
       container.appendChild(el('p', {
         class: 'field__hint',
         text: status === 'live'
-          ? 'The assigned referee controls this active match. Administrator editing is available after it is finished.'
-          : 'Administrator correction mode: score fields can be updated, but event/statistical corrections require the finished-match correction workflow.',
+          ? 'The assigned referee controls this active match. Administrators can correct events after it is finished.'
+          : 'Administrator correction mode: edit the event ledger in the referee menu; score and statistics are recalculated automatically.',
       }));
     }
-    if ((administrator && ['scheduled', 'finished'].includes(status)) || (!administrator && ['live', 'paused'].includes(status))) {
-      container.appendChild(matchMenuScoreForm(state, detail, refresh, showNotice, disableAll));
+    if (administrator || ['live', 'paused'].includes(status)) {
+      container.appendChild(el('p', {
+        class: 'field__hint',
+        text: 'Match score is calculated exclusively from match events. Use the referee menu to create or correct events.',
+      }));
     }
 
     if (status === 'finished') {
       container.appendChild(el('p', { class: 'field__hint', text: administrator
-        ? 'Finished match: administrator score corrections are available. Changes should be reviewed before relying on standings or bracket progression.'
+        ? 'Finished match: administrators can correct the event ledger with a reason. The score and standings are recalculated from events.'
         : 'This match is finished. Its result already counts toward standings/bracket progression and cannot be edited from this menu.' }));
     }
 
@@ -1174,15 +1083,14 @@
 
     if (state.viewerRole === 'moderator') {
       shell.appendChild(matchMenuControls(state, detail, refresh));
-    } else if (state.viewerRole === 'referee') {
-      shell.appendChild(el('div', { class: 'match-menu__controls' }, [
-        el('a', {
-          class: 'btn btn--primary',
-          href: `/referee?tournamentId=${encodeURIComponent(state.tournamentId)}&matchId=${encodeURIComponent(detail.match.id)}`,
-          text: 'Open referee menu',
-        }),
-      ]));
     }
+    shell.appendChild(el('div', { class: 'match-menu__controls' }, [
+      el('a', {
+        class: 'btn btn--ghost',
+        href: `/referee?tournamentId=${encodeURIComponent(state.tournamentId)}&matchId=${encodeURIComponent(detail.match.id)}`,
+        text: 'View match timeline',
+      }),
+    ]));
 
     shell.appendChild(el('div', { class: 'match-menu__squads' }, [
       matchMenuSquadPanel(homeName, detail.homeSquad || []),

@@ -1,6 +1,6 @@
 (function () {
   const { el, clear, showBanner, friendlyErrorMessage } = UI;
-  if (!Session.isAuthenticated()) { location.href = '/login.html?next=%2Fcreate-tournament.html'; return; }
+  if (!Session.isAuthenticated()) { location.href = '/login?next=%2Fcreate-tournament'; return; }
   Header.render(document.getElementById('topbar-actions'));
   const form = document.getElementById('create-wizard-form');
   const general = document.getElementById('phase-general');
@@ -38,6 +38,51 @@
       select('Visibility', 'tournamentVisibility', [['public', 'Public'], ['private', 'Private']]),
       input('Number of teams', 'tournamentNumberOfTeams', 'number', { required: 'required', min: '3', max: '256' }),
     ]));
+    general.appendChild(el('div', { class: 'builder-card suspension-settings' }, [
+      el('h3', { text: 'Suspension rules' }),
+      el('p', { class: 'field__hint', text: 'Choose whether disciplinary suspensions are enforced throughout this tournament.' }),
+      el('label', { class: 'suspension-mechanic-toggle' }, [
+        el('input', { type: 'checkbox', name: 'suspensionSystemEnabled', checked: 'checked' }),
+        el('span', { class: 'suspension-mechanic-toggle__track', 'aria-hidden': 'true' }),
+        el('span', { class: 'suspension-mechanic-toggle__copy' }, [
+          el('strong', { text: 'Enable suspension mechanic' }),
+          el('small', { text: 'Cards can make players unavailable for future matches.' }),
+        ]),
+      ]),
+      el('div', { class: 'suspension-scope-options' }, [
+        el('label', { class: 'check-row' }, [
+          el('input', { type: 'checkbox', name: 'suspensionScope', value: 'tournament_wide', checked: 'checked' }),
+          ' Tournament-wide',
+        ]),
+        el('label', { class: 'check-row' }, [
+          el('input', { type: 'checkbox', name: 'suspensionScope', value: 'stage_local' }),
+          ' Reset per stage',
+        ]),
+      ]),
+      input('Yellow cards required for a next-match suspension', 'yellowCardsForSuspension', 'number', {
+        min: 1,
+        max: 10,
+        value: 2,
+        required: 'required',
+      }),
+    ]));
+    const scopeOptions = [...general.querySelectorAll('[name="suspensionScope"]')];
+    const suspensionEnabled = general.querySelector('[name="suspensionSystemEnabled"]');
+    const suspensionOptions = [...general.querySelectorAll('[name="yellowCardsForSuspension"], [name="suspensionScope"]')];
+    const syncSuspensionOptions = () => {
+      suspensionOptions.forEach((option) => {
+        option.disabled = !suspensionEnabled.checked;
+      });
+      general.classList.toggle('suspension-settings--disabled', !suspensionEnabled.checked);
+    };
+    suspensionEnabled.addEventListener('change', syncSuspensionOptions);
+    syncSuspensionOptions();
+    scopeOptions.forEach((option) => option.addEventListener('change', () => {
+      if (option.checked) scopeOptions.forEach((other) => {
+        if (other !== option) other.checked = false;
+      });
+      if (!scopeOptions.some((item) => item.checked)) option.checked = true;
+    }));
   }
   function targetOptions(current) {
     return [['', 'Choose a target stage'], ...stages
@@ -371,7 +416,12 @@
   }
   function validateGeneral() {
     const name = form.elements.tournamentName.value.trim(); const teams = Number(form.elements.tournamentNumberOfTeams.value);
-    if (!name) return 'Tournament name is required.'; if (!Number.isInteger(teams) || teams < 3 || teams > 256) return 'Number of teams must be between 3 and 256.'; return null;
+    if (!name) return 'Tournament name is required.';
+    if (!Number.isInteger(teams) || teams < 3 || teams > 256) return 'Number of teams must be between 3 and 256.';
+    const yellowThreshold = Number(form.elements.yellowCardsForSuspension.value);
+    if (!Number.isInteger(yellowThreshold) || yellowThreshold < 1 || yellowThreshold > 10) {
+      return 'Yellow-card suspension threshold must be between 1 and 10.';
+    }
   }
   function validateFormat() {
     if (!stages.length) return 'Add at least one stage.';
@@ -423,6 +473,12 @@
         place: form.elements.tournamentPlace.value.trim() || undefined,
         visibility: form.elements.tournamentVisibility.value,
         numberOfTeams: Number(form.elements.tournamentNumberOfTeams.value),
+        settings: {
+          suspensionSystem: {
+            enabled: form.elements.suspensionSystemEnabled.checked,
+            yellowCardsForSuspension: Number(form.elements.yellowCardsForSuspension.value),
+          },
+        },
       });
       const tournamentId = base.tournament.id; const ids = [];
       for (let i = 0; i < stages.length; i += 1) {
