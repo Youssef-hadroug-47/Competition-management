@@ -277,9 +277,19 @@ CREATE INDEX IF NOT EXISTS idx_stages_tournament ON stages(tournament_id);
 CREATE INDEX IF NOT EXISTS idx_groups_stage ON groups(stage_id);
 CREATE INDEX IF NOT EXISTS idx_pt_tournament ON participant_teams(tournament_id);
 CREATE INDEX IF NOT EXISTS idx_matches_tournament ON matches(tournament_id);
+CREATE INDEX IF NOT EXISTS idx_matches_tournament_schedule
+  ON matches(tournament_id, matchday, created_at);
+CREATE INDEX IF NOT EXISTS idx_match_events_match_created
+  ON match_events(match_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_follows_tournament ON tournament_follows(tournament_id);
+CREATE INDEX IF NOT EXISTS idx_follows_user_status
+  ON tournament_follows(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_tournament_roles_user
+  ON tournament_role(user_id, tournament_id);
 CREATE INDEX IF NOT EXISTS idx_stage_promotions_source ON stage_promotions(source_stage_id);
 CREATE INDEX IF NOT EXISTS idx_stage_promotions_target ON stage_promotions(target_stage_id);
 CREATE INDEX IF NOT EXISTS idx_vote_tournament ON vote(tournament_id);
 CREATE INDEX IF NOT EXISTS idx_vote_nominees_vote ON vote_nominees(vote_id);
 CREATE INDEX IF NOT EXISTS idx_vote_ballots_vote ON vote_ballots(vote_id);
+CREATE INDEX IF NOT EXISTS idx_tournaments_public_recent
+  ON tournaments(visibility, created_at DESC);

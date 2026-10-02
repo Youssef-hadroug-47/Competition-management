@@ -1,7 +1,7 @@
 const path = require('path');
-const { createApp } = require('./app');
-const config = require('./config');
-const { initialize, pool } = require('./db');
+const { createApp } = require('../src/app');
+const config = require('../src/config');
+const { initialize, pool } = require('../src/db');
 
 const app = createApp({
   staticDir: path.join(__dirname, '..', 'frontend', 'public'),
@@ -10,7 +10,7 @@ const app = createApp({
 async function start() {
   await initialize();
   const server = app.listen(config.port, () => {
-    console.log(`Tournament API listening on http://localhost:${config.port}`);
+    console.log(`Tournament Manager listening on http://localhost:${config.port}`);
   });
 
   const shutdown = async () => {

@@ -22,6 +22,80 @@ accepting requests. `DATABASE_SSL=true` enables TLS; set
 requires a certificate that is not locally trusted. `DATABASE_POOL_MAX`
 controls the connection-pool size.
 
+For temporary latency diagnostics, set `PERFORMANCE_LOGGING=true`. The API
+will log each request and database statement duration without logging query
+parameters. Disable it after profiling because verbose request/query logging
+adds overhead.
+
+For browser-side timing on the tournament page, open DevTools and run:
+
+```js
+localStorage.setItem('apiDebug', 'true');
+location.reload();
+```
+
+The browser console will show each API duration, the server
+`X-Request-Id`, and tournament-page phases. Match the request ID with the API
+server log to separate browser/network time from backend/database time. Disable
+it with `localStorage.removeItem('apiDebug')`.
+
+### Read-only load test
+
+With the API running, the built-in load test sends randomized read-only
+requests and reports aggregate and per-route latency:
+
+```bash
+LOAD_TEST_REQUESTS=200 \
+LOAD_TEST_CONCURRENCY=20 \
+npm run load-test
+```
+
+Optional variables are `LOAD_TEST_BASE_URL` (defaults to
+`http://127.0.0.1:3000/api`) and `LOAD_TEST_TOKEN` for testing authenticated
+read routes. The script never creates, updates, deletes, or draws data.
+
+### Docker deployment
+
+Build and run the production container:
+
+```bash
+docker build -t tournament-manager .
+docker run --rm -p 3000:3000 --env-file .env tournament-manager
+```
+
+The container serves the static frontend and `/api` from port `3000`. Use a
+hosted PostgreSQL `DATABASE_URL`; the container does not include a database.
+
+### Vercel deployment
+
+Vercel does not run the `Dockerfile` as a long-lived container. The repository
+also includes `vercel.json`, which deploys `api/index.js` as a Node function
+and serves `frontend/public` as static files.
+
+From the repository root:
+
+```bash
+npx vercel
+```
+
+Add these variables in the Vercel project settings for Production:
+
+```text
+DATABASE_URL
+DATABASE_SSL=true
+DATABASE_SSL_REJECT_UNAUTHORIZED=true
+DATABASE_POOL_MAX=5
+JWT_SECRET
+```
+
+The frontend uses the same-origin `/api` path on Vercel. Never add
+`DATABASE_URL` or `JWT_SECRET` to frontend environment variables.
+
+The current SSE stream is designed for a long-lived Express process and may
+not be reliable through serverless function time limits. Use the Docker
+deployment or another long-lived Node host for referee live timelines unless
+the realtime path is migrated to a serverless-compatible service.
+
 ### Seed accounts
 
 | Role    | Email                      | Password    |

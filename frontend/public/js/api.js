@@ -45,6 +45,8 @@ function enc(value) {
 }
 
 async function request(method, path, { body, query } = {}) {
+  const traceEnabled = window.localStorage.getItem('apiDebug') === 'true';
+  const startedAt = performance.now();
   const url = new URL(apiBaseUrl() + path);
   if (query) {
     for (const [k, v] of Object.entries(query)) {
@@ -67,7 +69,16 @@ async function request(method, path, { body, query } = {}) {
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch (networkErr) {
+    if (traceEnabled) console.debug(`[api] ${method} ${path} network error`, Math.round(performance.now() - startedAt), 'ms');
     throw new ApiError('Unable to reach the server.', 0);
+  }
+  if (traceEnabled) {
+    console.debug(
+      `[api] ${method} ${path} ${res.status}`,
+      Math.round(performance.now() - startedAt),
+      'ms',
+      `request-id=${res.headers.get('X-Request-Id') || 'none'}`,
+    );
   }
 
   if (res.status === 401) {

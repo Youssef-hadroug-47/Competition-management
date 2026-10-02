@@ -13,4 +13,7 @@ module.exports = {
   databaseSsl,
   databaseSslRejectUnauthorized,
   databasePoolMax: Number(process.env.DATABASE_POOL_MAX) || 10,
+  databaseConnectionTimeoutMs: Number(process.env.DATABASE_CONNECTION_TIMEOUT_MS) || 10000,
+  databaseIdleTimeoutMs: Number(process.env.DATABASE_IDLE_TIMEOUT_MS) || 10000,
+  performanceLogging: /^(1|true|yes)$/i.test(process.env.PERFORMANCE_LOGGING || ''),
 };

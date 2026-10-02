@@ -125,6 +125,11 @@
   // Boot
   // ---------------------------------------------------------------
   async function init() {
+    const pageTrace = localStorage.getItem('apiDebug') === 'true';
+    const pageStartedAt = performance.now();
+    const trace = (label, startedAt) => {
+      if (pageTrace) console.debug(`[tournament-page] ${label}`, Math.round(performance.now() - startedAt), 'ms');
+    };
     Header.render(topbarActions);
     Session.scheduleExpiryLogout(() => {
       showBanner(banner, 'You were signed out because your session expired.', 'error');
@@ -141,7 +146,9 @@
 
     let detail;
     try {
+      const startedAt = performance.now();
       detail = await Api.tournaments.get(tournamentId);
+      trace('tournament detail', startedAt);
     } catch (err) {
       loadingPanel.hidden = true;
       if (err.status === 404) {
@@ -155,13 +162,16 @@
     }
 
     const stages = Array.isArray(detail.stages) ? detail.stages : [];
+    const parallelStartedAt = performance.now();
     const [participantTeams, matches, viewerRole] = await Promise.all([
       loadParticipantTeams(tournamentId),
       loadMatches(tournamentId),
       loadViewerRole(tournamentId),
     ]);
+    trace('parallel teams/matches/viewer-role', parallelStartedAt);
     loadingPanel.hidden = true;
     renderHero(detail.tournament, tournamentId, stages, matches, viewerRole);
+    trace('initial page render', pageStartedAt);
 
     const teamNameById = new Map(
       participantTeams.map((pt) => [pt.id, pt.team?.name || pt.nickname || `Seed ${pt.seed ?? '?'}`])
@@ -1544,10 +1554,19 @@
   }
 
   async function renderStandings(container, state, stage) {
+    const traceEnabled = localStorage.getItem('apiDebug') === 'true';
+    const startedAt = performance.now();
     container.appendChild(el('p', { class: 'empty-state', text: 'Loading standings…' }));
     let data;
     try {
       data = await Api.stages.standings(state.tournamentId, stage.id);
+      if (traceEnabled) {
+        console.debug(
+          `[tournament-page] standings render fetch ${stage.id}`,
+          Math.round(performance.now() - startedAt),
+          'ms',
+        );
+      }
     } catch (err) {
       clear(container);
       container.appendChild(el('p', { class: 'empty-state', text: friendlyErrorMessage(err) }));
@@ -1559,6 +1578,13 @@
     if (!groups.length) {
       container.appendChild(el('p', { class: 'empty-state', text: 'No groups defined for this stage yet.' }));
       return;
+    }
+    if (traceEnabled) {
+      console.debug(
+        `[tournament-page] standings DOM render ${stage.id}`,
+        Math.round(performance.now() - startedAt),
+        'ms',
+      );
     }
 
     const teamById = new Map(state.participantTeams.map((t) => [t.id, t]));

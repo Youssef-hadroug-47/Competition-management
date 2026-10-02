@@ -2,10 +2,15 @@ const fs = require('fs/promises');
 const path = require('path');
 const { Pool } = require('pg');
 const config = require('../config');
+const { getRequestContext } = require('../utils/requestContext');
 
 const pool = new Pool({
   ...(config.databaseUrl ? { connectionString: config.databaseUrl } : {}),
   max: config.databasePoolMax,
+  connectionTimeoutMillis: config.databaseConnectionTimeoutMs,
+  idleTimeoutMillis: config.databaseIdleTimeoutMs,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000,
   ssl: config.databaseSsl
     ? { rejectUnauthorized: config.databaseSslRejectUnauthorized }
     : undefined,
@@ -23,7 +28,20 @@ async function initialize() {
 }
 
 async function query(text, values) {
-  return pool.query(text, values);
+  const startedAt = performance.now();
+  const context = getRequestContext();
+  if (context) context.queryCount += 1;
+  try {
+    return await pool.query(text, values);
+  } finally {
+    if (config.performanceLogging) {
+      const statement = String(text).replace(/\s+/g, ' ').trim().slice(0, 120);
+      console.log(
+        `[db] id=${context?.requestId || 'startup'} ` +
+        `${Math.round(performance.now() - startedAt)}ms ${statement}`,
+      );
+    }
+  }
 }
 
 async function withTransaction(callback) {
