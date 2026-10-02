@@ -1,44 +1,58 @@
-const { db } = require('../db');
+const { query } = require('../db');
 
-function getRoles(tournamentId) {
-  return (tournamentId) ?
-    db.prepare('SELECT role, user_id FROM tournament_role WHERE tournament_id = ?').all(tournamentId) : null;
+async function getRoles(tournamentId) {
+  if (!tournamentId) return null;
+  const result = await query(
+    'SELECT role, user_id FROM tournament_role WHERE tournament_id = $1',
+    [tournamentId],
+  );
+  return result.rows;
 }
 
-function getRole(tournamentId, userId) {
-  const row = (tournamentId && userId)
-    ? db.prepare('SELECT role FROM tournament_role WHERE tournament_id = ? AND user_id = ?').get(tournamentId, userId)
-    : null;
+async function getRole(tournamentId, userId) {
+  if (!(tournamentId && userId)) return null;
+  const result = await query(
+    'SELECT role FROM tournament_role WHERE tournament_id = $1 AND user_id = $2',
+    [tournamentId, userId],
+  );
+  const row = result.rows[0];
   return row?.role || null;
 }
 
-function addRole(tournamentId, userId, role) {
+async function addRole(tournamentId, userId, role) {
   if (!(tournamentId && userId && role)) return false;
   try {
-    db.prepare('INSERT INTO tournament_role (tournament_id, user_id, role) VALUES (?, ?, ?)').run(tournamentId, userId, role);
+    await query(
+      'INSERT INTO tournament_role (tournament_id, user_id, role) VALUES ($1, $2, $3)',
+      [tournamentId, userId, role],
+    );
     return true;
   } catch (err) {
-    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE' || err.code === 'SQLITE_CONSTRAINT') return false;
+    if (err.code === '23505') return false;
     throw err;
   }
 }
 
-function updateRole(tournamentId, userId, role) {
+async function updateRole(tournamentId, userId, role) {
   if (!(tournamentId && userId && role)) return false;
 
-  if (!getRole(tournamentId, userId)) return false;
+  if (!(await getRole(tournamentId, userId))) return false;
 
-  db.prepare('UPDATE tournament_role SET role = ? WHERE tournament_id = ? AND user_id = ?').run(role, tournamentId, userId);
-  return true;
+  const result = await query(
+    'UPDATE tournament_role SET role = $1 WHERE tournament_id = $2 AND user_id = $3',
+    [role, tournamentId, userId],
+  );
+  return result.rowCount > 0;
 }
 
-function deleteRole(tournamentId, userId) {
+async function deleteRole(tournamentId, userId) {
   if (!(tournamentId && userId)) return false;
 
-  if (!getRole(tournamentId, userId)) return false;
-
-  db.prepare('DELETE FROM tournament_role WHERE tournament_id = ? AND user_id = ?').run(tournamentId, userId);
-  return true;
+  const result = await query(
+    'DELETE FROM tournament_role WHERE tournament_id = $1 AND user_id = $2',
+    [tournamentId, userId],
+  );
+  return result.rowCount > 0;
 } 
 
 

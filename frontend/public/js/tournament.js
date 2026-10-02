@@ -431,8 +431,68 @@
       { id: 'teams', label: 'Teams & players', render: renderTeamsView },
       { id: 'votes', label: 'Voting', render: renderVotesView },
     ];
+    if (state.viewerRole === 'team_leader') {
+      tabs.unshift({ id: 'my-team', label: 'My team', render: renderTeamLeaderView });
+    }
     if (state.tournament.visibility === 'private' && state.viewerRole === 'moderator') {
       tabs.push({ id: 'followers', label: 'Followers', render: renderFollowersView });
+    }
+
+    async function renderTeamLeaderView(container, state) {
+      clear(container);
+      container.appendChild(el('p', { class: 'empty-state', text: 'Loading your team…' }));
+      try {
+        const data = await Api.teamLeader.get(state.tournamentId);
+        clear(container);
+        const team = data.participantTeam;
+        const players = data.participantPlayers || [];
+        if (!team) {
+          const form = el('form', { class: 'management-form' }, [
+            el('h2', { text: 'Create your tournament team' }),
+            el('p', { class: 'field__hint', text: 'You can create one team for this tournament.' }),
+            el('input', { name: 'name', required: 'required', placeholder: 'Team name', 'aria-label': 'Team name' }),
+            el('button', { class: 'btn btn--primary', type: 'submit', text: 'Create team' }),
+          ]);
+          form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const button = form.querySelector('button');
+            button.disabled = true;
+            try { await Api.teamLeader.createTeam(state.tournamentId, { name: form.elements.name.value.trim() }); await renderTeamLeaderView(container, state); }
+            catch (err) { button.disabled = false; showBanner(banner, friendlyErrorMessage(err)); }
+          });
+          container.appendChild(form);
+          return;
+        }
+        const roster = el('div', { class: 'participant-team-card' }, [
+          el('h2', { text: team.team?.name || team.nickname || 'My team' }),
+          el('p', { class: 'field__hint', text: `${players.length}/11 players registered` }),
+          el('ul', { class: 'catalog-list' }, players.map((player) => el('li', { text: [player.player?.name, player.position].filter(Boolean).join(' · ') }))),
+        ]);
+        if (players.length < 11) {
+          const form = el('form', { class: 'management-form' }, [
+            el('h3', { text: 'Add player' }),
+            el('input', { name: 'name', required: 'required', placeholder: 'Player name', 'aria-label': 'Player name' }),
+            el('input', { name: 'position', placeholder: 'Position (optional)', 'aria-label': 'Position' }),
+            el('button', { class: 'btn btn--primary', type: 'submit', text: 'Add player' }),
+          ]);
+          form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const button = form.querySelector('button');
+            button.disabled = true;
+            try {
+              await Api.teamLeader.addPlayer(state.tournamentId, team.id, { name: form.elements.name.value.trim(), position: form.elements.position.value.trim() || undefined });
+              await renderTeamLeaderView(container, state);
+            } catch (err) { button.disabled = false; showBanner(banner, friendlyErrorMessage(err)); }
+          });
+          roster.appendChild(form);
+        } else {
+          roster.appendChild(el('p', { class: 'field__hint', text: 'The 11-player roster limit has been reached.' }));
+        }
+        container.appendChild(roster);
+      } catch (err) {
+        clear(container);
+        container.appendChild(el('p', { class: 'empty-state', text: friendlyErrorMessage(err) }));
+      }
     }
     if (Session.getUser()?.id === state.tournament.createdBy) {
       tabs.push({ id: 'staff', label: 'Staff management', render: renderStaffView });
@@ -599,6 +659,7 @@
         el('select', { name: 'role' }, [
           el('option', { value: 'moderator', text: 'Moderator' }),
           el('option', { value: 'referee', text: 'Referee' }),
+          el('option', { value: 'team_leader', text: 'Team leader' }),
         ]),
       ]),
       el('button', { class: 'btn btn--primary', type: 'submit', text: 'Add assignment' }),
@@ -641,6 +702,7 @@
       const roleSelect = el('select', { class: 'staff-row__role', 'aria-label': `Role for ${assignment.user_id}` }, [
         el('option', { value: 'moderator', text: 'Moderator' }),
         el('option', { value: 'referee', text: 'Referee' }),
+        el('option', { value: 'team_leader', text: 'Team leader' }),
       ]);
       roleSelect.value = assignment.role;
       roleSelect.disabled = isCreator;

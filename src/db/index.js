@@ -1,214 +1,52 @@
-const fs = require('fs');
+const fs = require('fs/promises');
 const path = require('path');
-const { DatabaseSync } = require('node:sqlite');
+const { Pool } = require('pg');
 const config = require('../config');
 
-const dir = path.dirname(path.resolve(config.dbPath));
-fs.mkdirSync(dir, { recursive: true });
+const pool = new Pool({
+  ...(config.databaseUrl ? { connectionString: config.databaseUrl } : {}),
+  max: config.databasePoolMax,
+  ssl: config.databaseSsl
+    ? { rejectUnauthorized: config.databaseSslRejectUnauthorized }
+    : undefined,
+});
 
-const db = new DatabaseSync(path.resolve(config.dbPath));
-db.exec('PRAGMA journal_mode = WAL');
-db.exec('PRAGMA foreign_keys = ON');
+let initialization;
 
-const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
-db.exec(schema);
-
-const tournamentColumns = db.prepare('PRAGMA table_info(tournaments)').all().map((column) => column.name);
-if (!tournamentColumns.includes('settings')) {
-  db.exec(`ALTER TABLE tournaments ADD COLUMN settings TEXT NOT NULL DEFAULT '{}'`);
-}
-
-const matchColumns = db.prepare('PRAGMA table_info(matches)').all().map((column) => column.name);
-if (!matchColumns.includes('revision')) {
-  db.exec(`ALTER TABLE matches ADD COLUMN revision INTEGER NOT NULL DEFAULT 0`);
-}
-db.exec(`
-  CREATE TABLE IF NOT EXISTS match_audit (
-    id TEXT PRIMARY KEY,
-    match_id TEXT NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
-    tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
-    user_id TEXT REFERENCES users(id),
-    action TEXT NOT NULL,
-    reason TEXT,
-    before_state TEXT NOT NULL DEFAULT '{}',
-    after_state TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX IF NOT EXISTS idx_match_audit_match ON match_audit(match_id, created_at);
-`);
-
-const voteSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'vote'").get()?.sql || '';
-if (voteSql && !voteSql.includes('finished_at')) {
-  db.exec(`
-    ALTER TABLE vote RENAME TO vote_legacy;
-    CREATE TABLE vote (
-      id TEXT PRIMARY KEY,
-      tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
-      name TEXT NOT NULL,
-      award TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'finished')),
-      finished_at TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    INSERT INTO vote (id, tournament_id, name, award)
-      SELECT id, tournament_id, name, award FROM vote_legacy;
-    DROP TABLE vote_legacy;
-    CREATE INDEX IF NOT EXISTS idx_vote_tournament ON vote(tournament_id);
-  `);
-
-  const migratedMatchColumns = db.prepare('PRAGMA table_info(matches)').all().map((column) => column.name);
-  for (const [name, definition] of [
-    ['duration_minutes', 'INTEGER'],
-    ['phase', "TEXT NOT NULL DEFAULT 'scheduled'"],
-    ['phase_started_at', 'TEXT'],
-    ['phase_elapsed_seconds', 'INTEGER NOT NULL DEFAULT 0'],
-  ]) {
-    if (!migratedMatchColumns.includes(name)) db.exec(`ALTER TABLE matches ADD COLUMN ${name} ${definition}`);
+async function initialize() {
+  if (!initialization) {
+    initialization = fs
+      .readFile(path.join(__dirname, 'schema.sql'), 'utf8')
+      .then((schema) => pool.query(schema));
   }
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS match_events (
-      id TEXT PRIMARY KEY,
-      match_id TEXT NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
-      tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
-      type TEXT NOT NULL CHECK (type IN ('goal', 'assist', 'card', 'phase', 'shootout_attempt')),
-      phase TEXT NOT NULL CHECK (phase IN ('regulation', 'extra_time', 'shootout')),
-      goal_event_id TEXT REFERENCES match_events(id) ON DELETE CASCADE,
-      team_id TEXT REFERENCES participant_teams(id),
-      player_id TEXT REFERENCES participant_players(id),
-      assister_id TEXT REFERENCES participant_players(id),
-      card TEXT CHECK (card IN ('yellow', 'red')),
-      scored BOOLEAN,
-      minute INTEGER,
-      payload TEXT NOT NULL DEFAULT '{}',
-      client_event_id TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      UNIQUE (match_id, client_event_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_match_events_match ON match_events(match_id, created_at);
-    CREATE INDEX IF NOT EXISTS idx_match_events_goal ON match_events(goal_event_id);
-  `);
+  return initialization;
 }
 
-const matchEventsSql = db.prepare(
-  "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'match_events'"
-).get()?.sql || '';
-if (matchEventsSql && !matchEventsSql.includes("'assist'")) {
-  db.exec(`
-    ALTER TABLE match_events RENAME TO match_events_legacy;
-    CREATE TABLE match_events (
-        id TEXT PRIMARY KEY,
-        match_id TEXT NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
-        tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
-        type TEXT NOT NULL CHECK (type IN ('goal', 'assist', 'card', 'phase', 'shootout_attempt')),
-        phase TEXT NOT NULL CHECK (phase IN ('regulation', 'extra_time', 'shootout')),
-        goal_event_id TEXT REFERENCES match_events(id) ON DELETE CASCADE,
-        team_id TEXT REFERENCES participant_teams(id),
-        player_id TEXT REFERENCES participant_players(id),
-        assister_id TEXT REFERENCES participant_players(id),
-        card TEXT CHECK (card IN ('yellow', 'red')),
-        scored BOOLEAN,
-        minute INTEGER,
-        payload TEXT NOT NULL DEFAULT '{}',
-        client_event_id TEXT,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        UNIQUE (match_id, client_event_id)
-    );
-    INSERT INTO match_events
-      (id, match_id, tournament_id, type, phase, goal_event_id, team_id, player_id, assister_id, card, scored, minute, payload, client_event_id, created_at)
-      SELECT id, match_id, tournament_id, type, phase, NULL, team_id, player_id, assister_id, card, scored, minute, payload, client_event_id, created_at
-      FROM match_events_legacy;
-    DROP TABLE match_events_legacy;
-    CREATE INDEX IF NOT EXISTS idx_match_events_match ON match_events(match_id, created_at);
-    CREATE INDEX IF NOT EXISTS idx_match_events_goal ON match_events(goal_event_id);
-  `);
+async function query(text, values) {
+  return pool.query(text, values);
 }
-const matchEventColumns = db.prepare('PRAGMA table_info(match_events)').all().map((column) => column.name);
-if (matchEventColumns.length && !matchEventColumns.includes('goal_event_id')) {
-  db.exec('ALTER TABLE match_events ADD COLUMN goal_event_id TEXT REFERENCES match_events(id) ON DELETE CASCADE');
-}
-db.exec('CREATE INDEX IF NOT EXISTS idx_match_events_goal ON match_events(goal_event_id)');
-db.exec(`
-  CREATE TABLE IF NOT EXISTS player_match_suspensions (
-    id TEXT PRIMARY KEY,
-    tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
-    participant_player_id TEXT NOT NULL REFERENCES participant_players(id) ON DELETE CASCADE,
-    target_match_id TEXT NOT NULL REFERENCES matches(id) ON DELETE CASCADE,
-    source_match_id TEXT REFERENCES matches(id) ON DELETE SET NULL,
-    source_event_id TEXT REFERENCES match_events(id) ON DELETE SET NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('yellow_threshold', 'red_card')),
-    status TEXT NOT NULL DEFAULT 'pending'
-      CHECK (status IN ('pending', 'excluded', 'included', 'consumed')),
-    decided_by TEXT REFERENCES users(id),
-    decided_at TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE (participant_player_id, target_match_id, kind)
-  );
-  CREATE INDEX IF NOT EXISTS idx_player_match_suspensions_target
-    ON player_match_suspensions(target_match_id, participant_player_id);
-`);
-db.exec(`
-  CREATE TABLE IF NOT EXISTS vote_ballots (
-    vote_id TEXT NOT NULL REFERENCES vote(id) ON DELETE CASCADE,
-    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    nominee_id TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (vote_id, user_id)
-  );
-  CREATE INDEX IF NOT EXISTS idx_vote_ballots_vote ON vote_ballots(vote_id);
-`);
 
-// Existing installations may have created the matches table before the
-// paused lifecycle state was introduced. SQLite cannot alter a CHECK
-// constraint in place, so migrate that table once while preserving rows.
-const matchesSql = db.prepare(
-  "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'matches'"
-).get()?.sql || '';
-if (matchesSql && !matchesSql.includes("'paused'")) {
-  db.exec(`
-    PRAGMA foreign_keys = OFF;
-    ALTER TABLE matches RENAME TO matches_legacy;
-    CREATE TABLE matches (
-      id TEXT PRIMARY KEY,
-      tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
-      stage_id TEXT NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
-      group_id TEXT,
-      matchday INTEGER,
-      home_participant_team_id TEXT REFERENCES participant_teams(id),
-      away_participant_team_id TEXT REFERENCES participant_teams(id),
-      venue TEXT,
-      scheduled_at TEXT,
-      status TEXT NOT NULL DEFAULT 'scheduled'
-        CHECK (status IN ('scheduled', 'live', 'paused', 'finished', 'postponed', 'cancelled')),
-      home_score INTEGER,
-      away_score INTEGER,
-      extra_time_home INTEGER,
-      extra_time_away INTEGER,
-      penalties_home INTEGER,
-      penalties_away INTEGER,
-      referee_id TEXT REFERENCES users(id),
-      started_at TEXT,
-      finished_at TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    INSERT INTO matches (
-      id, tournament_id, stage_id, group_id, matchday,
-      home_participant_team_id, away_participant_team_id, venue, scheduled_at,
-      status, home_score, away_score, extra_time_home, extra_time_away,
-      penalties_home, penalties_away, referee_id, started_at, finished_at, created_at
-    )
-    SELECT
-      id, tournament_id, stage_id, group_id, matchday,
-      home_participant_team_id, away_participant_team_id, venue, scheduled_at,
-      status, home_score, away_score, extra_time_home, extra_time_away,
-      penalties_home, penalties_away, referee_id, started_at, finished_at, created_at
-    FROM matches_legacy;
-    DROP TABLE matches_legacy;
-    PRAGMA foreign_keys = ON;
-  `);
+async function withTransaction(callback) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await callback(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // Preserve the original transaction error.
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 function now() {
-  return new Date().toISOString().replace('T', ' ').slice(0, 19);
+  return new Date().toISOString();
 }
 
 function parseJson(value, fallback = {}) {
@@ -221,4 +59,12 @@ function parseJson(value, fallback = {}) {
   }
 }
 
-module.exports = { db, now, parseJson };
+module.exports = {
+  pool,
+  db: pool,
+  initialize,
+  query,
+  withTransaction,
+  now,
+  parseJson,
+};

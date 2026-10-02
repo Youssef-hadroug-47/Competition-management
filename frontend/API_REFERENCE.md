@@ -316,6 +316,34 @@ Requires tournament to be inspectable (private tournaments enforce `requireTourn
 ```json
 { "playerId": "string (required)", "shirtNumber": "number", "role": "'player'|'captain'|'goalkeeper' (default 'player')", "status": "'active'|'injured'|'suspended'|'ineligible' (default 'active')" }
 ```
+
+### Team leader workflow
+
+Tournament owners can assign the `team_leader` role. A team leader can create
+one new catalog-backed participant team in that tournament:
+
+```http
+POST /tournaments/:tournamentId/team-leader/team
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "name": "North Stars", "shortName": "NS" }
+```
+
+The same role can retrieve its owned team and roster with
+`GET /tournaments/:tournamentId/team-leader/team`, then add catalog-backed
+roster players through:
+
+```http
+POST /tournaments/:tournamentId/team-leader/teams/:participantTeamId/players
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "name": "Alex Morgan", "position": "Forward" }
+```
+
+The backend permits only the owning team leader to use these endpoints and
+enforces one team per tournament and a maximum of 11 players.
 **Response `201`**: `{ "participantPlayer": {...} }`
 **Errors**: `400` missing playerId, `404` participant team / player not found.
 
@@ -548,18 +576,10 @@ DELETE /tournaments/:tournamentId/roles/:userId
 
 ---
 
-## Other schema/code notes worth flagging
+## Database notes
 
-- **`schema.sql`**: the `votes` table definition is broken —
-  ```sql
-  CREATE TABLE IF NOT EXISTS votes (
-    voter TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  );
-  ```
-  has a trailing comma with no following column and no primary key; this table also appears to be a dead duplicate of `vote`/`vote_nominees` and isn't referenced by any service code.
-- **`voteService.js`** mixes two different DB access styles inline — some calls use `db.run/get/all(sql, params)` (promise/sqlite3-style), others use `db.prepare(sql).run(...)` (better-sqlite3-style, matching every other service in the codebase). Given `mappers.js`, `access.js`, etc. all use `db.prepare(...).get/all/run(...)`, the `db.run/get/all` calls in `voteService.js` will throw (`db.run is not a function`) against the shared `../db` module.
-- **`addNominee`** in `voteService.js` inserts with 3 placeholders but only 2 bound params:
-  ```js
-  db.prepare(`INSERT INTO vote_nominees (vote_id, nominee_id) VALUES (?, ?, 0)`).run(voteId, nomineeId);
-  ```
-  column list has 2 columns but the VALUES clause has 3 placeholders — this will throw a binding-count mismatch.
+The backend uses PostgreSQL through the shared `pg` pool. The schema is
+initialized from `src/db/schema.sql` at startup, and all database operations
+are asynchronous. Multi-step operations such as team-leader registration,
+voting, draws, and projections use PostgreSQL transactions where their
+dependent services share a transaction client.

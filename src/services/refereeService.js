@@ -1,4 +1,8 @@
-const { db, now, parseJson } = require('../db');
+const { query, withTransaction, now, parseJson } = require('../db');
+
+const run = (sql, values = [], client) => (client || { query }).query(sql.replace(/\?/g, (_, offset, text) => `$${(text.slice(0, offset).match(/\?/g) || []).length + 1}`), values);
+const one = async (sql, values = [], client) => (await run(sql, values, client)).rows[0] || null;
+const many = async (sql, values = [], client) => (await run(sql, values, client)).rows;
 const { id } = require('../utils/ids');
 const { httpError } = require('../middleware/error');
 const { defaultStageSettings } = require('./mappers');
@@ -16,20 +20,20 @@ function timestampMilliseconds(value) {
   return Date.parse(/[zZ]|[+-]\d{2}:?\d{2}$/.test(text) ? text : `${text.replace(' ', 'T')}Z`);
 }
 
-function getMatch(matchId, tournamentId) {
-  const match = db.prepare('SELECT * FROM matches WHERE id = ? AND tournament_id = ?').get(matchId, tournamentId);
+async function getMatch(matchId, tournamentId) {
+  const match = await one('SELECT * FROM matches WHERE id = ? AND tournament_id = ?', [matchId, tournamentId]);
   if (!match) throw httpError(404, 'Match not found');
   return match;
 }
 
-function getStageSettings(match) {
-  const stage = db.prepare('SELECT * FROM stages WHERE id = ?').get(match.stage_id);
+async function getStageSettings(match) {
+  const stage = await one('SELECT * FROM stages WHERE id = ?', [match.stage_id]);
   return { stage, settings: parseJson(stage?.settings, defaultStageSettings(stage?.type)) };
 }
 
-function snapshot(matchId, tournamentId) {
-  const match = getMatch(matchId, tournamentId);
-  const events = db.prepare(
+async function snapshot(matchId, tournamentId) {
+  const match = await getMatch(matchId, tournamentId);
+  const events = await many(
     `SELECT e.*,
             t.name AS team_name,
             p.name AS player_name,
@@ -43,7 +47,7 @@ function snapshot(matchId, tournamentId) {
      LEFT JOIN players a ON a.id = ap.player_id
      WHERE e.match_id = ?
      ORDER BY e.created_at ASC, e.id ASC`
-  ).all(matchId);
+  , [matchId]);
   return {
     match,
     events: events.map((event) => ({
@@ -56,16 +60,16 @@ function snapshot(matchId, tournamentId) {
   };
 }
 
-function recordPhase(matchId, tournamentId, phase, action) {
-  db.prepare(
+async function recordPhase(matchId, tournamentId, phase, action) {
+  await run(
     `INSERT INTO match_events (id, match_id, tournament_id, type, phase, payload)
      VALUES (?, ?, ?, 'phase', ?, ?)`
-  ).run(id(), matchId, tournamentId, phase, JSON.stringify({ action }));
+  , [id(), matchId, tournamentId, phase, JSON.stringify({ action })]);
 }
 
-function projectMatchScore(matchId) {
-  const match = db.prepare('SELECT * FROM matches WHERE id = ?').get(matchId);
-  const events = db.prepare('SELECT * FROM match_events WHERE match_id = ?').all(matchId);
+async function projectMatchScore(matchId) {
+  const match = await one('SELECT * FROM matches WHERE id = ?', [matchId]);
+  const events = await many('SELECT * FROM match_events WHERE match_id = ?', [matchId]);
   const score = { home: 0, away: 0, extraHome: 0, extraAway: 0, penaltiesHome: 0, penaltiesAway: 0 };
   for (const event of events) {
     const payload = parseJson(event.payload, {});
@@ -80,20 +84,20 @@ function projectMatchScore(matchId) {
     }
 
   }
-  db.prepare(
+  await run(
     `UPDATE matches SET home_score = ?, away_score = ?, extra_time_home = ?,
      extra_time_away = ?, penalties_home = ?, penalties_away = ?
      WHERE id = ?`
-  ).run(score.home, score.away, score.extraHome, score.extraAway, score.penaltiesHome, score.penaltiesAway, matchId);
+  , [score.home, score.away, score.extraHome, score.extraAway, score.penaltiesHome, score.penaltiesAway, matchId]);
 }
 
-function getProjectedScore(matchId) {
-  projectMatchScore(matchId);
-  const match = db.prepare(
+async function getProjectedScore(matchId) {
+  await projectMatchScore(matchId);
+  const match = await one(
     `SELECT home_score, away_score, extra_time_home, extra_time_away,
             penalties_home, penalties_away
      FROM matches WHERE id = ?`
-  ).get(matchId);
+  , [matchId]);
   return {
     home: Number(match?.home_score || 0),
     away: Number(match?.away_score || 0),
@@ -115,8 +119,8 @@ function eventPermission(match, refereeId, adminOverride, reason, moderatorOverr
   if (!adminOverride && !moderatorOverride && !['live', 'paused'].includes(match.status)) throw httpError(409, 'Match is not active');
 }
 
-function eventRowsForEligibility(matchId, excludedEventId = null) {
-  const rows = db.prepare('SELECT * FROM match_events WHERE match_id = ?').all(matchId);
+async function eventRowsForEligibility(matchId, excludedEventId = null) {
+  const rows = await many('SELECT * FROM match_events WHERE match_id = ?', [matchId]);
   return excludedEventId ? rows.filter((event) => event.id !== excludedEventId) : rows;
 }
 
@@ -125,12 +129,12 @@ function isAutomaticSecondYellow(event) {
     && parseJson(event.payload, {}).automaticSecondYellow === true;
 }
 
-function reconcileAutomaticSecondYellowCards({ matchId, tournamentId }) {
-  const events = db.prepare(
+async function reconcileAutomaticSecondYellowCards({ matchId, tournamentId }) {
+  const events = await many(
     `SELECT * FROM match_events
      WHERE match_id = ? AND type = 'card'
-     ORDER BY datetime(created_at), id`
-  ).all(matchId);
+     ORDER BY created_at, id`
+  , [matchId]);
   const yellowByPlayer = new Map();
   for (const event of events) {
     if (event.card !== 'yellow' || !event.player_id) continue;
@@ -149,13 +153,13 @@ function reconcileAutomaticSecondYellowCards({ matchId, tournamentId }) {
       candidate.player_id === event.player_id && candidate.card === 'red' && !isAutomaticSecondYellow(candidate)
     );
     if (yellows.length < 2 || hasManualRed) {
-      db.prepare('DELETE FROM match_events WHERE id = ?').run(event.id);
+      await run('DELETE FROM match_events WHERE id = ?', [event.id]);
     } else if (sourceYellow) {
-      db.prepare(
+      await run(
         `UPDATE match_events
-         SET created_at = datetime(?, '+1 second'), minute = ?
+         SET created_at = (?::timestamptz + interval '1 second'), minute = ?
          WHERE id = ?`
-      ).run(sourceYellow.created_at, sourceYellow.minute, event.id);
+      , [sourceYellow.created_at, sourceYellow.minute, event.id]);
     }
   }
 
@@ -171,12 +175,11 @@ function reconcileAutomaticSecondYellowCards({ matchId, tournamentId }) {
       playerId,
       teamId: secondYellow.team_id,
     };
-    db.prepare(
+    await run(
       `INSERT INTO match_events
        (id, match_id, tournament_id, type, phase, team_id, player_id, card, minute, payload, created_at)
-       VALUES (?, ?, ?, 'card', ?, ?, ?, 'red', ?, ?, datetime(?, '+1 second'))`
-    ).run(
-      id(),
+       VALUES (?, ?, ?, 'card', ?, ?, ?, 'red', ?, ?, (?::timestamptz + interval '1 second'))`
+    , [id(),
       matchId,
       tournamentId,
       secondYellow.phase,
@@ -184,16 +187,15 @@ function reconcileAutomaticSecondYellowCards({ matchId, tournamentId }) {
       playerId,
       secondYellow.minute,
       JSON.stringify(payload),
-      secondYellow.created_at
-    );
+      secondYellow.created_at]);
   }
 }
 
-function validateEventEligibility({ matchId, eventId = null, type, teamId, playerId, goalEventId, phase, card, scored }) {
+async function validateEventEligibility({ matchId, eventId = null, type, teamId, playerId, goalEventId, phase, card, scored }) {
   if (!playerId || !['goal', 'assist', 'card', 'shootout_attempt'].includes(type)) return;
-  const participant = db.prepare(
+  const participant = await one(
     'SELECT id FROM participant_players WHERE id = ? AND participant_team_id = ?'
-  ).get(playerId, teamId);
+  , [playerId, teamId]);
   if (!participant) throw httpError(400, 'Player does not belong to the selected team');
   const events = eventRowsForEligibility(matchId, eventId);
   const playerCards = events.filter((event) => event.player_id === playerId && event.type === 'card');
@@ -203,9 +205,9 @@ function validateEventEligibility({ matchId, eventId = null, type, teamId, playe
     throw httpError(409, 'This player is suspended for the remainder of the match.');
   }
   if (type === 'assist' && goalEventId) {
-    const goal = db.prepare(
+    const goal = await one(
       'SELECT player_id FROM match_events WHERE id = ? AND match_id = ? AND type = \'goal\''
-    ).get(goalEventId, matchId);
+    , [goalEventId, matchId]);
     if (goal?.player_id === playerId) {
       throw httpError(400, 'A player cannot assist the same goal they scored.');
     }
@@ -228,31 +230,31 @@ function validateEventEligibility({ matchId, eventId = null, type, teamId, playe
   if (teamId == null) throw httpError(400, 'Event team is required');
 }
 
-function validateGoalLink({ matchId, teamId, phase, goalEventId }) {
+async function validateGoalLink({ matchId, teamId, phase, goalEventId }) {
   if (!goalEventId) return;
-  const goal = db.prepare(
+  const goal = await one(
     `SELECT id, match_id, type, phase, team_id
      FROM match_events WHERE id = ? AND match_id = ?`
-  ).get(goalEventId, matchId);
+  , [goalEventId, matchId]);
   if (!goal || goal.type !== 'goal' || goal.phase !== phase || goal.team_id !== teamId) {
     throw httpError(400, 'Assist must reference a goal from the same team, phase, and match');
   }
 }
 
-function findLegacyAssistForGoal(goal) {
-  const candidates = db.prepare(
+async function findLegacyAssistForGoal(goal) {
+  const candidates = await many(
     `SELECT * FROM match_events
      WHERE match_id = ? AND type = 'assist' AND goal_event_id IS NULL
        AND team_id = ? AND phase = ?
-       AND datetime(created_at) >= datetime(?)
-     ORDER BY datetime(created_at), id`
-  ).all(goal.match_id, goal.team_id, goal.phase, goal.created_at);
+       AND created_at >= ?::timestamptz
+     ORDER BY created_at, id`
+  , [goal.match_id, goal.team_id, goal.phase, goal.created_at]);
   return candidates.length === 1 ? candidates[0] : null;
 }
 
-function updateEvent({ matchId, tournamentId, eventId, refereeId, adminOverride = false, moderatorOverride = false, changes = {}, expectedRevision, reason }) {
-  const match = getMatch(matchId, tournamentId);
-  const event = db.prepare('SELECT * FROM match_events WHERE id = ? AND match_id = ?').get(eventId, matchId);
+async function updateEvent({ matchId, tournamentId, eventId, refereeId, adminOverride = false, moderatorOverride = false, changes = {}, expectedRevision, reason }) {
+  const match = await getMatch(matchId, tournamentId);
+  const event = await one('SELECT * FROM match_events WHERE id = ? AND match_id = ?', [eventId, matchId]);
   if (!event) throw httpError(404, 'Event not found');
   if (isAutomaticSecondYellow(event)) throw httpError(400, 'Automatic second-yellow red cards cannot be edited; edit the yellow-card events instead.');
   eventPermission(match, refereeId, adminOverride, reason, moderatorOverride);
@@ -261,13 +263,13 @@ function updateEvent({ matchId, tournamentId, eventId, refereeId, adminOverride 
   if (!Number.isFinite(minute) || minute < 0) throw httpError(400, 'minute must be a non-negative number');
   const payload = { ...parseJson(event.payload, {}), ...(changes.payload || {}) };
   const goalEventId = changes.goalEventId ?? event.goal_event_id;
-  if (event.type === 'assist') validateGoalLink({
+  if (event.type === 'assist') await validateGoalLink({
     matchId,
     teamId: changes.teamId ?? event.team_id,
     phase: changes.phase ?? event.phase,
     goalEventId,
   });
-  validateEventEligibility({
+  await validateEventEligibility({
     matchId,
     eventId,
     type: event.type,
@@ -278,11 +280,10 @@ function updateEvent({ matchId, tournamentId, eventId, refereeId, adminOverride 
     card: changes.card ?? event.card,
     scored: changes.scored == null ? event.scored : (changes.scored ? 1 : 0),
   });
-  db.prepare(
+  await run(
     `UPDATE match_events SET phase = ?, goal_event_id = ?, team_id = ?, player_id = ?, assister_id = ?,
       card = ?, scored = ?, minute = ?, payload = ? WHERE id = ?`
-  ).run(
-    changes.phase ?? event.phase,
+  , [changes.phase ?? event.phase,
     goalEventId,
     changes.teamId ?? event.team_id,
     changes.playerId ?? event.player_id,
@@ -291,55 +292,52 @@ function updateEvent({ matchId, tournamentId, eventId, refereeId, adminOverride 
     changes.scored == null ? event.scored : (changes.scored ? 1 : 0),
     minute,
     JSON.stringify(payload),
-    eventId
-  );
-  reconcileAutomaticSecondYellowCards({ matchId, tournamentId });
-  const revision = db.prepare('UPDATE matches SET revision = revision + 1 WHERE id = ? AND revision = ?')
-    .run(matchId, Number(match.revision || 0));
-  if (!revision.changes) throw httpError(409, 'Match changed while the event was being updated. Refresh and retry.');
-  projectMatchScore(matchId);
-  rebuildTournamentProjections(tournamentId);
-  const impact = match.status === 'finished' ? reconcileStageOutputs(match.stage_id) : null;
-  db.prepare(
+    eventId]);
+  await reconcileAutomaticSecondYellowCards({ matchId, tournamentId });
+  const revision = await run('UPDATE matches SET revision = revision + 1 WHERE id = ? AND revision = ?', [matchId, Number(match.revision || 0)]);
+  if (!revision.rowCount) throw httpError(409, 'Match changed while the event was being updated. Refresh and retry.');
+  await projectMatchScore(matchId);
+  await rebuildTournamentProjections(tournamentId);
+  const impact = match.status === 'finished' ? await reconcileStageOutputs(match.stage_id) : null;
+  await run(
     `INSERT INTO match_audit (id, match_id, tournament_id, user_id, action, reason, before_state, after_state)
      VALUES (?, ?, ?, ?, 'event_update', ?, ?, ?)`
-  ).run(id(), matchId, tournamentId, refereeId, reason || null, JSON.stringify(event),
-    JSON.stringify(db.prepare('SELECT * FROM match_events WHERE id = ?').get(eventId)));
-  return { ...snapshot(matchId, tournamentId), impact };
+  , [id(), matchId, tournamentId, refereeId, reason || null, JSON.stringify(event),
+    JSON.stringify(await one('SELECT * FROM match_events WHERE id = ?', [eventId]))]);
+  return { ...(await snapshot(matchId, tournamentId)), impact };
 }
 
-function deleteEvent({ matchId, tournamentId, eventId, refereeId, adminOverride = false, moderatorOverride = false, expectedRevision, reason }) {
-  const match = getMatch(matchId, tournamentId);
-  const event = db.prepare('SELECT * FROM match_events WHERE id = ? AND match_id = ?').get(eventId, matchId);
+async function deleteEvent({ matchId, tournamentId, eventId, refereeId, adminOverride = false, moderatorOverride = false, expectedRevision, reason }) {
+  const match = await getMatch(matchId, tournamentId);
+  const event = await one('SELECT * FROM match_events WHERE id = ? AND match_id = ?', [eventId, matchId]);
   if (!event) throw httpError(404, 'Event not found');
   if (isAutomaticSecondYellow(event)) throw httpError(400, 'Automatic second-yellow red cards cannot be deleted; delete a yellow-card event instead.');
   eventPermission(match, refereeId, adminOverride, reason, moderatorOverride);
   assertRevision(match, expectedRevision);
   if (event.type === 'goal') {
-    const linkedAssist = db.prepare(
+    const linkedAssist = await one(
       `SELECT id FROM match_events WHERE goal_event_id = ? AND type = 'assist'`
-    ).get(eventId);
-    const legacyAssist = linkedAssist ? null : findLegacyAssistForGoal(event);
-    if (linkedAssist) db.prepare('DELETE FROM match_events WHERE id = ?').run(linkedAssist.id);
-    else if (legacyAssist) db.prepare('DELETE FROM match_events WHERE id = ?').run(legacyAssist.id);
+    , [eventId]);
+    const legacyAssist = linkedAssist ? null : await findLegacyAssistForGoal(event);
+    if (linkedAssist) await run('DELETE FROM match_events WHERE id = ?', [linkedAssist.id]);
+    else if (legacyAssist) await run('DELETE FROM match_events WHERE id = ?', [legacyAssist.id]);
   }
-  db.prepare('DELETE FROM match_events WHERE id = ?').run(eventId);
-  reconcileAutomaticSecondYellowCards({ matchId, tournamentId });
-  const revision = db.prepare('UPDATE matches SET revision = revision + 1 WHERE id = ? AND revision = ?')
-    .run(matchId, Number(match.revision || 0));
-  if (!revision.changes) throw httpError(409, 'Match changed while the event was being deleted. Refresh and retry.');
-  projectMatchScore(matchId);
-  rebuildTournamentProjections(tournamentId);
-  const impact = match.status === 'finished' ? reconcileStageOutputs(match.stage_id) : null;
-  db.prepare(
+  await run('DELETE FROM match_events WHERE id = ?', [eventId]);
+  await reconcileAutomaticSecondYellowCards({ matchId, tournamentId });
+  const revision = await run('UPDATE matches SET revision = revision + 1 WHERE id = ? AND revision = ?', [matchId, Number(match.revision || 0)]);
+  if (!revision.rowCount) throw httpError(409, 'Match changed while the event was being deleted. Refresh and retry.');
+  await projectMatchScore(matchId);
+  await rebuildTournamentProjections(tournamentId);
+  const impact = match.status === 'finished' ? await reconcileStageOutputs(match.stage_id) : null;
+  await run(
     `INSERT INTO match_audit (id, match_id, tournament_id, user_id, action, reason, before_state, after_state)
      VALUES (?, ?, ?, ?, 'event_delete', ?, ?, '{}')`
-  ).run(id(), matchId, tournamentId, refereeId, reason || null, JSON.stringify(event));
-  return { ...snapshot(matchId, tournamentId), impact };
+  , [id(), matchId, tournamentId, refereeId, reason || null, JSON.stringify(event)]);
+  return { ...(await snapshot(matchId, tournamentId)), impact };
 }
 
-function addEvent({ matchId, tournamentId, refereeId, adminOverride = false, moderatorOverride = false, type, phase, payload = {}, clientEventId = null, expectedRevision }) {
-  const match = getMatch(matchId, tournamentId);
+async function addEvent({ matchId, tournamentId, refereeId, adminOverride = false, moderatorOverride = false, type, phase, payload = {}, clientEventId = null, expectedRevision }) {
+  const match = await getMatch(matchId, tournamentId);
   assertRevision(match, expectedRevision);
   eventPermission(match, refereeId, adminOverride, payload.reason, moderatorOverride);
   if (!['regulation', 'extra_time', 'shootout'].includes(phase)) throw httpError(400, 'Invalid match phase');
@@ -369,20 +367,20 @@ function addEvent({ matchId, tournamentId, refereeId, adminOverride = false, mod
   if (type === 'card' && !payload.playerId) throw httpError(400, 'A player is required for this event');
   if (type === 'assist' && phase === 'shootout') throw httpError(400, 'Shootouts do not have assists');
   if (type === 'assist' && !skippedAssist) {
-    const assister = db.prepare(
+    const assister = await one(
       'SELECT id FROM participant_players WHERE id = ? AND participant_team_id = ?'
-    ).get(payload.playerId, payload.teamId);
+    , [payload.playerId, payload.teamId]);
     if (!assister) throw httpError(400, 'Assister does not belong to the selected team');
   }
   if (type === 'assist') {
-    validateGoalLink({
+    await validateGoalLink({
       matchId,
       teamId: payload.teamId,
       phase,
       goalEventId: payload.goalEventId,
     });
   }
-  validateEventEligibility({
+  await validateEventEligibility({
     matchId,
     type,
     teamId: payload.teamId,
@@ -393,20 +391,19 @@ function addEvent({ matchId, tournamentId, refereeId, adminOverride = false, mod
     scored: payload.scored,
   });
   if (type === 'goal' && payload.ownGoal) {
-    const offender = db.prepare(
+    const offender = await one(
       'SELECT id FROM participant_players WHERE id = ? AND participant_team_id = ?'
-    ).get(payload.playerId, payload.teamId);
+    , [payload.playerId, payload.teamId]);
     if (!offender) throw httpError(400, 'Own-goal player must belong to the selected team');
   }
 
   const eventId = id();
   try {
-    db.prepare(
+    await run(
       `INSERT INTO match_events
        (id, match_id, tournament_id, type, phase, goal_event_id, team_id, player_id, assister_id, card, scored, minute, payload, client_event_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      eventId,
+    , [eventId,
       matchId,
       tournamentId,
       type,
@@ -419,104 +416,102 @@ function addEvent({ matchId, tournamentId, refereeId, adminOverride = false, mod
       payload.scored == null ? null : (payload.scored ? 1 : 0),
       eventMinute,
       JSON.stringify(payload),
-      clientEventId
-    );
+      clientEventId]);
   } catch (error) {
-    if (clientEventId && String(error.message).includes('UNIQUE constraint failed')) {
-      const existing = db.prepare(
+    if (clientEventId && (error.code === '23505' || String(error.message).includes('UNIQUE constraint failed'))) {
+      const existing = await one(
         'SELECT id FROM match_events WHERE match_id = ? AND client_event_id = ?'
-      ).get(matchId, clientEventId);
-      return { ...snapshot(matchId, tournamentId), eventId: existing?.id || null };
+      , [matchId, clientEventId]);
+      return { ...(await snapshot(matchId, tournamentId)), eventId: existing?.id || null };
     }
     throw error;
   }
 
-  reconcileAutomaticSecondYellowCards({ matchId, tournamentId });
-  const revisionUpdate = db.prepare('UPDATE matches SET revision = revision + 1 WHERE id = ? AND revision = ?')
-    .run(matchId, Number(match.revision || 0));
-  if (!revisionUpdate.changes) throw httpError(409, 'Match changed while the event was being saved. Refresh and retry.');
-  projectMatchScore(matchId);
-  rebuildTournamentProjections(tournamentId);
-  const impact = match.status === 'finished' ? reconcileStageOutputs(match.stage_id) : null;
-  db.prepare(
+  await reconcileAutomaticSecondYellowCards({ matchId, tournamentId });
+  const revisionUpdate = await run('UPDATE matches SET revision = revision + 1 WHERE id = ? AND revision = ?', [matchId, Number(match.revision || 0)]);
+  if (!revisionUpdate.rowCount) throw httpError(409, 'Match changed while the event was being saved. Refresh and retry.');
+  await projectMatchScore(matchId);
+  await rebuildTournamentProjections(tournamentId);
+  const impact = match.status === 'finished' ? await reconcileStageOutputs(match.stage_id) : null;
+  await run(
     `INSERT INTO match_audit (id, match_id, tournament_id, user_id, action, reason, before_state, after_state)
      VALUES (?, ?, ?, ?, 'event_create', ?, ?, ?)`
-  ).run(id(), matchId, tournamentId, refereeId, payload.reason || null, '{}', JSON.stringify({ eventId }));
-  return { ...snapshot(matchId, tournamentId), eventId, impact };
+  , [id(), matchId, tournamentId, refereeId, payload.reason || null, '{}', JSON.stringify({ eventId })]);
+  return { ...(await snapshot(matchId, tournamentId)), eventId, impact };
 }
 
-function start({ matchId, tournamentId, refereeId, adminOverride = false, durationMinutes }) {
-  const match = getMatch(matchId, tournamentId);
+async function start({ matchId, tournamentId, refereeId, adminOverride = false, durationMinutes }) {
+  const match = await getMatch(matchId, tournamentId);
   if (!adminOverride && match.referee_id && match.referee_id !== refereeId) throw httpError(403, 'This match is assigned to another referee');
   if (!['scheduled', 'postponed'].includes(match.status)) throw httpError(409, `Cannot start a match with status "${match.status}".`);
-  suspension.assertCanStart(matchId, tournamentId);
+  await suspension.assertCanStart(matchId, tournamentId);
   if (!Number.isInteger(Number(durationMinutes)) || Number(durationMinutes) <= 0) {
     throw httpError(400, 'durationMinutes must be a positive integer');
   }
   const timestamp = now();
-  db.prepare(
+  await run(
     `UPDATE matches SET status = 'live', referee_id = ?, duration_minutes = ?, phase = 'regulation',
       phase_started_at = ?, phase_elapsed_seconds = 0, started_at = COALESCE(started_at, ?) WHERE id = ?`
-  ).run(refereeId, Number(durationMinutes), timestamp, timestamp, matchId);
-  recordPhase(matchId, tournamentId, 'regulation', 'start');
-  suspension.consumeForStart(matchId, tournamentId);
-  return snapshot(matchId, tournamentId);
+  , [refereeId, Number(durationMinutes), timestamp, timestamp, matchId]);
+  await recordPhase(matchId, tournamentId, 'regulation', 'start');
+  await suspension.consumeForStart(matchId, tournamentId);
+  return await snapshot(matchId, tournamentId);
 }
 
-function continueFinished({ matchId, tournamentId, refereeId, adminOverride = false, moderatorOverride = false, expectedRevision }) {
-  const match = getMatch(matchId, tournamentId);
+async function continueFinished({ matchId, tournamentId, refereeId, adminOverride = false, moderatorOverride = false, expectedRevision }) {
+  const match = await getMatch(matchId, tournamentId);
   assertRevision(match, expectedRevision);
   if (!adminOverride && !moderatorOverride) {
     throw httpError(403, 'Only a tournament moderator can continue a finished match');
   }
   if (match.status !== 'finished') throw httpError(409, 'Only finished matches can be continued');
-  const previousPhase = db.prepare(
+  const previousPhase = (await one(
     `SELECT phase FROM match_events
      WHERE match_id = ? AND type = 'phase'
-       AND json_extract(payload, '$.action') IN ('start', 'pause', 'resume', 'continue')
+       AND (payload::jsonb ->> 'action') IN ('start', 'pause', 'resume', 'continue')
      ORDER BY created_at DESC, id DESC LIMIT 1`
-  ).get(matchId)?.phase || 'regulation';
+  , [matchId]))?.phase || 'regulation';
   const timestamp = now();
-  const result = db.prepare(
+  const result = await run(
     `UPDATE matches SET status = 'live', phase = ?, phase_started_at = ?,
       revision = revision + 1 WHERE id = ? AND revision = ?`
-  ).run(previousPhase, timestamp, matchId, Number(match.revision || 0));
-  if (!result.changes) throw httpError(409, 'Match changed while it was being continued. Refresh and retry.');
-  recordPhase(matchId, tournamentId, previousPhase, 'continue');
-  return snapshot(matchId, tournamentId);
+  , [previousPhase, timestamp, matchId, Number(match.revision || 0)]);
+  if (!result.rowCount) throw httpError(409, 'Match changed while it was being continued. Refresh and retry.');
+  await recordPhase(matchId, tournamentId, previousPhase, 'continue');
+  return await snapshot(matchId, tournamentId);
 }
 
-function transition({ matchId, tournamentId, refereeId, adminOverride = false, moderatorOverride = false, action, expectedRevision }) {
-  const match = getMatch(matchId, tournamentId);
+async function transition({ matchId, tournamentId, refereeId, adminOverride = false, moderatorOverride = false, action, expectedRevision }) {
+  const match = await getMatch(matchId, tournamentId);
   assertRevision(match, expectedRevision);
   if (!adminOverride && !moderatorOverride && match.referee_id !== refereeId) throw httpError(403, 'Only the assigned referee can operate this match');
   if (adminOverride && !['pause', 'resume'].includes(action)) throw httpError(400, 'Invalid transition action');
   if (adminOverride && action === 'pause' && !['paused', 'cancelled'].includes(match.status)) {
-    db.prepare(`UPDATE matches SET status = 'paused', revision = revision + 1 WHERE id = ?`).run(matchId);
-    return snapshot(matchId, tournamentId);
+    await run(`UPDATE matches SET status = 'paused', revision = revision + 1 WHERE id = ?`, [matchId]);
+    return await snapshot(matchId, tournamentId);
   }
   if (adminOverride && action === 'resume' && match.status !== 'live') {
-    db.prepare(`UPDATE matches SET status = 'live', phase = CASE WHEN phase = 'finished' OR phase = 'abandoned' THEN 'regulation' ELSE phase END, revision = revision + 1 WHERE id = ?`).run(matchId);
-    return snapshot(matchId, tournamentId);
+    await run(`UPDATE matches SET status = 'live', phase = CASE WHEN phase = 'finished' OR phase = 'abandoned' THEN 'regulation' ELSE phase END, revision = revision + 1 WHERE id = ?`, [matchId]);
+    return await snapshot(matchId, tournamentId);
   }
   if (action === 'pause' && match.status === 'live') {
     const phaseStarted = timestampMilliseconds(match.phase_started_at);
     const elapsed = Number.isFinite(phaseStarted)
       ? Math.max(0, Math.floor((Date.now() - phaseStarted) / 1000))
       : 0;
-    db.prepare(`UPDATE matches SET status = 'paused', phase_elapsed_seconds = COALESCE(phase_elapsed_seconds, 0) + ?, revision = revision + 1 WHERE id = ?`).run(elapsed, matchId);
-    recordPhase(matchId, tournamentId, match.phase === 'scheduled' ? 'regulation' : match.phase, 'pause');
+    await run(`UPDATE matches SET status = 'paused', phase_elapsed_seconds = COALESCE(phase_elapsed_seconds, 0) + ?, revision = revision + 1 WHERE id = ?`, [elapsed, matchId]);
+    await recordPhase(matchId, tournamentId, match.phase === 'scheduled' ? 'regulation' : match.phase, 'pause');
   } else if (action === 'resume' && match.status === 'paused') {
-    db.prepare(`UPDATE matches SET status = 'live', phase_started_at = ?, revision = revision + 1 WHERE id = ?`).run(now(), matchId);
-    recordPhase(matchId, tournamentId, match.phase, 'resume');
+    await run(`UPDATE matches SET status = 'live', phase_started_at = ?, revision = revision + 1 WHERE id = ?`, [now(), matchId]);
+    await recordPhase(matchId, tournamentId, match.phase, 'resume');
   } else {
     throw httpError(409, `Cannot ${action} a match with status "${match.status}".`);
   }
-  return snapshot(matchId, tournamentId);
+  return await snapshot(matchId, tournamentId);
 }
 
-function finishPhase({ matchId, tournamentId, refereeId, adminOverride = false, moderatorOverride = false, phase, expectedRevision }) {
-  const match = getMatch(matchId, tournamentId);
+async function finishPhase({ matchId, tournamentId, refereeId, adminOverride = false, moderatorOverride = false, phase, expectedRevision }) {
+  const match = await getMatch(matchId, tournamentId);
   assertRevision(match, expectedRevision);
   if (match.status === 'finished') throw httpError(409, 'This match is already finished. Use correction controls instead.');
   if (!adminOverride && !moderatorOverride && match.referee_id !== refereeId) throw httpError(403, 'Only the assigned referee can operate this match');
@@ -526,26 +521,25 @@ function finishPhase({ matchId, tournamentId, refereeId, adminOverride = false, 
       ? Math.max(0, Math.floor((Date.now() - phaseStarted) / 1000))
       : 0
   );
-  db.prepare('UPDATE matches SET phase_elapsed_seconds = ?, phase_started_at = NULL WHERE id = ?')
-    .run(elapsed, matchId);
-  const { settings } = getStageSettings(match);
+  await run('UPDATE matches SET phase_elapsed_seconds = ?, phase_started_at = NULL WHERE id = ?', [elapsed, matchId]);
+  const { settings } = await getStageSettings(match);
   const home = Number(match.home_score || 0) + Number(match.extra_time_home || 0);
   const away = Number(match.away_score || 0) + Number(match.extra_time_away || 0);
   if (phase === 'regulation' && settings.extraTime && home === away) {
-    db.prepare(`UPDATE matches SET phase = 'extra_time', phase_started_at = ?, phase_elapsed_seconds = 0 WHERE id = ?`).run(now(), matchId);
-    recordPhase(matchId, tournamentId, 'extra_time', 'start');
-    return snapshot(matchId, tournamentId);
+    await run(`UPDATE matches SET phase = 'extra_time', phase_started_at = ?, phase_elapsed_seconds = 0 WHERE id = ?`, [now(), matchId]);
+    await recordPhase(matchId, tournamentId, 'extra_time', 'start');
+    return await snapshot(matchId, tournamentId);
   }
   if ((phase === 'regulation' || phase === 'extra_time') && settings.penalties && home === away) {
-    db.prepare(
+    await run(
       `UPDATE matches SET phase = 'shootout', phase_started_at = ?, phase_elapsed_seconds = 0,
         penalties_home = COALESCE(penalties_home, 0), penalties_away = COALESCE(penalties_away, 0)
        WHERE id = ?`
-    ).run(now(), matchId);
-    recordPhase(matchId, tournamentId, 'shootout', 'start');
-    return snapshot(matchId, tournamentId);
+    , [now(), matchId]);
+    await recordPhase(matchId, tournamentId, 'shootout', 'start');
+    return await snapshot(matchId, tournamentId);
   }
-  const result = finishMatchRecord({
+  const result = await finishMatchRecord({
     matchRow: match,
     homeScore: Number(match.home_score || 0),
     awayScore: Number(match.away_score || 0),
@@ -557,24 +551,24 @@ function finishPhase({ matchId, tournamentId, refereeId, adminOverride = false, 
     expectedRevision,
     userId: refereeId,
   });
-  db.prepare(`UPDATE matches SET phase = 'finished' WHERE id = ?`).run(matchId);
-  recordPhase(matchId, tournamentId, phase, 'finish');
-  rebuildTournamentProjections(tournamentId);
-  return { ...snapshot(matchId, tournamentId), advance: result.advance };
+  await run(`UPDATE matches SET phase = 'finished' WHERE id = ?`, [matchId]);
+  await recordPhase(matchId, tournamentId, phase, 'finish');
+  await rebuildTournamentProjections(tournamentId);
+  return { ...(await snapshot(matchId, tournamentId)), advance: result.advance };
 }
 
-function abandon({ matchId, tournamentId, refereeId, adminOverride = false, moderatorOverride = false, reason }) {
-  const match = getMatch(matchId, tournamentId);
+async function abandon({ matchId, tournamentId, refereeId, adminOverride = false, moderatorOverride = false, reason }) {
+  const match = await getMatch(matchId, tournamentId);
   if (!adminOverride && !moderatorOverride && match.referee_id !== refereeId) throw httpError(403, 'Only the assigned referee can operate this match');
   if (!reason?.trim()) throw httpError(400, 'A reason is required to abandon a match');
-  db.prepare(
+  await run(
     `UPDATE matches SET status = 'scheduled', phase = 'abandoned', home_score = NULL, away_score = NULL,
       extra_time_home = NULL, extra_time_away = NULL, penalties_home = NULL, penalties_away = NULL,
       started_at = NULL, phase_started_at = NULL, phase_elapsed_seconds = 0 WHERE id = ?`
-  ).run(matchId);
-  suspension.resetDecisionsForAbandonedMatch(matchId);
-  recordPhase(matchId, tournamentId, 'regulation', 'abandon');
-  return snapshot(matchId, tournamentId);
+  , [matchId]);
+  await suspension.resetDecisionsForAbandonedMatch(matchId);
+  await recordPhase(matchId, tournamentId, 'regulation', 'abandon');
+  return await snapshot(matchId, tournamentId);
 }
 
 module.exports = {

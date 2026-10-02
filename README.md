@@ -2,20 +2,25 @@
 
 Express REST API for creating and managing sports tournaments. Roles, private/public visibility, multi-stage formats, automatic draws, and a split between catalog entities (`Team`, `Player`) and tournament entries (`ParticipantTeam`, `ParticipantPlayer`).
 
-Requires **Node.js 22.5+** (uses the built-in `node:sqlite` driver).
+Requires **Node.js 22.5+** and a PostgreSQL database.
 
 ## Setup
 
 ```bash
 npm install
 cp .env.example .env
+# Set DATABASE_URL in .env before running the application.
 npm run seed
 npm start
 ```
 
 API base URL: `http://localhost:3000/api`
 
-SQLite database file: `data/tournament.db`
+The server initializes the PostgreSQL schema from `src/db/schema.sql` before
+accepting requests. `DATABASE_SSL=true` enables TLS; set
+`DATABASE_SSL_REJECT_UNAUTHORIZED=false` only when your PostgreSQL provider
+requires a certificate that is not locally trusted. `DATABASE_POOL_MAX`
+controls the connection-pool size.
 
 ### Seed accounts
 
@@ -25,7 +30,7 @@ SQLite database file: `data/tournament.db`
 | referee | referee@tournament.local   | referee123  |
 | user    | user@tournament.local      | user123     |
 
-Send JWT as `Authorization: Bearer <token>`.
+Send the JWT returned by login in the Authorization header.
 
 ## Roles
 

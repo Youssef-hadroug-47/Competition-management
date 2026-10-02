@@ -189,6 +189,13 @@ const Api = {
       request('PATCH', `/tournaments/${enc(tournamentId)}/participant-teams/${enc(id)}`, { body: payload }),
     remove: (tournamentId, id) => request('DELETE', `/tournaments/${enc(tournamentId)}/participant-teams/${enc(id)}`),
   },
+  teamLeader: {
+    get: (tournamentId) => request('GET', `/tournaments/${enc(tournamentId)}/team-leader/team`),
+    createTeam: (tournamentId, payload) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/team-leader/team`, { body: payload }),
+    addPlayer: (tournamentId, participantTeamId, payload) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/team-leader/teams/${enc(participantTeamId)}/players`, { body: payload }),
+  },
 
   participantPlayers: {
     list: (tournamentId, participantTeamId) =>

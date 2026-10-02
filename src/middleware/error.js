@@ -9,11 +9,14 @@ function errorHandler(err, req, res, next) {
     return res.status(err.status).json({ error: err.message, details: err.details });
   }
 
-  if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+  if (err.code === '23505') {
     return res.status(409).json({ error: 'A record with that unique value already exists' });
   }
-  if (err.code === 'SQLITE_CONSTRAINT_FOREIGNKEY') {
+  if (err.code === '23503') {
     return res.status(400).json({ error: 'Invalid related resource' });
+  }
+  if (err.code === '23514' || err.code === '22P02') {
+    return res.status(400).json({ error: 'Invalid database value' });
   }
 
   console.error(err);

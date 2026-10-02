@@ -259,3 +259,9 @@ menu before kickoff, and both actions require confirmation. Including the
 player removes that fixture-specific lock and records the decision. If the
 target match is abandoned, its Include/Exclude decision returns to pending;
 decisions for other target matches are unchanged.
+
+Tournament owners can assign the `team_leader` tournament role. A team leader
+can create one new catalog team for that tournament and add up to 11 players
+through the dedicated **My team** workflow. Team creation and roster additions
+are ownership-checked and enforced by the backend; the role does not grant
+moderator, referee, or global catalog-management permissions.

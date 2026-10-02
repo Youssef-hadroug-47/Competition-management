@@ -3,29 +3,29 @@ const access = require('../services/access');
 const simulation = require('../services/simulationService');
 const { advanceKnockoutStage } = require('../services/drawService');
 
-const simulateMatch = asyncHandler((req, res) => {
-  const result = simulation.simulateMatch(req.params.id, { actorId: req.user.id });
+const simulateMatch = asyncHandler(async (req, res) => {
+  const result = await simulation.simulateMatch(req.params.id, { actorId: req.user.id });
   res.json(result);
 });
 
-const simulateGroup = asyncHandler((req, res) => {
-  const result = simulation.simulateGroup(req.params.id, { actorId: req.user.id });
+const simulateGroup = asyncHandler(async (req, res) => {
+  const result = await simulation.simulateGroup(req.params.id, { actorId: req.user.id });
   res.json(result);
 });
 
-const simulateRound = asyncHandler((req, res) => {
-  const result = simulation.simulateRound(req.params.id, { actorId: req.user.id });
+const simulateRound = asyncHandler(async (req, res) => {
+  const result = await simulation.simulateRound(req.params.id, { actorId: req.user.id });
   res.json(result);
 });
 
-const simulateStage = asyncHandler((req, res) => {
-  const result = simulation.simulateStage(req.params.id, { actorId: req.user.id });
+const simulateStage = asyncHandler(async (req, res) => {
+  const result = await simulation.simulateStage(req.params.id, { actorId: req.user.id });
   res.json(result);
 });
 
-const simulateTournament = asyncHandler((req, res) => {
-  access.getTournamentOrThrow(req.params.tournamentId);
-  const result = simulation.simulateTournament(req.params.tournamentId, { actorId: req.user.id });
+const simulateTournament = asyncHandler(async (req, res) => {
+  await access.getTournamentOrThrow(req.params.tournamentId);
+  const result = await simulation.simulateTournament(req.params.tournamentId, { actorId: req.user.id });
   res.json(result);
 });
 

@@ -1,11 +1,19 @@
-const { db } = require('../db');
+const { query, withTransaction } = require('../db');
 const { httpError } = require('../middleware/error');
 const { id } = require('../utils/ids');
 
-function getVoteById(voteId, tournamentId = null) {
-  return db.prepare(
-    `SELECT * FROM vote WHERE id = ?${tournamentId ? ' AND tournament_id = ?' : ''}`
-  ).get(...(tournamentId ? [voteId, tournamentId] : [voteId]));
+async function one(text, values = []) {
+  return (await query(text, values)).rows[0];
+}
+async function many(text, values = []) {
+  return (await query(text, values)).rows;
+}
+
+async function getVoteById(voteId, tournamentId = null) {
+  return one(
+    `SELECT * FROM vote WHERE id = $1${tournamentId ? ' AND tournament_id = $2' : ''}`,
+    tournamentId ? [voteId, tournamentId] : [voteId],
+  );
 }
 
 function assertOpen(vote) {
@@ -13,137 +21,135 @@ function assertOpen(vote) {
   if (vote.status !== 'open') throw httpError(409, 'This vote is finished.');
 }
 
-function createVote({ tournamentId, name, award }) {
+async function createVote({ tournamentId, name, award }) {
   const voteId = id();
-  db.prepare(
-    `INSERT INTO vote (id, tournament_id, name, award, status) VALUES (?, ?, ?, ?, 'open')`
-  ).run(voteId, tournamentId, name.trim(), award.trim());
-  return getVoteById(voteId, tournamentId);
-}
-
-function listVotesByTournament(tournamentId, userId = null) {
-  return db.prepare(
-    `SELECT v.*,
-       (SELECT COUNT(*) FROM vote_ballots b WHERE b.vote_id = v.id) AS ballot_count,
-       (SELECT nominee_id FROM vote_ballots b WHERE b.vote_id = v.id AND b.user_id = ?) AS selected_nominee_id
-     FROM vote v
-     WHERE v.tournament_id = ?
-     ORDER BY v.created_at DESC, v.id DESC`
-  ).all(userId, tournamentId);
-}
-
-function updateVote(voteId, tournamentId, { name, award } = {}) {
-  const existing = getVoteById(voteId, tournamentId);
-  assertOpen(existing);
-  db.prepare(`UPDATE vote SET name = ?, award = ? WHERE id = ? AND tournament_id = ?`).run(
-    name?.trim() || existing.name,
-    award?.trim() || existing.award,
-    voteId,
-    tournamentId
+  await query(
+    `INSERT INTO vote (id, tournament_id, name, award, status) VALUES ($1, $2, $3, $4, 'open')`,
+    [voteId, tournamentId, name.trim(), award.trim()],
   );
   return getVoteById(voteId, tournamentId);
 }
 
-function finishVote(voteId, tournamentId) {
-  const existing = getVoteById(voteId, tournamentId);
+async function listVotesByTournament(tournamentId, userId = null) {
+  return many(
+    `SELECT v.*,
+       (SELECT COUNT(*) FROM vote_ballots b WHERE b.vote_id = v.id) AS ballot_count,
+       (SELECT nominee_id FROM vote_ballots b WHERE b.vote_id = v.id AND b.user_id = $1) AS selected_nominee_id
+     FROM vote v
+     WHERE v.tournament_id = $2
+     ORDER BY v.created_at DESC, v.id DESC`,
+    [userId, tournamentId],
+  );
+}
+
+async function updateVote(voteId, tournamentId, { name, award } = {}) {
+  const existing = await getVoteById(voteId, tournamentId);
   assertOpen(existing);
-  db.prepare(`UPDATE vote SET status = 'finished', finished_at = datetime('now') WHERE id = ? AND tournament_id = ?`)
-    .run(voteId, tournamentId);
+  await query(
+    'UPDATE vote SET name = $1, award = $2 WHERE id = $3 AND tournament_id = $4',
+    [name?.trim() || existing.name, award?.trim() || existing.award, voteId, tournamentId],
+  );
   return getVoteById(voteId, tournamentId);
 }
 
-function deleteVote(voteId, tournamentId) {
-  const result = db.prepare(`DELETE FROM vote WHERE id = ? AND tournament_id = ?`).run(voteId, tournamentId);
-  return result.changes > 0;
+async function finishVote(voteId, tournamentId) {
+  const existing = await getVoteById(voteId, tournamentId);
+  assertOpen(existing);
+  await query(
+    `UPDATE vote SET status = 'finished', finished_at = NOW() WHERE id = $1 AND tournament_id = $2`,
+    [voteId, tournamentId],
+  );
+  return getVoteById(voteId, tournamentId);
 }
 
-function getNominee(voteId, nomineeId, tournamentId = null) {
-  return db.prepare(
+async function deleteVote(voteId, tournamentId) {
+  const result = await query('DELETE FROM vote WHERE id = $1 AND tournament_id = $2', [voteId, tournamentId]);
+  return result.rowCount > 0;
+}
+
+async function getNominee(voteId, nomineeId, tournamentId = null) {
+  return one(
     `SELECT vn.vote_id, vn.nominee_id, vn.votes, pp.participant_team_id,
             p.name AS player_name, p.position AS player_position
      FROM vote_nominees vn
      JOIN vote v ON v.id = vn.vote_id
      JOIN participant_players pp ON pp.id = vn.nominee_id
      JOIN players p ON p.id = pp.player_id
-     WHERE vn.vote_id = ? AND vn.nominee_id = ?${tournamentId ? ' AND v.tournament_id = ?' : ''}`
-  ).get(...(tournamentId ? [voteId, nomineeId, tournamentId] : [voteId, nomineeId]));
+     WHERE vn.vote_id = $1 AND vn.nominee_id = $2${tournamentId ? ' AND v.tournament_id = $3' : ''}`,
+    tournamentId ? [voteId, nomineeId, tournamentId] : [voteId, nomineeId],
+  );
 }
 
-function listNominees(voteId, tournamentId, userId = null) {
-  return db.prepare(
+async function listNominees(voteId, tournamentId, userId = null) {
+  return many(
     `SELECT vn.vote_id, vn.nominee_id, vn.votes, pp.participant_team_id,
             p.name AS player_name, p.position AS player_position,
             CASE WHEN b.user_id IS NULL THEN 0 ELSE 1 END AS selected_by_viewer
      FROM vote_nominees vn
-     JOIN vote v ON v.id = vn.vote_id AND v.tournament_id = ?
+     JOIN vote v ON v.id = vn.vote_id AND v.tournament_id = $1
      JOIN participant_players pp ON pp.id = vn.nominee_id
      JOIN players p ON p.id = pp.player_id
      LEFT JOIN vote_ballots b ON b.vote_id = vn.vote_id
-       AND b.nominee_id = vn.nominee_id AND b.user_id = ?
-     WHERE vn.vote_id = ?
-     ORDER BY vn.votes DESC, p.name COLLATE NOCASE`
-  ).all(tournamentId, userId, voteId);
+       AND b.nominee_id = vn.nominee_id AND b.user_id = $2
+     WHERE vn.vote_id = $3
+     ORDER BY vn.votes DESC, p.name COLLATE "C"`,
+    [tournamentId, userId, voteId],
+  );
 }
 
-function addNominee({ voteId, tournamentId, nomineeId }) {
-  const vote = getVoteById(voteId, tournamentId);
+async function addNominee({ voteId, tournamentId, nomineeId }) {
+  const vote = await getVoteById(voteId, tournamentId);
   assertOpen(vote);
-  const player = db.prepare(
+  const player = await one(
     `SELECT pp.id FROM participant_players pp
      JOIN participant_teams pt ON pt.id = pp.participant_team_id
-     WHERE pp.id = ? AND pt.tournament_id = ?`
-  ).get(nomineeId, tournamentId);
+     WHERE pp.id = $1 AND pt.tournament_id = $2`,
+    [nomineeId, tournamentId],
+  );
   if (!player) throw httpError(404, 'Participant player not found');
-  if (getNominee(voteId, nomineeId, tournamentId)) throw httpError(409, 'This nominee is already added.');
+  if (await getNominee(voteId, nomineeId, tournamentId)) throw httpError(409, 'This nominee is already added.');
   try {
-    db.prepare(`INSERT INTO vote_nominees (vote_id, nominee_id, votes) VALUES (?, ?, 0)`).run(voteId, nomineeId);
+    await query('INSERT INTO vote_nominees (vote_id, nominee_id, votes) VALUES ($1, $2, 0)', [voteId, nomineeId]);
   } catch (err) {
-    if (err.code === 'SQLITE_CONSTRAINT_PRIMARYKEY' || err.code === 'SQLITE_CONSTRAINT') {
-      throw httpError(409, 'This nominee is already added.');
-    }
+    if (err.code === '23505') throw httpError(409, 'This nominee is already added.');
     throw err;
   }
   return getNominee(voteId, nomineeId, tournamentId);
 }
 
-function removeNominee(voteId, tournamentId, nomineeId) {
-  const vote = getVoteById(voteId, tournamentId);
+async function removeNominee(voteId, tournamentId, nomineeId) {
+  const vote = await getVoteById(voteId, tournamentId);
   assertOpen(vote);
-  const result = db.prepare(`DELETE FROM vote_nominees WHERE vote_id = ? AND nominee_id = ?`).run(voteId, nomineeId);
-  return result.changes > 0;
+  const result = await query(
+    'DELETE FROM vote_nominees WHERE vote_id = $1 AND nominee_id = $2',
+    [voteId, nomineeId],
+  );
+  return result.rowCount > 0;
 }
 
-function castVote({ voteId, tournamentId, nomineeId, userId }) {
-  const vote = getVoteById(voteId, tournamentId);
+async function castVote({ voteId, tournamentId, nomineeId, userId }) {
+  const vote = await getVoteById(voteId, tournamentId);
   assertOpen(vote);
-  if (!getNominee(voteId, nomineeId, tournamentId)) throw httpError(404, 'Nominee not found');
+  if (!(await getNominee(voteId, nomineeId, tournamentId))) throw httpError(404, 'Nominee not found');
   try {
-    db.exec('BEGIN');
-    db.prepare(`INSERT INTO vote_ballots (vote_id, user_id, nominee_id) VALUES (?, ?, ?)`)
-      .run(voteId, userId, nomineeId);
-    db.prepare(`UPDATE vote_nominees SET votes = votes + 1 WHERE vote_id = ? AND nominee_id = ?`)
-      .run(voteId, nomineeId);
-    db.exec('COMMIT');
+    await withTransaction(async (client) => {
+      await client.query(
+        'INSERT INTO vote_ballots (vote_id, user_id, nominee_id) VALUES ($1, $2, $3)',
+        [voteId, userId, nomineeId],
+      );
+      await client.query(
+        'UPDATE vote_nominees SET votes = votes + 1 WHERE vote_id = $1 AND nominee_id = $2',
+        [voteId, nomineeId],
+      );
+    });
   } catch (err) {
-    try { db.exec('ROLLBACK'); } catch {}
-    if (err.code === 'SQLITE_CONSTRAINT_PRIMARYKEY' || err.code === 'SQLITE_CONSTRAINT' ||
-        String(err.message).includes('UNIQUE constraint failed: vote_ballots.vote_id, vote_ballots.user_id')) {
-      throw httpError(409, 'You have already voted in this vote.');
-    }
+    if (err.code === '23505') throw httpError(409, 'You have already voted in this vote.');
     throw err;
   }
   return getNominee(voteId, nomineeId, tournamentId);
 }
 
 module.exports = {
-  getVoteById,
-  listVotesByTournament,
-  createVote,
-  updateVote,
-  finishVote,
-  deleteVote,
-  listNominees,
-  addNominee,
-  removeNominee,
-  castVote,
+  getVoteById, listVotesByTournament, createVote, updateVote, finishVote, deleteVote,
+  listNominees, addNominee, removeNominee, castVote,
 };

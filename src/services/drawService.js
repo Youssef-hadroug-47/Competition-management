@@ -1,4 +1,10 @@
-const { db, now, parseJson } = require('../db');
+const { query, withTransaction, now, parseJson } = require('../db');
+const { AsyncLocalStorage } = require('async_hooks');
+
+const transactionContext = new AsyncLocalStorage();
+const run = (sql, values = [], client) => (client || transactionContext.getStore() || { query }).query(sql.replace(/\?/g, (_, offset, text) => `$${(text.slice(0, offset).match(/\?/g) || []).length + 1}`), values);
+const one = async (sql, values = [], client) => (await run(sql, values, client)).rows[0] || null;
+const many = async (sql, values = [], client) => (await run(sql, values, client)).rows;
 const { id } = require('../utils/ids');
 const { httpError } = require('../middleware/error');
 const { defaultStageSettings } = require('./mappers');
@@ -58,35 +64,35 @@ function knockoutRounds(teamCount) {
   return names[size] || Array.from({ length: Math.log2(size) }, (_, i) => `Round ${i + 1}`);
 }
 
-function insertMatch({ tournamentId, stageId, groupId, matchday, homeId, awayId }) {
+async function insertMatch({ tournamentId, stageId, groupId, matchday, homeId, awayId }) {
   const matchId = id();
-  db.prepare(
+  await run(
     `INSERT INTO matches (
       id, tournament_id, stage_id, group_id, matchday,
       home_participant_team_id, away_participant_team_id, status, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?)`
-  ).run(matchId, tournamentId, stageId, groupId, matchday, homeId, awayId, now());
+  , [matchId, tournamentId, stageId, groupId, matchday, homeId, awayId, now()]);
   return matchId;
 }
 
-function getPreviousStageOpponentPairs(stage, participantIds) {
+async function getPreviousStageOpponentPairs(stage, participantIds) {
   if (stage.sequence_order <= 1 || !participantIds.length) return new Set();
 
-  const sourceStages = db.prepare(
+  const sourceStages = await many(
     `SELECT DISTINCT source_stage_id
      FROM stage_promotions
      WHERE target_stage_id = ?`
-  ).all(stage.id);
+  , [stage.id]);
   if (!sourceStages.length) return new Set();
 
   const placeholders = sourceStages.map(() => '?').join(', ');
-  const matches = db.prepare(
+  const matches = await many(
     `SELECT home_participant_team_id, away_participant_team_id
      FROM matches
      WHERE stage_id IN (${placeholders})
        AND home_participant_team_id IS NOT NULL
        AND away_participant_team_id IS NOT NULL`
-  ).all(...sourceStages.map((source) => source.source_stage_id));
+  , [...sourceStages.map((source) => source.source_stage_id)]);
   const participants = new Set(participantIds);
   const pairs = new Set();
   for (const match of matches) {
@@ -137,58 +143,48 @@ function pairKnockoutParticipants(participants, forbiddenPairs) {
  * whatever stage_promotions currently says is targeting it.
  * -------------------------------------------------------------------- */
 
-// node:sqlite's DatabaseSync has no better-sqlite3-style db.transaction()
-// helper, so wrap the BEGIN/COMMIT/ROLLBACK by hand. Not reentrant — don't
-// call this from inside another runInTransaction.
-function runInTransaction(fn) {
-  db.exec('BEGIN');
-  try {
-    fn();
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
+// Keep transaction-scoped queries in AsyncLocalStorage so nested draw helpers
+// share the checked-out PostgreSQL client.
+async function runInTransaction(fn) {
+  return withTransaction(async (client) => transactionContext.run(client, () => fn(client)));
 }
 
-function insertStagePromotion(insert, { tournamentId, sourceStageId, targetStageId, participantTeamId, viaRank, rankPosition }) {
-  insert.run(id(), tournamentId, sourceStageId, targetStageId, participantTeamId, viaRank ? 1 : 0, rankPosition ?? null, now());
+async function insertStagePromotion(insert, { tournamentId, sourceStageId, targetStageId, participantTeamId, viaRank, rankPosition }) {
+  await run(
+    `INSERT INTO stage_promotions
+      (id, tournament_id, source_stage_id, target_stage_id, participant_team_id, via_rank, rank_position, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id(), tournamentId, sourceStageId, targetStageId, participantTeamId, viaRank ? 1 : 0, rankPosition ?? null, now()]
+  );
 }
 
 // Everyone currently promoted INTO `stage`, regardless of which stage(s)
 // fed them there.
-function getIncomingParticipants(stage) {
-  return db
-    .prepare(
+async function getIncomingParticipants(stage) {
+  return (await many(
       `SELECT DISTINCT pt.* FROM stage_promotions sp
        JOIN participant_teams pt ON pt.id = sp.participant_team_id
        WHERE sp.target_stage_id = ?`
-    )
-    .all(stage.id);
+    , [stage.id]));
 }
 
 // Which stages currently have promotions feeding `stage` — used for
 // "finish stage X first" style error messages, since a stage can now be
 // fed by more than one source.
-function getFeederStageSequenceOrders(stage) {
-  return db
-    .prepare(
+async function getFeederStageSequenceOrders(stage) {
+  return (await many(
       `SELECT DISTINCT s.sequence_order AS seq FROM stage_promotions sp
        JOIN stages s ON s.id = sp.source_stage_id
        WHERE sp.target_stage_id = ?
        ORDER BY seq ASC`
-    )
-    .all(stage.id)
-    .map((r) => r.seq);
+    , [stage.id])).map((r) => r.seq);
 }
 
-function isStageComplete(stage) {
-  const row = db
-    .prepare(
+async function isStageComplete(stage) {
+  const row = await one(
       `SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'finished' THEN 1 ELSE 0 END) AS done
        FROM matches WHERE stage_id = ?`
-    )
-    .get(stage.id);
+    , [stage.id]);
   return Number(row.total) > 0 && Number(row.total) === Number(row.done || 0);
 }
 
@@ -254,18 +250,16 @@ function resolveTieWinner(tieMatches) {
 // One query for every tied team's card totals, instead of one query per
 // team per comparison. Returns raw rows; callers build a Map keyed by
 // participant_team_id.
-function getCardsForTeams(teams) {
+async function getCardsForTeams(teams) {
   if (!teams.length) return [];
   const teamIds = teams.map((t) => t.id);
   const placeholders = teamIds.map(() => '?').join(',');
-  return db
-    .prepare(
+  return await many(
       `SELECT participant_team_id, SUM(yellow_cards) yellows, SUM(red_cards) reds
        FROM participant_players
        WHERE participant_team_id IN (${placeholders})
        GROUP BY participant_team_id`
-    )
-    .all(...teamIds);
+    , [...teamIds]);
 }
 
 // Builds a mini-league sub-table for a set of tied teams: finds all
@@ -273,21 +267,19 @@ function getCardsForTeams(teams) {
 // points/GF/GA from those matches only (their "mini-league"). Used to
 // resolve head-to-head among 3+ teams tied on points, since pairwise
 // comparison isn't guaranteed transitive (A > B > C > A is possible).
-function computeMiniLeagueStats(teams, groupId) {
+async function computeMiniLeagueStats(teams, groupId) {
   const teamIds = teams.map((t) => t.id);
   const stats = {};
   for (const t of teams) stats[t.id] = { pts: 0, gf: 0, ga: 0 };
   if (teamIds.length < 2) return stats;
 
   const placeholders = teamIds.map(() => '?').join(',');
-  const matches = db
-    .prepare(
+  const matches = await many(
       `SELECT home_participant_team_id, away_participant_team_id, home_score, away_score
        FROM matches WHERE group_id = ? AND status = 'finished'
        AND home_participant_team_id IN (${placeholders})
        AND away_participant_team_id IN (${placeholders})`
-    )
-    .all(groupId, ...teamIds, ...teamIds);
+    , [groupId, ...teamIds, ...teamIds]);
 
   for (const m of matches) {
     const hId = m.home_participant_team_id;
@@ -341,7 +333,7 @@ function bucketByComposite(teams, keyFn) {
 // bucket is itself an array of teams; a bucket of length 1 is fully
 // resolved, a bucket of length > 1 is still tied on this criterion and
 // needs the next one in the chain.
-function splitIntoBuckets(teams, type, groupId) {
+async function splitIntoBuckets(teams, type, groupId) {
   switch (type) {
     case 'points':
       return bucketByComposite(teams, (t) => [t.points || 0]);
@@ -360,7 +352,7 @@ function splitIntoBuckets(teams, type, groupId) {
       // Scoped to just the currently-tied bucket, and only matches these
       // teams played against each other — a fresh mini-league per bucket,
       // not the group's overall table.
-      const stats = computeMiniLeagueStats(teams, groupId);
+      const stats = await computeMiniLeagueStats(teams, groupId);
       return bucketByComposite(teams, (t) => {
         const s = stats[t.id] || { pts: 0, gf: 0, ga: 0 };
         return [s.pts, s.gf - s.ga, s.gf];
@@ -384,17 +376,17 @@ function splitIntoBuckets(teams, type, groupId) {
 // it. If every configured tiebreaker is exhausted and teams are still
 // tied, falls back to a deterministic id sort so the result is never
 // ambiguous even if the caller forgot to configure a 'draw' tiebreaker.
-function sortTeamsWithTiebreakers(teams, sortedTiebreakers, idx, groupId) {
+async function sortTeamsWithTiebreakers(teams, sortedTiebreakers, idx, groupId) {
   if (teams.length <= 1) return teams;
   if (idx >= sortedTiebreakers.length) {
     return [...teams].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   }
 
-  const buckets = splitIntoBuckets(teams, sortedTiebreakers[idx].type, groupId);
+  const buckets = await splitIntoBuckets(teams, sortedTiebreakers[idx].type, groupId);
   const result = [];
   for (const bucket of buckets) {
     if (bucket.length === 1) result.push(...bucket);
-    else result.push(...sortTeamsWithTiebreakers(bucket, sortedTiebreakers, idx + 1, groupId));
+    else result.push(...await sortTeamsWithTiebreakers(bucket, sortedTiebreakers, idx + 1, groupId));
   }
   return result;
 }
@@ -405,9 +397,9 @@ function sortTeamsWithTiebreakers(teams, sortedTiebreakers, idx, groupId) {
 // any manual adjustment — deductions, forfeits, bonus points — is
 // respected; only goal_difference is derived, and only cards/head-to-head
 // pull from other tables.
-function rankGroupTeams(groupId, tiebreakers) {
+async function rankGroupTeams(groupId, tiebreakers) {
   const sortedTbs = [...tiebreakers].sort((a, b) => a.priority - b.priority);
-  const teams = db.prepare(
+  const teams = await many(
     `SELECT DISTINCT pt.*
      FROM participant_teams pt
      LEFT JOIN matches m
@@ -415,10 +407,10 @@ function rankGroupTeams(groupId, tiebreakers) {
       AND (m.home_participant_team_id = pt.id OR m.away_participant_team_id = pt.id)
      WHERE pt.group_id = ?
         OR m.id IS NOT NULL`
-  ).all(groupId, groupId);
+  , [groupId, groupId]);
   if (!teams.length) return teams;
 
-  const cardRows = getCardsForTeams(teams);
+  const cardRows = await getCardsForTeams(teams);
   const cards = new Map(
     cardRows.map((c) => [c.participant_team_id, { yellow_cards: c.yellows || 0, red_cards: c.reds || 0 }])
   );
@@ -430,15 +422,15 @@ function rankGroupTeams(groupId, tiebreakers) {
     team.goal_difference = (team.goals_for || 0) - (team.goals_against || 0);
   }
 
-  return sortTeamsWithTiebreakers(teams, sortedTbs, 0, groupId);
+  return await sortTeamsWithTiebreakers(teams, sortedTbs, 0, groupId);
 }
 
-function setStageStatus(stageId, status) {
+async function setStageStatus(stageId, status) {
   if (!stageId || !status) return false;
 
   if (!["finished"].includes(status)) return false;
   
-  db.prepare("UPDATE STAGES SET status = ? WHERE id = ?").run(status, stageId);
+  await run("UPDATE STAGES SET status = ? WHERE id = ?", [status, stageId]);
   return true;
 }
 
@@ -456,9 +448,9 @@ function setStageStatus(stageId, status) {
 // Returns null (and does nothing) if the stage isn't actually finished yet.
 // Safe to call repeatedly/idempotently — it replaces this stage's rows in
 // stage_promotions each time it successfully runs.
-function finalizeLeagueStage(stage) {
+async function finalizeLeagueStage(stage) {
   if (!stage || stage.type !== 'league') return null;
-  if (!isStageComplete(stage)) return null;
+  if (!await isStageComplete(stage)) return null;
 
   const settings = parseJson(stage.settings, defaultStageSettings('league'));
   const defaultTbs = defaultStageSettings('league').tiebreakers;
@@ -467,9 +459,7 @@ function finalizeLeagueStage(stage) {
   const defaultAdvanceFromRanking = defaultStageSettings('league').advancingTeamsFromRanking;
   const nbrAdvanceFromRanking = settings.advancingTeamsFromRanking ?? defaultAdvanceFromRanking ?? 0;
 
-  const groups = db
-    .prepare('SELECT * FROM groups WHERE stage_id = ? ORDER BY sequence_order ASC, name ASC')
-    .all(stage.id);
+  const groups = await many('SELECT * FROM groups WHERE stage_id = ? ORDER BY sequence_order ASC, name ASC', [stage.id]);
   if (!groups.length) {
     return { promoted: 0, direct: 0, viaRank: 0, note: 'Stage has no groups configured — nothing to promote.' };
   }
@@ -478,7 +468,7 @@ function finalizeLeagueStage(stage) {
   const rankingCandidates = []; // { team, targetStageId }
 
   for (const grp of groups) {
-    const ranked = rankGroupTeams(grp.id, tiebreakers);
+    const ranked = await rankGroupTeams(grp.id, tiebreakers);
     const rules = parseJson(grp.promotion_rules, []);
     for (const rule of rules) {
       if (!rule || !rule.stage) continue;
@@ -504,7 +494,7 @@ function finalizeLeagueStage(stage) {
     { type: 'draw', priority: 4 },
   ];
   const candidateTeams = rankingCandidates.map((c) => c.team);
-  const sortedCandidateTeams = sortTeamsWithTiebreakers(candidateTeams, crossGroupTiebreakers, 0, null);
+  const sortedCandidateTeams = await sortTeamsWithTiebreakers(candidateTeams, crossGroupTiebreakers, 0, null);
   const orderIndex = new Map(sortedCandidateTeams.map((t, i) => [t.id, i]));
   rankingCandidates.sort((a, b) => orderIndex.get(a.team.id) - orderIndex.get(b.team.id));
 
@@ -514,17 +504,10 @@ function finalizeLeagueStage(stage) {
     rankPosition: index + 1,
   }));
 
-  const del = db.prepare('DELETE FROM stage_promotions WHERE source_stage_id = ?');
-  const insert = db.prepare(
-    `INSERT INTO stage_promotions (
-      id, tournament_id, source_stage_id, target_stage_id, participant_team_id, via_rank, rank_position, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  );
-
-  runInTransaction(() => {
-    del.run(stage.id);
+  await runInTransaction(async () => {
+    await run('DELETE FROM stage_promotions WHERE source_stage_id = ?', [stage.id]);
     for (const p of directPromotions) {
-      insertStagePromotion(insert, {
+      await insertStagePromotion(null, {
         tournamentId: stage.tournament_id,
         sourceStageId: stage.id,
         targetStageId: p.targetStageId,
@@ -533,7 +516,7 @@ function finalizeLeagueStage(stage) {
       });
     }
     for (const p of rankedPromotions) {
-      insertStagePromotion(insert, {
+      await insertStagePromotion(null, {
         tournamentId: stage.tournament_id,
         sourceStageId: stage.id,
         targetStageId: p.targetStageId,
@@ -542,7 +525,7 @@ function finalizeLeagueStage(stage) {
         rankPosition: p.rankPosition,
       });
     }
-    setStageStatus(stage.id, "finished");
+    await setStageStatus(stage.id, "finished");
   });
 
   
@@ -554,7 +537,7 @@ function finalizeLeagueStage(stage) {
   };
 }
 
-function drawLeagueStage(tournament, stage, groups, participants) {
+async function drawLeagueStage(tournament, stage, groups, participants) {
   if (!groups.length) throw httpError(400, 'Create groups for this league stage before drawing');
   const shuffled = shuffle(participants);
   const assignments = shuffled.map((pt, index) => ({
@@ -572,16 +555,15 @@ function drawLeagueStage(tournament, stage, groups, participants) {
   }
 
   const created = [];
-  runInTransaction(() => {
-    const update = db.prepare(`UPDATE participant_teams SET group_id = ?, status = 'drawn' WHERE id = ?`);
-    for (const pt of assignments) update.run(pt.group_id, pt.id);
+  await runInTransaction(async () => {
+    for (const pt of assignments) await run(`UPDATE participant_teams SET group_id = ?, status = 'drawn' WHERE id = ?`, [pt.group_id, pt.id]);
 
     for (const group of groups) {
       const ids = byGroup.get(group.id) || [];
       const fixtures = roundRobinPairs(ids, legs);
       for (const fx of fixtures) {
         created.push(
-          insertMatch({
+          await insertMatch({
             tournamentId: tournament.id,
             stageId: stage.id,
             groupId: group.id,
@@ -601,10 +583,10 @@ function drawLeagueStage(tournament, stage, groups, participants) {
 // bracket is created up front (so the shape of the bracket is known), but
 // matches for rounds after the first are only generated once the round
 // feeding them is complete — see advanceKnockoutStage().
-function drawKnockoutStage(tournament, stage, groups, participants) {
+async function drawKnockoutStage(tournament, stage, groups, participants) {
   const settings = parseJson(stage.settings, defaultStageSettings('knockout'));
   const legs = Math.max(1, Number(settings.headToHeadMatches) || 1);
-  const forbiddenPairs = getPreviousStageOpponentPairs(stage, participants.map((participant) => participant.id));
+  const forbiddenPairs = await getPreviousStageOpponentPairs(stage, participants.map((participant) => participant.id));
   const pairs = pairKnockoutParticipants(participants, forbiddenPairs);
   if (!pairs) {
     throw httpError(
@@ -617,27 +599,25 @@ function drawKnockoutStage(tournament, stage, groups, participants) {
   let firstRound;
   const created = [];
 
-  runInTransaction(() => {
+  await runInTransaction(async () => {
     if (!roundGroups.length) {
       const names = knockoutRounds(participants.length);
-      const insertGroup = db.prepare(
-        `INSERT INTO rounds (id, stage_id, name, sequence_order) VALUES (?, ?, ?, ?)`
-      );
-      roundGroups = names.map((name, index) => {
+      roundGroups = [];
+      for (const [index, name] of names.entries()) {
         const gid = id();
-        insertGroup.run(gid, stage.id, name, index + 1);
-        return { id: gid, name, sequence_order: index + 1 };
-      });
+        await run(`INSERT INTO rounds (id, stage_id, name, sequence_order) VALUES (?, ?, ?, ?)`, [gid, stage.id, name, index + 1]);
+        roundGroups.push({ id: gid, name, sequence_order: index + 1 });
+      }
     }
 
     firstRound = [...roundGroups].sort((a, b) => a.sequence_order - b.sequence_order)[0];
-    pairs.forEach((pair, index) => {
+    for (const [index, pair] of pairs.entries()) {
       if (pair.length < 2) return;
       for (let leg = 0; leg < legs; leg += 1) {
         const home = leg === 0 ? pair[0] : pair[1];
         const away = leg === 0 ? pair[1] : pair[0];
         created.push(
-          insertMatch({
+          await insertMatch({
             tournamentId: tournament.id,
             stageId: stage.id,
             groupId: firstRound.id,
@@ -647,34 +627,29 @@ function drawKnockoutStage(tournament, stage, groups, participants) {
           })
         );
       }
-    });
+    }
 
-    const mark = db.prepare(`UPDATE participant_teams SET status = 'drawn' WHERE id = ?`);
-    for (const pt of participants) mark.run(pt.id);
+    for (const pt of participants) await run(`UPDATE participant_teams SET status = 'drawn' WHERE id = ?`, [pt.id]);
   });
 
   return { assigned: participants.length, matchesCreated: created.length, firstRound: firstRound.name };
 }
 
-function runDraw({ tournamentId, stageId }) {
-  const tournament = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(tournamentId);
+async function runDraw({ tournamentId, stageId }) {
+  const tournament = await one('SELECT * FROM tournaments WHERE id = ?', [tournamentId]);
   if (!tournament) throw httpError(404, 'Tournament not found');
 
   let stage;
   if (stageId) {
-    stage = db.prepare('SELECT * FROM stages WHERE id = ? AND tournament_id = ?').get(stageId, tournamentId);
+    stage = await one('SELECT * FROM stages WHERE id = ? AND tournament_id = ?', [stageId, tournamentId]);
     if (!stage) throw httpError(404, 'Stage not found');
   } else {
-    const stages = db
-      .prepare('SELECT * FROM stages WHERE tournament_id = ? ORDER BY sequence_order ASC')
-      .all(tournamentId);
+    const stages = await many('SELECT * FROM stages WHERE tournament_id = ? ORDER BY sequence_order ASC', [tournamentId]);
     if (!stages.length) throw httpError(400, 'Create at least one stage before drawing');
     stage = stages[0];
   }
 
-  const existingMatches = db
-    .prepare('SELECT id, status FROM matches WHERE tournament_id = ? AND stage_id = ?')
-    .all(tournamentId, stage.id);
+  const existingMatches = await many('SELECT id, status FROM matches WHERE tournament_id = ? AND stage_id = ?', [tournamentId, stage.id]);
   const startedMatch = existingMatches.find((match) => !['scheduled', 'postponed', 'cancelled'].includes(match.status));
   if (startedMatch) {
     throw httpError(409, 'This stage has started. Use Reset stage before creating a new draw.');
@@ -687,9 +662,9 @@ function runDraw({ tournamentId, stageId }) {
   // is just a lookup, not a computation.
   let participants;
   if (stage.sequence_order > 1) {
-    participants = getIncomingParticipants(stage);
+    participants = await getIncomingParticipants(stage);
     if (participants.length < 2) {
-      const feederSeqs = getFeederStageSequenceOrders(stage);
+      const feederSeqs = await getFeederStageSequenceOrders(stage);
       const message = feederSeqs.length
         ? `Only ${participants.length} team(s) have been promoted into stage #${stage.sequence_order} so far from stage(s) ${feederSeqs.join(', ')}. Make sure those stages have finished.`
         : `No teams have been promoted into stage #${stage.sequence_order} yet. Finish the stage(s) whose promotion_rules target it first.`;
@@ -697,46 +672,43 @@ function runDraw({ tournamentId, stageId }) {
     }
 
   } else {
-    participants = db.prepare('SELECT * FROM participant_teams WHERE tournament_id = ?').all(tournamentId);
-    const number_of_teams = db.prepare('SELECT * from tournaments WHERE id = ?').get(tournamentId).number_of_teams;
+    participants = await many('SELECT * FROM participant_teams WHERE tournament_id = ?', [tournamentId]);
+    const number_of_teams = (await one('SELECT * from tournaments WHERE id = ?', [tournamentId])).number_of_teams;
     if (participants.length != number_of_teams) {
       throw httpError(400, `add ${number_of_teams - participants.length} teams to run draw`);
     }
   }
 
-  const groups =  db
-    .prepare(`SELECT * FROM ${ stage.type === "league" ? 'groups' : 'rounds'} WHERE stage_id = ? ORDER BY sequence_order ASC, name ASC`)
-    .all(stage.id) ; 
+  const groups = await many(`SELECT * FROM ${stage.type === 'league' ? 'groups' : 'rounds'} WHERE stage_id = ? ORDER BY sequence_order ASC, name ASC`, [stage.id]);
 
   if (existingMatches.length) {
-    db.prepare('DELETE FROM matches WHERE tournament_id = ? AND stage_id = ?')
-      .run(tournamentId, stage.id);
+    await run('DELETE FROM matches WHERE tournament_id = ? AND stage_id = ?', [tournamentId, stage.id]);
   }
 
   const result =
     stage.type === 'knockout'
-      ? drawKnockoutStage(tournament, stage, groups, participants)
-      : drawLeagueStage(tournament, stage, groups, participants);
+      ? await drawKnockoutStage(tournament, stage, groups, participants)
+      : await drawLeagueStage(tournament, stage, groups, participants);
 
-  db.prepare(
+  await run(
     `UPDATE tournaments SET status = CASE
       WHEN status IN ('draft', 'registration') THEN 'draw_complete'
       ELSE status
     END, updated_at = ? WHERE id = ?`
-  ).run(now(), tournamentId);
+  , [now(), tournamentId]);
 
   return {
     tournamentId,
     stageId: stage.id,
     stageType: stage.type,
     sequenceOrder: stage.sequence_order,
-    promotedFromStages: stage.sequence_order > 1 ? getFeederStageSequenceOrders(stage) : [],
+    promotedFromStages: stage.sequence_order > 1 ? await getFeederStageSequenceOrders(stage) : [],
     ...result,
   };
 }
 
-function resetStage({ tournamentId, stageId, scopeStageIds = null }) {
-  const stage = db.prepare('SELECT * FROM stages WHERE id = ? AND tournament_id = ?').get(stageId, tournamentId);
+async function resetStage({ tournamentId, stageId, scopeStageIds = null }) {
+  const stage = await one('SELECT * FROM stages WHERE id = ? AND tournament_id = ?', [stageId, tournamentId]);
   if (!stage) throw httpError(404, 'Stage not found');
 
   const stageIds = new Set(scopeStageIds?.length ? scopeStageIds : [stage.id]);
@@ -745,17 +717,17 @@ function resetStage({ tournamentId, stageId, scopeStageIds = null }) {
       throw httpError(400, 'Scoped downstream reset cannot include the corrected source stage');
     }
     const placeholders = [...stageIds].map(() => '?').join(', ');
-    const validStages = db.prepare(
+    const validStages = (await many(
       `SELECT id FROM stages WHERE tournament_id = ? AND id IN (${placeholders})`
-    ).all(tournamentId, ...stageIds).map(({ id }) => id);
+    , [tournamentId, ...stageIds])).map(({ id }) => id);
     if (validStages.length !== stageIds.size) throw httpError(400, 'Invalid affected stage list');
   } else {
     const pending = [stage.id];
     while (pending.length) {
       const sourceStageId = pending.shift();
-      const targets = db.prepare(
+      const targets = await many(
         'SELECT DISTINCT target_stage_id FROM stage_promotions WHERE source_stage_id = ?'
-      ).all(sourceStageId);
+      , [sourceStageId]);
       targets.forEach(({ target_stage_id: targetStageId }) => {
         if (!stageIds.has(targetStageId)) {
           stageIds.add(targetStageId);
@@ -768,12 +740,12 @@ function resetStage({ tournamentId, stageId, scopeStageIds = null }) {
   const ids = [...stageIds];
   const downstreamIds = ids.filter((id) => id !== stage.id);
   const placeholders = ids.map(() => '?').join(', ');
-  const matches = db.prepare(
+  const matches = await many(
     `SELECT * FROM matches WHERE tournament_id = ? AND stage_id IN (${placeholders})`
-  ).all(tournamentId, ...ids);
-  const stageGroupIds = db.prepare(
+  , [tournamentId, ...ids]);
+  const stageGroupIds = (await many(
     `SELECT id FROM groups WHERE stage_id IN (${placeholders})`
-  ).all(...ids).map(({ id }) => id);
+  , [...ids])).map(({ id }) => id);
   const assignedTeamIds = new Set(
     matches.flatMap((match) => [
       match.home_participant_team_id,
@@ -782,38 +754,38 @@ function resetStage({ tournamentId, stageId, scopeStageIds = null }) {
   );
   if (stageGroupIds.length) {
     const groupPlaceholders = stageGroupIds.map(() => '?').join(', ');
-    db.prepare(
+    (await many(
       `SELECT id FROM participant_teams WHERE tournament_id = ? AND group_id IN (${groupPlaceholders})`
-    ).all(tournamentId, ...stageGroupIds).forEach(({ id }) => assignedTeamIds.add(id));
+    , [tournamentId, ...stageGroupIds])).forEach(({ id }) => assignedTeamIds.add(id));
   }
 
-  runInTransaction(() => {
+  await runInTransaction(async () => {
     for (const match of matches) {
       if (match.status === 'finished') {
-        const stageRow = db.prepare('SELECT type, settings FROM stages WHERE id = ?').get(match.stage_id);
+        const stageRow = await one('SELECT type, settings FROM stages WHERE id = ?', [match.stage_id]);
         if (stageRow?.type === 'league') {
           const settings = parseJson(stageRow.settings, defaultStageSettings('league'));
-          const home = db.prepare('SELECT * FROM participant_teams WHERE id = ?').get(match.home_participant_team_id);
-          const away = db.prepare('SELECT * FROM participant_teams WHERE id = ?').get(match.away_participant_team_id);
+          const home = await one('SELECT * FROM participant_teams WHERE id = ?', [match.home_participant_team_id]);
+          const away = await one('SELECT * FROM participant_teams WHERE id = ?', [match.away_participant_team_id]);
           if (home && away) {
             const homeScore = Number(match.home_score || 0);
             const awayScore = Number(match.away_score || 0);
             const homeWin = homeScore > awayScore;
             const draw = homeScore === awayScore;
             const pts = settings.points || { win: 3, draw: 1, loss: 0 };
-            const reverse = (team, wins, draws, losses, goalsFor, goalsAgainst, points) => db.prepare(
-              `UPDATE participant_teams SET played = MAX(0, played - ?), won = MAX(0, won - ?),
-                drawn = MAX(0, drawn - ?), lost = MAX(0, lost - ?),
-                goals_for = MAX(0, goals_for - ?), goals_against = MAX(0, goals_against - ?),
-                points = MAX(0, points - ?) WHERE id = ?`
-            ).run(1, wins, draws, losses, goalsFor, goalsAgainst, points, team.id);
+            const reverse = async (team, wins, draws, losses, goalsFor, goalsAgainst, points) => run(
+              `UPDATE participant_teams SET played = GREATEST(0, played - ?), won = GREATEST(0, won - ?),
+                drawn = GREATEST(0, drawn - ?), lost = GREATEST(0, lost - ?),
+                goals_for = GREATEST(0, goals_for - ?), goals_against = GREATEST(0, goals_against - ?),
+                points = GREATEST(0, points - ?) WHERE id = ?`
+            , [1, wins, draws, losses, goalsFor, goalsAgainst, points, team.id]);
             reverse(home, homeWin ? 1 : 0, draw ? 1 : 0, homeWin ? 0 : 1, homeScore, awayScore, homeWin ? pts.win : draw ? pts.draw : pts.loss);
             reverse(away, homeWin ? 0 : 1, draw ? 1 : 0, homeWin ? 1 : 0, awayScore, homeScore, homeWin ? pts.loss : draw ? pts.draw : pts.win);
           }
         }
       }
-      const events = db.prepare('SELECT type, card, player_id, payload FROM match_events WHERE match_id = ?').all(match.id);
-      events.forEach((event) => {
+      const events = await many('SELECT type, card, player_id, payload FROM match_events WHERE match_id = ?', [match.id]);
+      for (const event of events) {
         if (!event.player_id) return;
         const payload = parseJson(event.payload, {});
         const column = event.type === 'goal' && !payload.ownGoal
@@ -823,31 +795,27 @@ function resetStage({ tournamentId, stageId, scopeStageIds = null }) {
             : event.type === 'card'
               ? (event.card === 'red' ? 'red_cards' : 'yellow_cards')
               : null;
-        if (column) db.prepare(`UPDATE participant_players SET ${column} = MAX(0, ${column} - 1) WHERE id = ?`).run(event.player_id);
-      });
+        if (column) await run(`UPDATE participant_players SET ${column} = GREATEST(0, ${column} - 1) WHERE id = ?`, [event.player_id]);
+      }
     }
     // Promotions into the selected stage are still valid inputs for a redraw.
     // Only generated results from this stage and its downstream stages must be
     // discarded.
-    db.prepare(`DELETE FROM stage_promotions WHERE source_stage_id IN (${placeholders})`)
-      .run(...ids);
+    await run(`DELETE FROM stage_promotions WHERE source_stage_id IN (${placeholders})`, [...ids]);
     if (downstreamIds.length && !scopeStageIds?.length) {
       const downstreamPlaceholders = downstreamIds.map(() => '?').join(', ');
-      db.prepare(`DELETE FROM stage_promotions WHERE target_stage_id IN (${downstreamPlaceholders})`)
-        .run(...downstreamIds);
+      await run(`DELETE FROM stage_promotions WHERE target_stage_id IN (${downstreamPlaceholders})`, [...downstreamIds]);
     }
-    db.prepare(`DELETE FROM matches WHERE tournament_id = ? AND stage_id IN (${placeholders})`)
-      .run(tournamentId, ...ids);
-    db.prepare(`UPDATE stages SET status = NULL WHERE tournament_id = ? AND id IN (${placeholders})`)
-      .run(tournamentId, ...ids);
+    await run(`DELETE FROM matches WHERE tournament_id = ? AND stage_id IN (${placeholders})`, [tournamentId, ...ids]);
+    await run(`UPDATE stages SET status = NULL WHERE tournament_id = ? AND id IN (${placeholders})`, [tournamentId, ...ids]);
     if (assignedTeamIds.size && !scopeStageIds?.length) {
       const teamIds = [...assignedTeamIds];
       const teamPlaceholders = teamIds.map(() => '?').join(', ');
-      db.prepare(
+      await run(
         `UPDATE participant_teams
          SET group_id = NULL, status = 'registered', winner = false
          WHERE tournament_id = ? AND id IN (${teamPlaceholders})`
-      ).run(tournamentId, ...teamIds);
+      , [tournamentId, ...teamIds]);
     }
   });
   return {
@@ -862,22 +830,18 @@ function resetStage({ tournamentId, stageId, scopeStageIds = null }) {
 // yet, it pairs up the winners and creates that round's matches. If the
 // final round just completed, crowns the champion (and, if this was the
 // tournament's last stage, marks the tournament completed).
-function advanceKnockoutStage(stageId) {
-  const stage = db.prepare('SELECT * FROM stages WHERE id = ?').get(stageId);
+async function advanceKnockoutStage(stageId) {
+  const stage = await one('SELECT * FROM stages WHERE id = ?', [stageId]);
   if (!stage || stage.type !== 'knockout') return null;
 
   const settings = parseJson(stage.settings, defaultStageSettings('knockout'));
   const legs = Math.max(1, Number(settings.headToHeadMatches) || 1);
-  const groups = db
-    .prepare('SELECT * FROM rounds WHERE stage_id = ? ORDER BY sequence_order ASC')
-    .all(stage.id);
+  const groups = await many('SELECT * FROM rounds WHERE stage_id = ? ORDER BY sequence_order ASC', [stage.id]);
   if (!groups.length) return null;
 
   for (let i = 0; i < groups.length; i += 1) {
     const round = groups[i];
-    const roundMatches = db
-      .prepare('SELECT * FROM matches WHERE group_id = ? ORDER BY matchday ASC, created_at ASC')
-      .all(round.id);
+    const roundMatches = await many('SELECT * FROM matches WHERE group_id = ? ORDER BY matchday ASC, created_at ASC', [round.id]);
     if (!roundMatches.length) return null; // this round hasn't been drawn yet
     if (!roundMatches.every((m) => m.status === 'finished')) return null; // still in progress
 
@@ -898,29 +862,20 @@ function advanceKnockoutStage(stageId) {
     if (isFinalRound) {
       // Knockout stages still promote their winner(s) straight to the next
       // stage by sequence_order (no promotion_rules on rounds yet).
-      const nextStage = db
-        .prepare('SELECT * FROM stages WHERE tournament_id = ? AND sequence_order = ?')
-        .get(stage.tournament_id, stage.sequence_order + 1);
-      const maxSeq = db
-        .prepare('SELECT MAX(sequence_order) AS m FROM stages WHERE tournament_id = ?')
-        .get(stage.tournament_id).m;
+      const nextStage = await one('SELECT * FROM stages WHERE tournament_id = ? AND sequence_order = ?', [stage.tournament_id, stage.sequence_order + 1]);
+      const maxSeq = (await one('SELECT MAX(sequence_order) AS m FROM stages WHERE tournament_id = ?', [stage.tournament_id])).m;
       const isTournamentComplete = stage.sequence_order === maxSeq;
 
-      runInTransaction(() => {
+      await runInTransaction(async () => {
         for (const { winnerId, loserId } of resolved) {
-          db.prepare(`UPDATE participant_teams SET status = 'champion' WHERE id = ?`).run(winnerId);
-          db.prepare(`UPDATE participant_teams SET status = 'eliminated' WHERE id = ?`).run(loserId);
+          await run(`UPDATE participant_teams SET status = 'champion' WHERE id = ?`, [winnerId]);
+          await run(`UPDATE participant_teams SET status = 'eliminated' WHERE id = ?`, [loserId]);
         }
 
         if (nextStage) {
-          db.prepare('DELETE FROM stage_promotions WHERE source_stage_id = ?').run(stage.id);
-          const insert = db.prepare(
-            `INSERT INTO stage_promotions (
-              id, tournament_id, source_stage_id, target_stage_id, participant_team_id, via_rank, rank_position, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-          );
+          await run('DELETE FROM stage_promotions WHERE source_stage_id = ?', [stage.id]);
           for (const { winnerId } of resolved) {
-            insertStagePromotion(insert, {
+            await insertStagePromotion(null, {
               tournamentId: stage.tournament_id,
               sourceStageId: stage.id,
               targetStageId: nextStage.id,
@@ -931,27 +886,25 @@ function advanceKnockoutStage(stageId) {
         }
 
         if (isTournamentComplete) {
-          db.prepare(`UPDATE tournaments SET status = 'completed', updated_at = ? WHERE id = ?`).run(
-            now(),
-            stage.tournament_id
-          );
+          await run(`UPDATE tournaments SET status = 'completed', updated_at = ? WHERE id = ?`, [now(),
+            stage.tournament_id]);
         }
       });
 
-      setStageStatus(stage.id, "finished");
+      await setStageStatus(stage.id, "finished");
 
       return { finalized: true, round: round.name, champion: resolved[0]?.winnerId || null };
     }
 
     const nextRound = groups[i + 1];
-    const nextRoundMatches = db.prepare('SELECT COUNT(*) AS c FROM matches WHERE group_id = ?').get(nextRound.id);
+    const nextRoundMatches = await one('SELECT COUNT(*) AS c FROM matches WHERE group_id = ?', [nextRound.id]);
     if (nextRoundMatches.c > 0) continue; // already generated — keep checking later rounds
 
     const winners = resolved.map((r) => r.winnerId);
     const created = [];
-    runInTransaction(() => {
+    await runInTransaction(async () => {
       for (const { loserId } of resolved) {
-        db.prepare(`UPDATE participant_teams SET status = 'eliminated' WHERE id = ?`).run(loserId);
+        await run(`UPDATE participant_teams SET status = 'eliminated' WHERE id = ?`, [loserId]);
       }
 
       for (let p = 0; p < winners.length; p += 2) {
@@ -960,14 +913,14 @@ function advanceKnockoutStage(stageId) {
         if (!home) continue;
         if (!away) {
           // Odd team out gets a bye straight into the next round.
-          db.prepare(`UPDATE participant_teams SET status = 'drawn' WHERE id = ?`).run(home);
+          await run(`UPDATE participant_teams SET status = 'drawn' WHERE id = ?`, [home]);
           continue;
         }
         for (let leg = 0; leg < legs; leg += 1) {
           const h = leg === 0 ? home : away;
           const a = leg === 0 ? away : home;
           created.push(
-            insertMatch({
+            await insertMatch({
               tournamentId: stage.tournament_id,
               stageId: stage.id,
               groupId: nextRound.id,
@@ -994,32 +947,34 @@ function advanceKnockoutStage(stageId) {
 //     promotions into the next stage). May need to be called again after
 //     each subsequent round finishes.
 // Returns null if the stage isn't in a state that needs anything done yet.
-function finalizeStageIfComplete(stageId) {
-  const stage = db.prepare('SELECT * FROM stages WHERE id = ?').get(stageId);
+async function finalizeStageIfComplete(stageId) {
+  const stage = await one('SELECT * FROM stages WHERE id = ?', [stageId]);
   if (!stage) return null;
-  return stage.type === 'league' ? finalizeLeagueStage(stage) : advanceKnockoutStage(stage.id);
+  return stage.type === 'league' ? await finalizeLeagueStage(stage) : await advanceKnockoutStage(stage.id);
 }
 
-function stagePromotionSnapshot(stageId) {
-  return db.prepare(
+async function stagePromotionSnapshot(stageId) {
+  return await many(
     `SELECT target_stage_id, participant_team_id, via_rank, rank_position
      FROM stage_promotions WHERE source_stage_id = ?
      ORDER BY target_stage_id, participant_team_id, via_rank, rank_position`
-  ).all(stageId);
+  , [stageId]);
 }
 
-function downstreamImpact(stageId, beforePromotions, afterPromotions) {
+async function downstreamImpact(stageId, beforePromotions, afterPromotions) {
   const before = JSON.stringify(beforePromotions);
   const after = JSON.stringify(afterPromotions);
   const changed = before !== after;
-  const sourceStage = db.prepare('SELECT sequence_order FROM stages WHERE id = ?').get(stageId);
-  const targetIds = [...new Set([
+  const sourceStage = await one('SELECT sequence_order FROM stages WHERE id = ?', [stageId]);
+  const candidateTargetIds = [...new Set([
     ...beforePromotions.map((row) => row.target_stage_id),
     ...afterPromotions.map((row) => row.target_stage_id),
-  ])].filter((targetId) => {
-    const target = db.prepare('SELECT sequence_order FROM stages WHERE id = ?').get(targetId);
-    return target && Number(target.sequence_order) === Number(sourceStage?.sequence_order) + 1;
-  });
+  ])];
+  const targetIds = [];
+  for (const targetId of candidateTargetIds) {
+    const target = await one('SELECT sequence_order FROM stages WHERE id = ?', [targetId]);
+    if (target && Number(target.sequence_order) === Number(sourceStage?.sequence_order) + 1) targetIds.push(targetId);
+  }
   const affected = [];
   const pending = [...targetIds];
   const seen = new Set();
@@ -1027,16 +982,16 @@ function downstreamImpact(stageId, beforePromotions, afterPromotions) {
     const currentId = pending.shift();
     if (seen.has(currentId)) continue;
     seen.add(currentId);
-    const stage = db.prepare('SELECT id, type, sequence_order FROM stages WHERE id = ?').get(currentId);
+    const stage = await one('SELECT id, type, sequence_order FROM stages WHERE id = ?', [currentId]);
     if (!stage) continue;
-    const matches = db.prepare(
-      'SELECT COUNT(*) AS total, SUM(status = \'finished\') AS finished FROM matches WHERE stage_id = ?'
-    ).get(currentId);
-    const startedMatch = db.prepare(
+    const matches = await one(
+      'SELECT COUNT(*) AS total, SUM(CASE WHEN status = \'finished\' THEN 1 ELSE 0 END) AS finished FROM matches WHERE stage_id = ?'
+    , [currentId]);
+    const startedMatch = await one(
       `SELECT 1 FROM matches
        WHERE stage_id = ? AND status NOT IN ('scheduled', 'postponed', 'cancelled')
        LIMIT 1`
-    ).get(currentId);
+    , [currentId]);
     const hasDraw = Number(matches?.total || 0) > 0;
     affected.push({
       ...stage,
@@ -1060,12 +1015,12 @@ function downstreamImpact(stageId, beforePromotions, afterPromotions) {
   };
 }
 
-function reconcileStageOutputs(stageId) {
-  const beforePromotions = stagePromotionSnapshot(stageId);
-  const result = finalizeStageIfComplete(stageId);
-  const afterPromotions = stagePromotionSnapshot(stageId);
+async function reconcileStageOutputs(stageId) {
+  const beforePromotions = await stagePromotionSnapshot(stageId);
+  const result = await finalizeStageIfComplete(stageId);
+  const afterPromotions = await stagePromotionSnapshot(stageId);
   return {
-    ...downstreamImpact(stageId, beforePromotions, afterPromotions),
+    ...(await downstreamImpact(stageId, beforePromotions, afterPromotions)),
     stageResult: result,
   };
 }

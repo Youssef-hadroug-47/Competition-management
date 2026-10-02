@@ -5,15 +5,15 @@ const map = require('../services/mappers');
 const { getMatchDetail } = require('../services/matchService');
 const { isAdministrator } = require('../middleware/auth');
 const access = require('../services/access');
-const { db } = require('../db');
+const { query } = require('../db');
 const { resetStage, runDraw } = require('../services/drawService');
 const adminOverride = (req) => isAdministrator(req.user);
 
-const detail = asyncHandler((req, res) => {
-  const tournament = access.getTournamentOrThrow(req.params.tournamentId);
-  access.requireTournamentInspect(tournament, req.user);
-  const data = referee.snapshot(req.params.id, req.params.tournamentId);
-  const detailData = getMatchDetail(req.params.id);
+const detail = asyncHandler(async (req, res) => {
+  const tournament = await access.getTournamentOrThrow(req.params.tournamentId);
+  await access.requireTournamentInspect(tournament, req.user);
+  const data = await referee.snapshot(req.params.id, req.params.tournamentId);
+  const detailData = await getMatchDetail(req.params.id);
   res.json({
     ...detailData,
     match: map.match(data.match),
@@ -22,8 +22,8 @@ const detail = asyncHandler((req, res) => {
 
 });
 
-const start = asyncHandler((req, res) => {
-  const data = referee.start({
+const start = asyncHandler(async (req, res) => {
+  const data = await referee.start({
     matchId: req.params.id,
     tournamentId: req.params.tournamentId,
     refereeId: req.user.id,
@@ -33,8 +33,8 @@ const start = asyncHandler((req, res) => {
   res.json({ match: map.match(data.match), events: data.events });
 });
 
-const continueFinished = asyncHandler((req, res) => {
-  const data = referee.continueFinished({
+const continueFinished = asyncHandler(async (req, res) => {
+  const data = await referee.continueFinished({
     matchId: req.params.id,
     tournamentId: req.params.tournamentId,
     refereeId: req.user.id,
@@ -45,8 +45,8 @@ const continueFinished = asyncHandler((req, res) => {
   res.json({ match: map.match(data.match), events: data.events });
 });
 
-const event = asyncHandler((req, res) => {
-  const data = referee.addEvent({
+const event = asyncHandler(async (req, res) => {
+  const data = await referee.addEvent({
     matchId: req.params.id,
     tournamentId: req.params.tournamentId,
     refereeId: req.user.id,
@@ -66,8 +66,8 @@ const event = asyncHandler((req, res) => {
   });
 });
 
-const updateEvent = asyncHandler((req, res) => {
-  const data = referee.updateEvent({
+const updateEvent = asyncHandler(async (req, res) => {
+  const data = await referee.updateEvent({
     matchId: req.params.id,
     tournamentId: req.params.tournamentId,
     eventId: req.params.eventId,
@@ -81,8 +81,8 @@ const updateEvent = asyncHandler((req, res) => {
   res.json({ match: map.match(data.match), events: data.events, impact: data.impact || null });
 });
 
-const deleteEvent = asyncHandler((req, res) => {
-  const data = referee.deleteEvent({
+const deleteEvent = asyncHandler(async (req, res) => {
+  const data = await referee.deleteEvent({
     matchId: req.params.id,
     tournamentId: req.params.tournamentId,
     eventId: req.params.eventId,
@@ -95,41 +95,41 @@ const deleteEvent = asyncHandler((req, res) => {
   res.json({ match: map.match(data.match), events: data.events, impact: data.impact || null });
 });
 
-const applyImpact = asyncHandler((req, res) => {
-  access.getTournamentOrThrow(req.params.tournamentId);
-  const match = db.prepare(
+const applyImpact = asyncHandler(async (req, res) => {
+  await access.getTournamentOrThrow(req.params.tournamentId);
+  const match = (await query(
     `SELECT m.stage_id, m.revision, s.sequence_order
      FROM matches m JOIN stages s ON s.id = m.stage_id
-     WHERE m.id = ? AND m.tournament_id = ?`
-  ).get(req.params.id, req.params.tournamentId);
+     WHERE m.id = $1 AND m.tournament_id = $2`,
+    [req.params.id, req.params.tournamentId])).rows[0];
   if (!match) throw httpError(404, 'Match not found');
   if (req.body?.revision != null && Number(req.body.revision) !== Number(match.revision)) {
     throw httpError(409, 'Match changed while the impact was awaiting confirmation. Refresh and retry.');
   }
   const stageIds = Array.isArray(req.body?.stageIds) ? req.body.stageIds.filter(Boolean) : [];
   if (!stageIds.length) throw httpError(400, 'Affected downstream stages are required');
-  const placeholders = stageIds.map(() => '?').join(', ');
-  const validNextStages = db.prepare(
+  const placeholders = stageIds.map((_, index) => `$${index + 3}`).join(', ');
+  const validNextStages = (await query(
     `SELECT id FROM stages
-     WHERE tournament_id = ? AND sequence_order = ? AND id IN (${placeholders})`
-  ).all(req.params.tournamentId, Number(match.sequence_order) + 1, ...stageIds);
+     WHERE tournament_id = $1 AND sequence_order = $2 AND id IN (${placeholders})`,
+    [req.params.tournamentId, Number(match.sequence_order) + 1, ...stageIds])).rows;
   if (validNextStages.length !== stageIds.length) {
     throw httpError(400, 'Only directly affected next stages can be reset');
   }
   const results = [];
   for (const stageId of stageIds) {
-    const stageState = db.prepare(
+    const stageState = (await query(
       `SELECT COUNT(*) AS total,
-              SUM(status NOT IN ('scheduled', 'postponed', 'cancelled')) AS started
-       FROM matches WHERE tournament_id = ? AND stage_id = ?`
-    ).get(req.params.tournamentId, stageId);
+              COUNT(*) FILTER (WHERE status NOT IN ('scheduled', 'postponed', 'cancelled')) AS started
+       FROM matches WHERE tournament_id = $1 AND stage_id = $2`,
+      [req.params.tournamentId, stageId])).rows[0];
     if (Number(stageState.total || 0) === 0) {
       results.push({ stageId, action: 'none' });
     } else if (Number(stageState.started || 0) > 0) {
       results.push({
         stageId,
         action: 'reset',
-        result: resetStage({
+        result: await resetStage({
           tournamentId: req.params.tournamentId,
           stageId: match.stage_id,
           scopeStageIds: [stageId],
@@ -139,15 +139,15 @@ const applyImpact = asyncHandler((req, res) => {
       results.push({
         stageId,
         action: 'redraw',
-        result: runDraw({ tournamentId: req.params.tournamentId, stageId }),
+        result: await runDraw({ tournamentId: req.params.tournamentId, stageId }),
       });
     }
   }
   res.json({ results });
 });
 
-const transition = asyncHandler((req, res) => {
-  const data = referee.transition({
+const transition = asyncHandler(async (req, res) => {
+  const data = await referee.transition({
     matchId: req.params.id,
     tournamentId: req.params.tournamentId,
     refereeId: req.user.id,
@@ -159,8 +159,8 @@ const transition = asyncHandler((req, res) => {
   res.json({ match: map.match(data.match), events: data.events });
 });
 
-const finishPhase = asyncHandler((req, res) => {
-  const data = referee.finishPhase({
+const finishPhase = asyncHandler(async (req, res) => {
+  const data = await referee.finishPhase({
     matchId: req.params.id,
     tournamentId: req.params.tournamentId,
     refereeId: req.user.id,
@@ -172,8 +172,8 @@ const finishPhase = asyncHandler((req, res) => {
   res.json({ match: map.match(data.match), events: data.events, advance: data.advance || null });
 });
 
-const abandon = asyncHandler((req, res) => {
-  const data = referee.abandon({
+const abandon = asyncHandler(async (req, res) => {
+  const data = await referee.abandon({
     matchId: req.params.id,
     tournamentId: req.params.tournamentId,
     refereeId: req.user.id,
@@ -184,12 +184,13 @@ const abandon = asyncHandler((req, res) => {
   res.json({ match: map.match(data.match), events: data.events });
 });
 
-const stream = asyncHandler((req, res) => {
-  const tournament = access.getTournamentOrThrow(req.params.tournamentId);
-  access.requireTournamentInspect(tournament, req.user);
-  const match = db.prepare(
-    'SELECT id FROM matches WHERE id = ? AND tournament_id = ?'
-  ).get(req.params.id, req.params.tournamentId);
+const stream = asyncHandler(async (req, res) => {
+  const tournament = await access.getTournamentOrThrow(req.params.tournamentId);
+  await access.requireTournamentInspect(tournament, req.user);
+  const match = (await query(
+    'SELECT id FROM matches WHERE id = $1 AND tournament_id = $2',
+    [req.params.id, req.params.tournamentId]
+  )).rows[0];
   if (!match) throw httpError(404, 'Match not found');
   res.set({
     'Content-Type': 'text/event-stream',
@@ -198,8 +199,8 @@ const stream = asyncHandler((req, res) => {
   });
   res.flushHeaders?.();
   let last = '';
-  const send = () => {
-    const data = referee.snapshot(req.params.id, req.params.tournamentId);
+  const send = async () => {
+    const data = await referee.snapshot(req.params.id, req.params.tournamentId);
     const payload = JSON.stringify({ match: map.match(data.match), events: data.events });
     if (payload !== last) {
       res.write(`event: match-update\ndata: ${payload}\n\n`);
@@ -208,8 +209,8 @@ const stream = asyncHandler((req, res) => {
       res.write(': heartbeat\n\n');
     }
   };
-  send();
-  const timer = setInterval(send, 1000);
+  await send();
+  const timer = setInterval(() => { send().catch(() => clearInterval(timer)); }, 1000);
   req.on('close', () => clearInterval(timer));
 });
 

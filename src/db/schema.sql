@@ -1,12 +1,10 @@
-PRAGMA foreign_keys = ON;
-
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
   name TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text)
 );
 
 CREATE TABLE IF NOT EXISTS tournaments (
@@ -23,14 +21,14 @@ CREATE TABLE IF NOT EXISTS tournaments (
   place TEXT,
   settings TEXT NOT NULL DEFAULT '{}',
   created_by TEXT NOT NULL REFERENCES users(id),
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text),
+  updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text)
 );
 
 CREATE TABLE IF NOT EXISTS tournament_role (
   tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  role TEXT NOT NULL CHECK (role IN ('referee', 'moderator')),
+  role TEXT NOT NULL CHECK (role IN ('referee', 'moderator', 'team_leader')),
   UNIQUE(tournament_id, user_id)
 );
 
@@ -74,7 +72,7 @@ CREATE TABLE IF NOT EXISTS teams (
   city TEXT,
   country TEXT,
   founded_year INTEGER,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text)
 );
 
 CREATE TABLE IF NOT EXISTS players (
@@ -87,7 +85,7 @@ CREATE TABLE IF NOT EXISTS players (
   position TEXT,
   preferred_foot TEXT,
   height_cm INTEGER,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text)
 );
 
 CREATE TABLE IF NOT EXISTS participant_teams (
@@ -108,6 +106,15 @@ CREATE TABLE IF NOT EXISTS participant_teams (
   goals_against INTEGER NOT NULL DEFAULT 0,
   points INTEGER NOT NULL DEFAULT 0,
   UNIQUE (tournament_id, team_id)
+);
+
+CREATE TABLE IF NOT EXISTS tournament_team_leaders (
+  tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  participant_team_id TEXT NOT NULL UNIQUE REFERENCES participant_teams(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text),
+  PRIMARY KEY (tournament_id, user_id),
+  UNIQUE (tournament_id, participant_team_id)
 );
 
 CREATE TABLE IF NOT EXISTS participant_players (
@@ -156,7 +163,7 @@ CREATE TABLE IF NOT EXISTS matches (
   revision INTEGER NOT NULL DEFAULT 0,
   started_at TEXT,
   finished_at TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text)
 );
 
 CREATE TABLE IF NOT EXISTS match_audit (
@@ -168,7 +175,7 @@ CREATE TABLE IF NOT EXISTS match_audit (
   reason TEXT,
   before_state TEXT NOT NULL DEFAULT '{}',
   after_state TEXT NOT NULL DEFAULT '{}',
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text)
 );
 CREATE INDEX IF NOT EXISTS idx_match_audit_match ON match_audit(match_id, created_at);
 
@@ -187,10 +194,11 @@ CREATE TABLE IF NOT EXISTS match_events (
   minute INTEGER,
   payload TEXT NOT NULL DEFAULT '{}',
   client_event_id TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text),
   UNIQUE (match_id, client_event_id)
 );
 CREATE INDEX IF NOT EXISTS idx_match_events_match ON match_events(match_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_match_events_goal ON match_events(goal_event_id);
 
 CREATE TABLE IF NOT EXISTS player_match_suspensions (
   id TEXT PRIMARY KEY,
@@ -204,7 +212,7 @@ CREATE TABLE IF NOT EXISTS player_match_suspensions (
     CHECK (status IN ('pending', 'excluded', 'included', 'consumed')),
   decided_by TEXT REFERENCES users(id),
   decided_at TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text),
   UNIQUE (participant_player_id, target_match_id, kind)
 );
 CREATE INDEX IF NOT EXISTS idx_player_match_suspensions_target
@@ -216,7 +224,7 @@ CREATE TABLE IF NOT EXISTS tournament_follows (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   status TEXT NOT NULL DEFAULT 'pending'
     CHECK (status IN ('pending', 'accepted', 'rejected')),
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text),
   UNIQUE (tournament_id, user_id)
 );
 
@@ -234,7 +242,7 @@ CREATE TABLE IF NOT EXISTS stage_promotions (
   participant_team_id TEXT NOT NULL REFERENCES participant_teams(id) ON DELETE CASCADE,
   via_rank BOOLEAN NOT NULL DEFAULT false,
   rank_position INTEGER,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text),
   UNIQUE (source_stage_id, participant_team_id)
 );
 
@@ -246,7 +254,7 @@ CREATE TABLE IF NOT EXISTS vote (
   status TEXT NOT NULL DEFAULT 'open'
     CHECK (status IN ('open', 'finished')),
   finished_at TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text)
 );
 
 CREATE TABLE IF NOT EXISTS vote_nominees (
@@ -254,14 +262,14 @@ CREATE TABLE IF NOT EXISTS vote_nominees (
   vote_id TEXT NOT NULL REFERENCES vote(id) ON DELETE CASCADE,
   user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
   votes INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (user_id, vote_id)
+  PRIMARY KEY (vote_id, nominee_id)
 );
 
 CREATE TABLE IF NOT EXISTS vote_ballots (
   vote_id TEXT NOT NULL REFERENCES vote(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   nominee_id TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text),
   PRIMARY KEY (vote_id, user_id)
 );
 

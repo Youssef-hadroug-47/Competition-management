@@ -1,4 +1,4 @@
-const { db, parseJson, now } = require('../db');
+const { query, parseJson, now } = require('../db');
 const { httpError } = require('../middleware/error');
 const map = require('./mappers');
 const { runDraw } = require('./drawService');
@@ -61,17 +61,19 @@ function randomPenalties() {
   return { home, away };
 }
 
-function getParticipant(participantTeamId) {
-  return db.prepare('SELECT * FROM participant_teams WHERE id = ?').get(participantTeamId);
+async function getParticipant(participantTeamId) {
+  const result = await query('SELECT * FROM participant_teams WHERE id = $1', [participantTeamId]);
+  return result.rows[0] || null;
 }
 
-function rosterForTeam(teamId) {
-  return db.prepare(
+async function rosterForTeam(teamId) {
+  const result = await query(
     `SELECT pp.id, pp.player_id
      FROM participant_players pp
-     WHERE pp.participant_team_id = ?
+     WHERE pp.participant_team_id = $1
        AND pp.status NOT IN ('ineligible', 'suspended')`
-  ).all(teamId);
+    , [teamId]);
+  return result.rows;
 }
 
 function randomRosterPlayer(roster, excludedId = null) {
@@ -89,41 +91,41 @@ function distributedMinute(phase, index, total) {
   return Math.min(end, start + bucket + Math.floor(Math.random() * Math.max(1, Math.ceil(span / Math.max(1, total)))));
 }
 
-function insertSimulatedEvent(match, {
+async function insertSimulatedEvent(match, {
   type, phase, teamId = null, playerId = null, assisterId = null,
   goalEventId = null, card = null, scored = null, minute = null, payload = {},
 }) {
   const eventId = id();
-  db.prepare(
+  await query(
     `INSERT INTO match_events
       (id, match_id, tournament_id, type, phase, goal_event_id, team_id,
        player_id, assister_id, card, scored, minute, payload, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+    [
     eventId, match.id, match.tournament_id, type, phase, goalEventId, teamId,
     playerId, assisterId, card, scored == null ? null : (scored ? 1 : 0),
     minute, JSON.stringify(payload), now()
-  );
+    ]);
   return eventId;
 }
 
-function applySimulatedEvents(match, home, away, homeGoals, awayGoals, phase = 'regulation') {
-  const homeRoster = rosterForTeam(home?.id);
-  const awayRoster = rosterForTeam(away?.id);
+async function applySimulatedEvents(match, home, away, homeGoals, awayGoals, phase = 'regulation') {
+  const homeRoster = await rosterForTeam(home?.id);
+  const awayRoster = await rosterForTeam(away?.id);
   let generated = 0;
 
-  const assignGoals = (roster, count, teamId) => {
+  const assignGoals = async (roster, count, teamId) => {
     for (let i = 0; i < count; i += 1) {
       const scorer = roster.length ? randomRosterPlayer(roster) : null;
       const assister = scorer && Math.random() < 0.75 ? randomRosterPlayer(roster, scorer.id) : null;
-      const goalId = insertSimulatedEvent(match, {
+      const goalId = await insertSimulatedEvent(match, {
         type: 'goal', phase, teamId, playerId: scorer?.id || null,
         minute: distributedMinute(phase, i, count),
         payload: { simulated: true },
       });
       generated += 1;
       if (assister) {
-        insertSimulatedEvent(match, {
+        await insertSimulatedEvent(match, {
           type: 'assist', phase, teamId, playerId: assister.id,
           goalEventId: goalId, minute: distributedMinute(phase, i, count),
           payload: { simulated: true },
@@ -133,11 +135,11 @@ function applySimulatedEvents(match, home, away, homeGoals, awayGoals, phase = '
     }
   };
 
-  const assignCards = (roster, teamId) => {
+  const assignCards = async (roster, teamId) => {
     if (!roster.length) return;
     const yellowCount = 1 + Math.floor(Math.random() * 3);
     for (let i = 0; i < yellowCount; i += 1) {
-      insertSimulatedEvent(match, {
+      await insertSimulatedEvent(match, {
         type: 'card', phase, teamId, playerId: randomRosterPlayer(roster).id,
         card: 'yellow', minute: distributedMinute(phase, i, yellowCount),
         payload: { simulated: true },
@@ -145,7 +147,7 @@ function applySimulatedEvents(match, home, away, homeGoals, awayGoals, phase = '
       generated += 1;
     }
     if (Math.random() < 0.08) {
-      insertSimulatedEvent(match, {
+      await insertSimulatedEvent(match, {
         type: 'card', phase, teamId, playerId: randomRosterPlayer(roster).id,
         card: 'red', minute: distributedMinute(phase, yellowCount, yellowCount + 1),
         payload: { simulated: true },
@@ -154,25 +156,25 @@ function applySimulatedEvents(match, home, away, homeGoals, awayGoals, phase = '
     }
   };
 
-  assignGoals(homeRoster, homeGoals, home.id);
-  assignGoals(awayRoster, awayGoals, away.id);
-  assignCards(homeRoster, home.id);
-  assignCards(awayRoster, away.id);
+  await assignGoals(homeRoster, homeGoals, home.id);
+  await assignGoals(awayRoster, awayGoals, away.id);
+  await assignCards(homeRoster, home.id);
+  await assignCards(awayRoster, away.id);
   return generated;
 }
 
-function applySimulatedShootout(match, home, away, homeTotal, awayTotal) {
+async function applySimulatedShootout(match, home, away, homeTotal, awayTotal) {
   const attempts = Math.max(5, homeTotal, awayTotal);
   let generated = 0;
   for (let index = 0; index < attempts; index += 1) {
     const homeScored = index < homeTotal || (index >= 5 && index < homeTotal);
     const awayScored = index < awayTotal || (index >= 5 && index < awayTotal);
-    insertSimulatedEvent(match, {
+    await insertSimulatedEvent(match, {
       type: 'shootout_attempt', phase: 'shootout',
       teamId: home.id, scored: homeScored,
       minute: index + 1, payload: { simulated: true, scored: homeScored },
     });
-    insertSimulatedEvent(match, {
+    await insertSimulatedEvent(match, {
       type: 'shootout_attempt', phase: 'shootout',
       teamId: away.id, scored: awayScored,
       minute: index + 1, payload: { simulated: true, scored: awayScored },
@@ -186,42 +188,44 @@ function applySimulatedShootout(match, home, away, homeTotal, awayTotal) {
 // same way a referee would, and — for knockout ties still level after
 // normal time — keeps resolving with extra time and then penalties
 // (respecting the stage's own settings) until the tie has a winner.
-function simulateMatch(matchId, { actorId } = {}) {
-  const row = db.prepare('SELECT * FROM matches WHERE id = ?').get(matchId);
+async function simulateMatch(matchId, { actorId } = {}) {
+  const rowResult = await query('SELECT * FROM matches WHERE id = $1', [matchId]);
+  const row = rowResult.rows[0];
   if (!row) throw httpError(404, 'Match not found');
   if (row.status === 'finished') {
     return { match: map.match(row), advance: null, skipped: true };
   }
 
-  const stage = db.prepare('SELECT * FROM stages WHERE id = ?').get(row.stage_id);
+  const stageResult = await query('SELECT * FROM stages WHERE id = $1', [row.stage_id]);
+  const stage = stageResult.rows[0];
   const settings = parseJson(stage?.settings, map.defaultStageSettings(stage?.type));
-  const home = getParticipant(row.home_participant_team_id);
-  const away = getParticipant(row.away_participant_team_id);
+  const home = await getParticipant(row.home_participant_team_id);
+  const away = await getParticipant(row.away_participant_team_id);
   const { homeScore, awayScore } = randomScoreline(home?.seed, away?.seed);
 
-  let generatedEvents = applySimulatedEvents(row, home, away, homeScore, awayScore);
-  let projected = getProjectedScore(row.id);
+  let generatedEvents = await applySimulatedEvents(row, home, away, homeScore, awayScore);
+  let projected = await getProjectedScore(row.id);
   let extraTime = null;
   let penalties = null;
 
   if (stage?.type === 'knockout' && projected.home === projected.away && settings.extraTime) {
     extraTime = randomScoreline(home?.seed, away?.seed);
-    generatedEvents += applySimulatedEvents(
+    generatedEvents += await applySimulatedEvents(
       row, home, away, Math.min(2, extraTime.homeScore), Math.min(2, extraTime.awayScore), 'extra_time'
     );
-    projected = getProjectedScore(row.id);
+    projected = await getProjectedScore(row.id);
   }
 
   if (stage?.type === 'knockout'
       && projected.home + projected.extraHome === projected.away + projected.extraAway
       && settings.penalties) {
     penalties = randomPenalties();
-    generatedEvents += applySimulatedShootout(row, home, away, penalties.home, penalties.away);
-    projected = getProjectedScore(row.id);
+    generatedEvents += await applySimulatedShootout(row, home, away, penalties.home, penalties.away);
+    projected = await getProjectedScore(row.id);
   }
 
-  rebuildTournamentProjections(row.tournament_id);
-  const result = finishMatchRecord({
+  await rebuildTournamentProjections(row.tournament_id);
+  const result = await finishMatchRecord({
     matchRow: row,
     homeScore: projected.home,
     awayScore: projected.away,
@@ -231,7 +235,7 @@ function simulateMatch(matchId, { actorId } = {}) {
     penaltiesAway: projected.penaltiesAway || null,
     refereeId: actorId,
   });
-  rebuildTournamentProjections(row.tournament_id);
+  await rebuildTournamentProjections(row.tournament_id);
   return {
     match: map.match(result.match),
     advance: result.advance,
@@ -241,37 +245,39 @@ function simulateMatch(matchId, { actorId } = {}) {
   };
 }
 
-function simulateMatchCollection(matchRows, { actorId, maxRounds = 40 } = {}) {
+async function simulateMatchCollection(matchRows, { actorId, maxRounds = 40 } = {}) {
   let matchesSimulated = 0;
   let lastAdvance = null;
   for (let round = 0; round < maxRounds; round += 1) {
-    const pending = matchRows()
+    const pending = (await matchRows())
       .filter((match) => match.status !== 'finished');
     if (!pending.length) break;
-    pending.forEach((match) => {
-      const result = simulateMatch(match.id, { actorId });
+    for (const match of pending) {
+      const result = await simulateMatch(match.id, { actorId });
       if (!result.skipped) matchesSimulated += 1;
       if (result.advance) lastAdvance = result.advance;
-    });
+    }
   }
   return { matchesSimulated, advance: lastAdvance };
 }
 
-function simulateGroup(groupId, { actorId } = {}) {
-  const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId);
+async function simulateGroup(groupId, { actorId } = {}) {
+  const groupResult = await query('SELECT * FROM groups WHERE id = $1', [groupId]);
+  const group = groupResult.rows[0];
   if (!group) throw httpError(404, 'Group not found');
-  const result = simulateMatchCollection(
-    () => db.prepare('SELECT * FROM matches WHERE group_id = ? ORDER BY matchday ASC, created_at ASC').all(group.id),
+  const result = await simulateMatchCollection(
+    async () => (await query('SELECT * FROM matches WHERE group_id = $1 ORDER BY matchday ASC, created_at ASC', [group.id])).rows,
     { actorId }
   );
   return { groupId: group.id, ...result };
 }
 
-function simulateRound(roundId, { actorId } = {}) {
-  const round = db.prepare('SELECT * FROM rounds WHERE id = ?').get(roundId);
+async function simulateRound(roundId, { actorId } = {}) {
+  const roundResult = await query('SELECT * FROM rounds WHERE id = $1', [roundId]);
+  const round = roundResult.rows[0];
   if (!round) throw httpError(404, 'Round not found');
-  const result = simulateMatchCollection(
-    () => db.prepare('SELECT * FROM matches WHERE group_id = ? ORDER BY matchday ASC, created_at ASC').all(round.id),
+  const result = await simulateMatchCollection(
+    async () => (await query('SELECT * FROM matches WHERE group_id = $1 ORDER BY matchday ASC, created_at ASC', [round.id])).rows,
     { actorId }
   );
   return { roundId: round.id, ...result };
@@ -283,19 +289,21 @@ function simulateRound(roundId, { actorId } = {}) {
 // simulateTournament respects that by simulating stages in order). For
 // knockout stages this naturally cascades round by round, since finishing a
 // round's last match auto-generates the next round's fixtures.
-function simulateStage(stageId, { actorId, maxRounds = 40 } = {}) {
-  const stage = db.prepare('SELECT * FROM stages WHERE id = ?').get(stageId);
+async function simulateStage(stageId, { actorId, maxRounds = 40 } = {}) {
+  const stageResult = await query('SELECT * FROM stages WHERE id = $1', [stageId]);
+  const stage = stageResult.rows[0];
   if (!stage) throw httpError(404, 'Stage not found');
 
-  const existing = db.prepare('SELECT COUNT(*) AS c FROM matches WHERE stage_id = ?').get(stage.id);
+  const existingResult = await query('SELECT COUNT(*) AS c FROM matches WHERE stage_id = $1', [stage.id]);
+  const existing = existingResult.rows[0];
   let drawResult = null;
   if (existing.c === 0) {
-    drawResult = runDraw({ tournamentId: stage.tournament_id, stageId: stage.id });
+    drawResult = await runDraw({ tournamentId: stage.tournament_id, stageId: stage.id });
   }
 
-  const result = simulateMatchCollection(
-    () => db.prepare(`SELECT * FROM matches WHERE stage_id = ? AND status != 'finished'
-      ORDER BY matchday ASC, created_at ASC`).all(stage.id),
+  const result = await simulateMatchCollection(
+    async () => (await query(`SELECT * FROM matches WHERE stage_id = $1 AND status != 'finished'
+      ORDER BY matchday ASC, created_at ASC`, [stage.id])).rows,
     { actorId, maxRounds }
   );
 
@@ -312,21 +320,22 @@ function simulateStage(stageId, { actorId, maxRounds = 40 } = {}) {
 // Simulates a tournament to completion: walks its stages in order, drawing
 // and simulating each in turn so later stages always have their promoted
 // teams ready by the time they're drawn.
-function simulateTournament(tournamentId, { actorId, maxStages = 20 } = {}) {
-  const tournament = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(tournamentId);
+async function simulateTournament(tournamentId, { actorId, maxStages = 20 } = {}) {
+  const tournamentResult = await query('SELECT * FROM tournaments WHERE id = $1', [tournamentId]);
+  const tournament = tournamentResult.rows[0];
   if (!tournament) throw httpError(404, 'Tournament not found');
 
-  const stages = db
-    .prepare('SELECT * FROM stages WHERE tournament_id = ? ORDER BY sequence_order ASC')
-    .all(tournamentId);
+  const stagesResult = await query('SELECT * FROM stages WHERE tournament_id = $1 ORDER BY sequence_order ASC', [tournamentId]);
+  const stages = stagesResult.rows;
   if (!stages.length) throw httpError(400, 'Create at least one stage before simulating');
 
   const stageResults = [];
   for (const stage of stages.slice(0, maxStages)) {
-    stageResults.push(simulateStage(stage.id, { actorId }));
+    stageResults.push(await simulateStage(stage.id, { actorId }));
   }
 
-  const updatedTournament = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(tournamentId);
+  const updatedTournamentResult = await query('SELECT * FROM tournaments WHERE id = $1', [tournamentId]);
+  const updatedTournament = updatedTournamentResult.rows[0];
   return {
     tournamentId,
     status: updatedTournament.status,

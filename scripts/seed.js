@@ -2,26 +2,37 @@ const bcrypt = require('bcryptjs');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
-const { db } = require('../src/db');
+const { initialize, pool, withTransaction } = require('../src/db');
 const { id } = require('../src/utils/ids');
 
-function upsertUser(email, name, role, password) {
-  const existing = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
-  if (existing) return existing;
+async function upsertUser(client, email, name, role, password) {
+  const existing = await client.query('SELECT * FROM users WHERE email = $1', [email]);
+  if (existing.rows[0]) return existing.rows[0];
   const userId = id();
-  db.prepare(
-    'INSERT INTO users (id, email, password_hash, name, role) VALUES (?, ?, ?, ?, ?)'
-  ).run(userId, email, bcrypt.hashSync(password, 10), name, role);
-  return db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  await client.query(
+    'INSERT INTO users (id, email, password_hash, name, role) VALUES ($1, $2, $3, $4, $5)',
+    [userId, email, await bcrypt.hash(password, 10), name, role]
+  );
+  const created = await client.query('SELECT * FROM users WHERE id = $1', [userId]);
+  return created.rows[0];
 }
 
-upsertUser('admin@tournament.local', 'Admin', 'admin', 'admin123');
-upsertUser('user@tournament.local', 'Fan', 'user', 'user123');
-upsertUser('referee@tournament.local', 'Referee', 'user', 'referee123');
+async function main() {
+  await initialize();
+  await withTransaction(async (client) => {
+    await upsertUser(client, 'admin@tournament.local', 'Admin', 'admin', 'admin123');
+    await upsertUser(client, 'user@tournament.local', 'Fan', 'user', 'user123');
+    await upsertUser(client, 'referee@tournament.local', 'Referee', 'user', 'referee123');
+  });
+  await pool.end();
+  console.log('Seed complete.');
+  console.log('Admin:   admin@tournament.local / admin123');
+  console.log('User:    user@tournament.local / user123');
+  console.log('Referee: referee@tournament.local / referee123');
+}
 
-
-
-console.log('Seed complete.');
-console.log('Admin:   admin@tournament.local / admin123');
-console.log('User:    user@tournament.local / user123');
-console.log('Referee: referee@tournament.local / referee123');
+main().catch(async (error) => {
+  console.error(error);
+  await pool.end();
+  process.exitCode = 1;
+});
