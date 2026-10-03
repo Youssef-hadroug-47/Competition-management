@@ -6,6 +6,7 @@ let initialization;
 
 module.exports = async function handler(req, res) {
   initialization ||= initialize();
+  console.log(initialization);
   await initialization;
   return app(req, res);
 };

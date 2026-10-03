@@ -20,6 +20,30 @@
       "dest": "/frontend/public/index.html"
     },
     {
+      "src": "/index",
+      "dest": "/frontend/public/index.html"
+    },
+    {
+      "src": "/login",
+      "dest": "/frontend/public/login.html"
+    },
+    {
+      "src": "/register",
+      "dest": "/frontend/public/register.html"
+    },
+    {
+      "src": "/create-tournament",
+      "dest": "/frontend/public/create-tournament.html"
+    },
+    {
+      "src": "/tournament",
+      "dest": "/frontend/public/tournament.html"
+    },
+    {
+      "src": "/referee",
+      "dest": "/frontend/public/referee.html"
+    },
+    {
       "src": "/(.*)",
       "dest": "/frontend/public/$1"
     }

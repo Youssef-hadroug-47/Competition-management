@@ -92,9 +92,9 @@ async function request(method, path, { body, query } = {}) {
 
   if (res.status === 401) {
     window.Session.end();
-    if (!location.pathname.endsWith('/login')) {
+    if (!location.pathname.endsWith('/login.html')) {
       const next = encodeURIComponent(location.pathname + location.search);
-      location.href = `/login?next=${next}`;
+      location.href = `/login.html?next=${next}`;
     }
     throw new ApiError('Your session has expired. Please sign in again.', 401);
   }
