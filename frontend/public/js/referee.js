@@ -13,7 +13,7 @@
   const isAdministrator = () => String(Session.getUser()?.role || '').toLowerCase() === 'admin';
 
   if (!tournamentId || !matchId) {
-    location.href = `/login?next=${encodeURIComponent(location.pathname + location.search)}`;
+    location.href = `/login.html?next=${encodeURIComponent(location.pathname + location.search)}`;
     return;
   }
 
@@ -56,7 +56,7 @@
       }
 
       const destination = previousUrl || new URL(
-        `/tournament?id=${encodeURIComponent(tournamentId)}`,
+        `/tournament.html?id=${encodeURIComponent(tournamentId)}`,
         location.origin
       );
       destination.searchParams.set('_refresh', Date.now().toString());

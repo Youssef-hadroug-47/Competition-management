@@ -5,7 +5,7 @@
 
   // If already signed in, there's nothing to do here.
   if (window.Session.isAuthenticated()) {
-    location.replace('/index');
+    location.replace('/index.html');
     return;
   }
 
@@ -16,8 +16,8 @@
   function safeNextPath() {
     const params = new URLSearchParams(location.search);
     const next = params.get('next');
-    if (!next) return '/index';
-    if (!next.startsWith('/') || next.startsWith('//')) return '/index';
+    if (!next) return '/index.html';
+    if (!next.startsWith('/') || next.startsWith('//')) return '/index.html';
     return next;
   }
 

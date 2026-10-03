@@ -276,7 +276,7 @@
       button.textContent = 'Deleting…';
       try {
         await Api.tournaments.remove(tournamentId);
-        location.href = '/index';
+        location.href = '/index.html';
       } catch (err) {
         button.disabled = false;
         button.textContent = 'Delete tournament';
@@ -1062,7 +1062,7 @@
     const administrator = isAdmin();
     actions.appendChild(el('a', {
       class: 'btn btn--primary',
-      href: `/referee?tournamentId=${encodeURIComponent(state.tournamentId)}&matchId=${encodeURIComponent(detail.match.id)}`,
+      href: `/referee.html?tournamentId=${encodeURIComponent(state.tournamentId)}&matchId=${encodeURIComponent(detail.match.id)}`,
       text: 'View match timeline',
     }));
     if (!administrator && ['scheduled', 'postponed'].includes(status)) {
@@ -1159,7 +1159,7 @@
     shell.appendChild(el('div', { class: 'match-menu__controls' }, [
       el('a', {
         class: 'btn btn--ghost',
-        href: `/referee?tournamentId=${encodeURIComponent(state.tournamentId)}&matchId=${encodeURIComponent(detail.match.id)}`,
+        href: `/referee.html?tournamentId=${encodeURIComponent(state.tournamentId)}&matchId=${encodeURIComponent(detail.match.id)}`,
         text: 'View match timeline',
       }),
     ]));

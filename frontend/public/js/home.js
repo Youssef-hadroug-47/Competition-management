@@ -32,7 +32,7 @@
       createBody.appendChild(
         el('div', {}, [
           el('p', { text: 'Sign in to set up your own tournament — brackets, groups, matches and all.' }),
-          el('a', { class: 'btn btn--primary', href: '/login', text: 'Log in to create one' }),
+          el('a', { class: 'btn btn--primary', href: '/login.html', text: 'Log in to create one' }),
         ])
       );
       return;
@@ -53,7 +53,7 @@
   // in one place. `id` comes back from our own API responses, but we
   // still encode it before it ever touches a URL, on general principle.
   function tournamentHref(id) {
-    return `/tournament?id=${encodeURIComponent(id)}`;
+    return `/tournament.html?id=${encodeURIComponent(id)}`;
   }
 
   function tournamentRow(t) {

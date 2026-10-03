@@ -1,6 +1,6 @@
 (function () {
   const { el, clear, showBanner, friendlyErrorMessage } = UI;
-  if (!Session.isAuthenticated()) { location.href = '/login?next=%2Fcreate-tournament'; return; }
+  if (!Session.isAuthenticated()) { location.href = '/login.html?next=%2Fcreate-tournament'; return; }
   Header.render(document.getElementById('topbar-actions'));
   const form = document.getElementById('create-wizard-form');
   const general = document.getElementById('phase-general');
@@ -500,7 +500,7 @@
           if (rules.length) await Api.groups.update(tournamentId, response.group.id, { promotion_rules: JSON.stringify(rules) });
         }
       }
-      location.href = `/tournament?id=${encodeURIComponent(tournamentId)}`;
+      location.href = `/tournament.html?id=${encodeURIComponent(tournamentId)}`;
     } catch (err) { showBanner(banner, friendlyErrorMessage(err)); next.disabled = false; next.textContent = 'Create tournament'; }
   }
   function advanceWizard() {

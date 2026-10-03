@@ -327,9 +327,9 @@ const autoAddParticipantPlayers = asyncHandler(async (req, res) => {
      JOIN participant_teams pt ON pt.id = pp.participant_team_id
      WHERE pt.tournament_id = $1`
   , [participantTeam.tournament_id]);
-  const currentTeamCount = await one(
+  const currentTeamCount = Number((await one(
     'SELECT COUNT(*) AS count FROM participant_players WHERE participant_team_id = $1'
-  , [participantTeam.id]).count;
+  , [participantTeam.id])).count);
   const existingIds = new Set(existing.map((row) => row.player_id));
   let players = await many('SELECT * FROM players ORDER BY name', []);
   let nextNumber = players.length + 1;
