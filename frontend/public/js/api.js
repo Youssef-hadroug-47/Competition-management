@@ -47,6 +47,9 @@ function enc(value) {
 async function request(method, path, { body, query } = {}) {
   const traceEnabled = window.localStorage.getItem('apiDebug') === 'true';
   const startedAt = performance.now();
+
+  console.log(apiBaseUrl())
+  console.log(path)
   const url = new URL(apiBaseUrl() + path);
   if (query) {
     for (const [k, v] of Object.entries(query)) {
