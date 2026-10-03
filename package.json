@@ -11,7 +11,7 @@
     "dev": "concurrently -k -p \"[{name}]\" -n \"API,UI\" -c \"cyan,magenta\" \"npm run start:api\" \"npm run start:ui\""
   },
   "engines": {
-    "node": ">=22.5"
+    "node": "22.x"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
