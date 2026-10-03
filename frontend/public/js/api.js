@@ -30,6 +30,14 @@ function apiBaseUrl() {
   return base;
 }
 
+function apiUrl(path) {
+  const base = apiBaseUrl();
+  const baseUrl = new URL(base, window.location.origin);
+  return new URL(
+    `${baseUrl.toString().replace(/\/$/, '')}/${String(path).replace(/^\//, '')}`,
+  );
+}
+
 
 /**
  * Encodes a value used as a path segment. Every ID we pass into a URL is
@@ -48,9 +56,7 @@ async function request(method, path, { body, query } = {}) {
   const traceEnabled = window.localStorage.getItem('apiDebug') === 'true';
   const startedAt = performance.now();
 
-  console.log(apiBaseUrl())
-  console.log(path)
-  const url = new URL(apiBaseUrl() + path);
+  const url = apiUrl(path);
   if (query) {
     for (const [k, v] of Object.entries(query)) {
       if (v !== undefined && v !== null) url.searchParams.set(k, v);
