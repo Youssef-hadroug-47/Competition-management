@@ -52,7 +52,7 @@ function enc(value) {
   return encodeURIComponent(String(value));
 }
 
-async function request(method, path, { body, query } = {}) {
+async function request(method, path, { body, query, auth = true } = {}) {
   const traceEnabled = window.localStorage.getItem('apiDebug') === 'true';
   const startedAt = performance.now();
 
@@ -65,7 +65,7 @@ async function request(method, path, { body, query } = {}) {
 
   const headers = { Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
-  const token = window.Session.getToken();
+  const token = auth ? window.Session.getToken() : null;
   if (token) headers.Authorization = `Bearer ${token}`;
 
   let res;
@@ -90,7 +90,7 @@ async function request(method, path, { body, query } = {}) {
     );
   }
 
-  if (res.status === 401) {
+  if (res.status === 401 && token) {
     window.Session.end();
     if (!location.pathname.endsWith('/login.html')) {
       const next = encodeURIComponent(location.pathname + location.search);
