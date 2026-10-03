@@ -12,10 +12,28 @@ cp .env.example .env
 npm start
 ```
 
-`npm start` runs `scripts/generate-config.js` (turns your `.env` into
-`public/js/config.js`, the only place the API's base URL is read from
-in the browser) and then serves `public/` on `APP_PORT` (default 5173)
-via `npx serve`.
+## Vercel static deployment
+
+This folder is the Vercel project root for the static frontend. In Vercel,
+set **Root Directory** to `frontend` and deploy without a serverless API.
+Set this Production environment variable:
+
+```text
+API_BASE_URL=https://api.example.com/api
+```
+
+Vercel runs the build command from `vercel.json`, which generates
+`public/js/config.js` from that variable. Do not commit a deployment-specific
+API URL into the generated file.
+
+The API must be deployed separately on a long-lived Node host because the
+referee timeline uses Server-Sent Events. Configure that API host to run
+`npm start` from the repository root and allow the Vercel domain through CORS.
+
+`npm start` runs `scripts/generate-config.js` (turns `API_BASE_URL` from your
+environment or `.env` into `public/js/config.js`, the only place the API's
+base URL is read from in the browser) and then serves `public/` on `APP_PORT`
+(default 5173) via `npx serve`.
 
 Run `npm run build:config` on its own any time you change `.env` while
 the static server is still running — refresh the browser afterwards.

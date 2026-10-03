@@ -66,19 +66,29 @@ docker run --rm -p 3000:3000 --env-file .env tournament-manager
 The container serves the static frontend and `/api` from port `3000`. Use a
 hosted PostgreSQL `DATABASE_URL`; the container does not include a database.
 
-### Vercel deployment
+### Production deployment with SSE
 
-Vercel does not run the `Dockerfile` as a long-lived container. The repository
-also includes `vercel.json`, which deploys `api/index.js` as a Node function
-and serves `frontend/public` as static files.
+The referee live timeline uses Server-Sent Events and requires a long-lived
+Node process. Do not deploy the API as a Vercel serverless function if SSE is
+required. Deploy the repository on a persistent Node host, VPS, or container
+host instead.
 
-From the repository root:
+Configure the service with:
 
-```bash
-npx vercel
+```text
+Start command: npm start
+Root directory: repository root
+Health check: /api/health
 ```
 
-Add these variables in the Vercel project settings for Production:
+For a container host, use the included Dockerfile:
+
+```bash
+docker build -t tournament-manager .
+docker run --rm -p 3000:3000 --env-file .env tournament-manager
+```
+
+Add these variables to the persistent API host:
 
 ```text
 DATABASE_URL
@@ -88,13 +98,36 @@ DATABASE_POOL_MAX=5
 JWT_SECRET
 ```
 
-The frontend uses the same-origin `/api` path on Vercel. Never add
-`DATABASE_URL` or `JWT_SECRET` to frontend environment variables.
+Use the Supabase Session Pooler connection string for `DATABASE_URL` when the
+host does not have reliable IPv6 connectivity. Never add `DATABASE_URL` or
+`JWT_SECRET` to frontend environment variables.
 
-The current SSE stream is designed for a long-lived Express process and may
-not be reliable through serverless function time limits. Use the Docker
-deployment or another long-lived Node host for referee live timelines unless
-the realtime path is migrated to a serverless-compatible service.
+Test the API host before deploying the frontend:
+
+```bash
+curl -i https://API_HOST.example.com/api/health
+curl -i https://API_HOST.example.com/api/tournaments
+```
+
+If Vercel is used only for static frontend files, set the API URL in
+`frontend/public/js/config.js` before deployment:
+
+```js
+window.__APP_CONFIG__ = Object.freeze({
+  API_BASE_URL: 'https://API_HOST.example.com/api',
+});
+```
+
+Then deploy the `frontend` directory as a separate Vercel project. The
+frontend's API origin must be allowed by the API's CORS policy. The current
+API allows cross-origin requests, but restrict that policy to the Vercel
+domain before production.
+
+Vercel can still be used for a frontend-only project, but its serverless API
+function is not suitable for the required SSE connection. If the frontend and
+API use the same persistent host, keep `API_BASE_URL` as `/api` and do not use
+the Vercel API function.
+
 
 ### Seed accounts
 
