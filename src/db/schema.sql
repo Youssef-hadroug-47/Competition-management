@@ -115,6 +115,8 @@ CREATE TABLE IF NOT EXISTS participant_teams (
   points INTEGER NOT NULL DEFAULT 0,
   UNIQUE (tournament_id, slug)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_participant_teams_id_tournament
+  ON participant_teams(id, tournament_id);
 
 CREATE TABLE IF NOT EXISTS tournament_team_leaders (
   tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
@@ -129,6 +131,7 @@ CREATE TABLE IF NOT EXISTS participant_players (
   id TEXT PRIMARY KEY,
   participant_team_id TEXT NOT NULL REFERENCES participant_teams(id) ON DELETE CASCADE,
   creator_id TEXT NOT NULL REFERENCES users(id),
+  joined_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   name TEXT NOT NULL,
   slug TEXT NOT NULL,
   nickname TEXT,
@@ -148,6 +151,37 @@ CREATE TABLE IF NOT EXISTS participant_players (
   created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text),
   UNIQUE (participant_team_id, slug)
 );
+
+ALTER TABLE participant_players
+ ADD COLUMN IF NOT EXISTS joined_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_participant_players_joined_user
+ ON participant_players(joined_by_user_id)
+ WHERE joined_by_user_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS participant_player_invite_codes (
+  id TEXT PRIMARY KEY,
+  code_hash TEXT NOT NULL UNIQUE,
+  participant_team_id TEXT NOT NULL,
+  tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+  creator_id TEXT NOT NULL REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  FOREIGN KEY (participant_team_id, tournament_id)
+    REFERENCES participant_teams(id, tournament_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_player_invite_codes_team_expiry
+  ON participant_player_invite_codes(participant_team_id, expires_at);
+
+CREATE TABLE IF NOT EXISTS participant_player_invite_attempts (
+  id BIGSERIAL PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  action TEXT NOT NULL CHECK (action IN ('issue', 'redeem')),
+  attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_player_invite_attempts_user_action_time
+  ON participant_player_invite_attempts(user_id, action, attempted_at);
+CREATE INDEX IF NOT EXISTS idx_player_invite_attempts_time
+  ON participant_player_invite_attempts(attempted_at);
 
 CREATE TABLE IF NOT EXISTS matches (
   id TEXT PRIMARY KEY,

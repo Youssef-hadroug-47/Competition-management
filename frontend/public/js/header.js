@@ -20,7 +20,7 @@
     window.Session.end();
     // Full navigation (not a soft re-render) so every in-memory bit of
     // state from the previous session is discarded, not just the token.
-    location.href = '/index.html';
+    location.href = '/index';
   }
 
   /**
@@ -34,8 +34,9 @@
     if (!user) {
       container.appendChild(
         el('div', { class: 'topbar__actions' }, [
-          el('a', { class: 'btn btn--ghost', href: '/login.html', text: 'Log in' }),
-          el('a', { class: 'btn btn--primary', href: '/register.html', text: 'Register' }),
+          el('a', { class: 'btn btn--ghost', href: '/join-team', text: 'Join with code' }),
+          el('a', { class: 'btn btn--ghost', href: '/login', text: 'Log in' }),
+          el('a', { class: 'btn btn--primary', href: '/register', text: 'Register' }),
         ])
       );
       return;
@@ -44,7 +45,8 @@
     const menu = el('div', { class: 'profile__menu', role: 'menu', hidden: true }, [
       el('div', { class: 'profile__menu-name', text: user.name || 'Account' }),
       el('div', { class: 'profile__menu-email', text: user.email || '' }),
-      el('button', { type: 'button', text: 'Home', onClick: () => location.href = '/index.html' }),
+      el('button', { type: 'button', text: 'Home', onclick: () => location.href = '/index' }),
+      el('button', { type: 'button', text: 'Join a team with a code', onclick: () => location.href = '/join-team' }),
       el('button', { type: 'button', text: 'Log out', onclick: handleLogout }),
     ]);
 

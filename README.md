@@ -297,7 +297,20 @@ Send the JWT returned by login in the Authorization header.
 - `PATCH|DELETE /api/participant-teams/:id`
 - `POST /api/tournaments/:id/participant-teams/:teamId/players` `{ name, position, shirtNumber, role, ...profileFields }`
 - `GET /api/tournaments/:id/participant-teams/:teamId/players`
+- `POST /api/tournaments/:id/participant-teams/:teamId/player-invite-codes` — moderator issues a one-time player invite code
+- `POST /api/player-invite-codes/validate` and `/api/player-invite-codes/redeem` — signed-in players validate and redeem codes
 - `PATCH|DELETE /api/participant-players/:id`
+
+Tournament creators choose `playerRegistrationMode` when setting up a
+tournament: `direct` (the backward-compatible default), `invite_code`, or
+`both`. Invite codes are 16-character hex tokens, hashed at rest, single-use,
+and expire after seven days. Each active code reserves a roster slot; invalid
+player details do not consume the code. Team leaders can manage codes only for
+their assigned team, and all redemptions require a signed-in account.
+The frontend exposes redemption on `frontend/public/join-team.html` so invitees
+can join without first opening a tournament page, including private tournaments.
+An account can redeem an invite code to join one team only; that membership is
+stored against the account and further code entry is hidden and rejected.
 
 Player rows are tournament-team-scoped in `participant_players`; there is no
 reusable global player catalog. Each unified player row records its creator.

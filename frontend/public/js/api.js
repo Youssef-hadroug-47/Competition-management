@@ -239,6 +239,25 @@ const Api = {
     remove: (tournamentId, id) => request('DELETE', `/tournaments/${enc(tournamentId)}/participant-players/${enc(id)}`),
   },
 
+  playerInviteCodes: {
+    list: (tournamentId, participantTeamId, teamLeader = false) =>
+      request('GET', teamLeader
+        ? `/tournaments/${enc(tournamentId)}/team-leader/teams/${enc(participantTeamId)}/player-invite-codes`
+        : `/tournaments/${enc(tournamentId)}/participant-teams/${enc(participantTeamId)}/player-invite-codes`),
+    issue: (tournamentId, participantTeamId, teamLeader = false) =>
+      request('POST', teamLeader
+        ? `/tournaments/${enc(tournamentId)}/team-leader/teams/${enc(participantTeamId)}/player-invite-codes`
+        : `/tournaments/${enc(tournamentId)}/participant-teams/${enc(participantTeamId)}/player-invite-codes`),
+    revoke: (tournamentId, participantTeamId, codeId, teamLeader = false) =>
+      request('DELETE', teamLeader
+        ? `/tournaments/${enc(tournamentId)}/team-leader/teams/${enc(participantTeamId)}/player-invite-codes/${enc(codeId)}`
+        : `/tournaments/${enc(tournamentId)}/participant-teams/${enc(participantTeamId)}/player-invite-codes/${enc(codeId)}`),
+    validate: (code) => request('POST', '/player-invite-codes/validate', { body: { code } }),
+    membership: () => request('GET', '/player-invite-codes/membership'),
+    redeem: (code, player) =>
+      request('POST', '/player-invite-codes/redeem', { body: { code, player } }),
+  },
+
   // ---- Draw / matches / simulation ----
   draw: {
     run: (tournamentId, stageId) => request('POST', `/tournaments/${enc(tournamentId)}/draw`, { body: { stageId } }),

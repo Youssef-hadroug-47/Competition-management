@@ -32,6 +32,9 @@ function tournament(row) {
     numberOfTeams: row.number_of_teams,
     place: row.place,
     maxPlayersPerTeam,
+    playerRegistrationMode: ['direct', 'invite_code', 'both'].includes(settings.playerRegistrationMode)
+      ? settings.playerRegistrationMode
+      : defaultTournamentSettings().playerRegistrationMode,
     suspensionSystem: settings.suspensionSystem,
     createdBy: row.created_by,
     createdAt: row.created_at,
@@ -42,6 +45,7 @@ function tournament(row) {
 function defaultTournamentSettings() {
   return {
     maxPlayersPerTeam: 11,
+    playerRegistrationMode: 'direct',
     suspensionSystem: {
       enabled: true,
       yellowCardsForSuspension: 2,

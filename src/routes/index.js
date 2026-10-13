@@ -64,9 +64,18 @@ router.delete('/tournaments/:tournamentId/participant-teams/:id', requireAuth, r
 
 router.get('/tournaments/:tournamentId/participant-teams/:id/players', authOptional, catalog.listParticipantPlayers);
 router.post('/tournaments/:tournamentId/participant-teams/:id/players', requireAuth, requireTournamentModerator, catalog.addParticipantPlayer);
+router.get('/tournaments/:tournamentId/participant-teams/:id/player-invite-codes', requireAuth, requireTournamentModerator, catalog.listPlayerInviteCodes);
+router.post('/tournaments/:tournamentId/participant-teams/:id/player-invite-codes', requireAuth, requireTournamentModerator, catalog.issuePlayerInviteCode);
+router.delete('/tournaments/:tournamentId/participant-teams/:id/player-invite-codes/:codeId', requireAuth, requireTournamentModerator, catalog.revokePlayerInviteCode);
 router.post('/tournaments/:tournamentId/team-leader/teams/:id/players', requireAuth, requireTournamentRole('team_leader'), catalog.addTeamLeaderPlayer);
+router.get('/tournaments/:tournamentId/team-leader/teams/:id/player-invite-codes', requireAuth, requireTournamentRole('team_leader'), catalog.listTeamLeaderPlayerInviteCodes);
+router.post('/tournaments/:tournamentId/team-leader/teams/:id/player-invite-codes', requireAuth, requireTournamentRole('team_leader'), catalog.issueTeamLeaderPlayerInviteCode);
+router.delete('/tournaments/:tournamentId/team-leader/teams/:id/player-invite-codes/:codeId', requireAuth, requireTournamentRole('team_leader'), catalog.revokeTeamLeaderPlayerInviteCode);
 router.delete('/tournaments/:tournamentId/team-leader/teams/:id/players/:playerId', requireAuth, requireTournamentRole('team_leader'), catalog.removeTeamLeaderPlayer);
 router.post('/tournaments/:tournamentId/participant-teams/:id/players/auto', requireAuth, requireRole('admin'), catalog.autoAddParticipantPlayers);
+router.post('/player-invite-codes/validate', requireAuth, catalog.validatePlayerInviteCode);
+router.get('/player-invite-codes/membership', requireAuth, catalog.getPlayerInviteMembership);
+router.post('/player-invite-codes/redeem', requireAuth, catalog.redeemPlayerInviteCode);
 router.patch('/tournaments/:tournamentId/participant-players/:id', requireAuth, requireTournamentRole('moderator'), catalog.updateParticipantPlayer);
 router.delete('/tournaments/:tournamentId/participant-players/:id', requireAuth, requireTournamentModerator, catalog.removeParticipantPlayer);
 

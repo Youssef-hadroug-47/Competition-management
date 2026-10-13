@@ -51,6 +51,15 @@
         value: '11',
         inputmode: 'numeric',
       }),
+      select('How may moderators and team leaders add players?', 'playerRegistrationMode', [
+        ['direct', 'Direct player form'],
+        ['invite_code', 'One-time invite codes'],
+        ['both', 'Direct form or invite codes'],
+      ]),
+      el('p', {
+        class: 'field__hint',
+        text: 'Administrators can still use roster auto-fill regardless of this setting.',
+      }),
     ]));
     const suspensionCard = el('div', { class: 'builder-card suspension-settings' }, [
       el('h3', { text: 'Suspension rules' }),
@@ -494,6 +503,7 @@
         numberOfTeams: Number(form.elements.tournamentNumberOfTeams.value),
         settings: {
           maxPlayersPerTeam: Number(form.elements.maxPlayersPerTeam.value),
+          playerRegistrationMode: form.elements.playerRegistrationMode.value,
           suspensionSystem: {
             enabled: form.elements.suspensionSystemEnabled.checked,
             yellowCardsForSuspension: Number(form.elements.yellowCardsForSuspension.value),

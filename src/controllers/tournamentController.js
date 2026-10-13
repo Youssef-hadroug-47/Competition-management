@@ -24,6 +24,17 @@ function validatedPlayerCap(value, fallback = map.defaultTournamentSettings().ma
   return cap;
 }
 
+function validatedPlayerRegistrationMode(
+  value,
+  fallback = map.defaultTournamentSettings().playerRegistrationMode,
+) {
+  const mode = value === undefined ? fallback : value;
+  if (!['direct', 'invite_code', 'both'].includes(mode)) {
+    throw httpError(400, 'Player registration mode must be direct, invite_code, or both.');
+  }
+  return mode;
+}
+
 function readSettings(value) {
   if (value == null) return {};
   if (typeof value !== 'object' || Array.isArray(value)) {
@@ -225,6 +236,7 @@ const create = asyncHandler(async (req, res) => {
   const visibility = body.visibility === 'private' ? 'private' : 'public';
   const settings = readSettings(body.settings);
   const maxPlayersPerTeam = validatedPlayerCap(settings.maxPlayersPerTeam);
+  const playerRegistrationMode = validatedPlayerRegistrationMode(settings.playerRegistrationMode);
   const tournamentId = id();
   await withTransaction(async (client) => {
     await client.query(
@@ -241,6 +253,7 @@ const create = asyncHandler(async (req, res) => {
           ...map.defaultTournamentSettings(),
           ...settings,
           maxPlayersPerTeam,
+          playerRegistrationMode,
           suspensionSystem: {
             ...map.defaultTournamentSettings().suspensionSystem,
             ...(settings.suspensionSystem || {}),
@@ -366,6 +379,10 @@ const update = asyncHandler(async (req, res) => {
       requestedSettings.maxPlayersPerTeam,
       currentSettings.maxPlayersPerTeam,
     ),
+    playerRegistrationMode: validatedPlayerRegistrationMode(
+      requestedSettings.playerRegistrationMode,
+      currentSettings.playerRegistrationMode,
+    ),
     suspensionSystem: {
       ...map.defaultTournamentSettings().suspensionSystem,
       ...(currentSettings.suspensionSystem || {}),
@@ -379,19 +396,60 @@ const update = asyncHandler(async (req, res) => {
     number_of_teams: body.numberOfTeams ?? row.number_of_teams,
     place: body.place === undefined ? row.place : body.place,
   };
-  await query(
-    'UPDATE tournaments SET name=$1,status=$2,visibility=$3,number_of_teams=$4,place=$5,settings=$6,updated_at=$7 WHERE id=$8',
-    [
-      next.name,
-      next.status,
-      next.visibility,
-      next.number_of_teams,
-      next.place,
-      JSON.stringify(settings),
-      now(),
-      row.id,
-    ],
-  );
+  await withTransaction(async (client) => {
+    const teams = await client.query(
+      'SELECT id FROM participant_teams WHERE tournament_id = $1 ORDER BY id FOR UPDATE',
+      [row.id],
+    );
+    await client.query(
+      'UPDATE tournaments SET name=$1,status=$2,visibility=$3,number_of_teams=$4,place=$5,settings=$6,updated_at=$7 WHERE id=$8',
+      [
+        next.name,
+        next.status,
+        next.visibility,
+        next.number_of_teams,
+        next.place,
+        JSON.stringify(settings),
+        now(),
+        row.id,
+      ],
+    );
+    for (const team of teams.rows) {
+      await client.query(
+        `DELETE FROM participant_player_invite_codes
+         WHERE participant_team_id = $1 AND expires_at <= NOW()`,
+        [team.id],
+      );
+      if (settings.playerRegistrationMode === 'direct') {
+        await client.query(
+          'DELETE FROM participant_player_invite_codes WHERE participant_team_id = $1',
+          [team.id],
+        );
+        continue;
+      }
+      const roster = await client.query(
+        'SELECT COUNT(*) AS count FROM participant_players WHERE participant_team_id = $1',
+        [team.id],
+      );
+      const activeCodes = await client.query(
+        `SELECT id FROM participant_player_invite_codes
+         WHERE participant_team_id = $1 AND expires_at > NOW()
+         ORDER BY created_at DESC`,
+        [team.id],
+      );
+      const remainingSlots = Math.max(
+        0,
+        validatedPlayerCap(settings.maxPlayersPerTeam) - Number(roster.rows[0].count),
+      );
+      const excessCodeIds = activeCodes.rows.slice(remainingSlots).map((code) => code.id);
+      if (excessCodeIds.length) {
+        await client.query(
+          'DELETE FROM participant_player_invite_codes WHERE id = ANY($1::text[])',
+          [excessCodeIds],
+        );
+      }
+    }
+  });
   const updated = (
     await query('SELECT * FROM tournaments WHERE id = $1', [row.id])
   ).rows[0];

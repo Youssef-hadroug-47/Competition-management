@@ -1,5 +1,6 @@
 const { query, withTransaction, parseJson } = require('../db');
 const { id, slugify } = require('../utils/ids');
+const crypto = require('crypto');
 const { asyncHandler } = require('../utils/asyncHandler');
 const { httpError } = require('../middleware/error');
 const map = require('../services/mappers');
@@ -21,30 +22,106 @@ function tournamentPlayerCap(settings) {
     : defaultCap;
 }
 
+function playerRegistrationMode(settings) {
+  const mode = settings?.playerRegistrationMode;
+  return ['direct', 'invite_code', 'both'].includes(mode) ? mode : 'direct';
+}
+
+function assertPlayerRegistrationStrategy(settings, strategy, isAdmin = false) {
+  if (strategy === 'direct' && isAdmin) return;
+  const mode = playerRegistrationMode(settings);
+  const allowed = strategy === 'direct'
+    ? mode === 'direct' || mode === 'both'
+    : mode === 'invite_code' || mode === 'both';
+  if (!allowed) {
+    throw httpError(403, strategy === 'direct'
+      ? 'Direct player entry is disabled for this tournament.'
+      : 'Invite-code registration is disabled for this tournament.');
+  }
+}
+
 async function lockTeamRoster(client, tournamentId, participantTeamId) {
   const teamResult = await client.query(
-    `SELECT pt.id, t.settings
+    `SELECT pt.id
      FROM participant_teams pt
-     JOIN tournaments t ON t.id = pt.tournament_id
      WHERE pt.id = $1 AND pt.tournament_id = $2
-     FOR UPDATE OF pt`,
+     FOR UPDATE`,
     [participantTeamId, tournamentId],
   );
   if (!teamResult.rows[0]) throw httpError(404, 'Participant team not found');
+  const tournamentResult = await client.query(
+    'SELECT settings FROM tournaments WHERE id = $1',
+    [tournamentId],
+  );
+  if (!tournamentResult.rows[0]) throw httpError(404, 'Tournament not found');
   const countResult = await client.query(
     'SELECT COUNT(*) AS count FROM participant_players WHERE participant_team_id = $1',
     [participantTeamId],
   );
+  const settings = parseJson(tournamentResult.rows[0].settings, {});
+  const inviteCountResult = await client.query(
+    `SELECT COUNT(*) AS count FROM participant_player_invite_codes
+     WHERE participant_team_id = $1 AND expires_at > NOW()`,
+    [participantTeamId],
+  );
   return {
     count: Number(countResult.rows[0].count),
-    maximum: tournamentPlayerCap(parseJson(teamResult.rows[0].settings, {})),
+    maximum: tournamentPlayerCap(settings),
+    reservedInviteCodes: Number(inviteCountResult.rows[0].count),
+    settings,
   };
 }
 
-function assertRosterCapacity(roster, requestedCount = roster.count + 1) {
-  if (roster.count > roster.maximum || requestedCount > roster.maximum) {
+function assertRosterCapacity(
+  roster,
+  requestedCount = roster.count + 1,
+  reservedInviteCodes = roster.reservedInviteCodes,
+) {
+  if (roster.count > roster.maximum || requestedCount + reservedInviteCodes > roster.maximum) {
     throw httpError(409, `This tournament allows at most ${roster.maximum} players per team.`);
   }
+}
+
+const inviteAttemptLimits = {
+  issue: { maximum: 100, window: '1 hour', message: 'Too many invite codes have been requested. Try again later.' },
+  redeem: { maximum: 10, window: '15 minutes', message: 'Too many invite-code attempts. Try again later.' },
+};
+
+async function recordInviteAttempt(userId, action) {
+  const limit = inviteAttemptLimits[action];
+  const allowed = await withTransaction(async (client) => {
+    await client.query(
+      'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [`player-invite:${userId}:${action}`],
+    );
+    await client.query(
+      `DELETE FROM participant_player_invite_attempts
+       WHERE attempted_at < NOW() - INTERVAL '24 hours'`,
+    );
+    await client.query(
+      'INSERT INTO participant_player_invite_attempts (user_id, action) VALUES ($1, $2)',
+      [userId, action],
+    );
+    const result = await client.query(
+      `SELECT COUNT(*) AS count FROM participant_player_invite_attempts
+       WHERE user_id = $1 AND action = $2
+         AND attempted_at > NOW() - INTERVAL '${limit.window}'`,
+      [userId, action],
+    );
+    return Number(result.rows[0].count) <= limit.maximum;
+  });
+  if (!allowed) throw httpError(429, limit.message);
+}
+
+function normalizedInviteCode(value) {
+  if (typeof value !== 'string' || !/^[a-f\d]{16}$/i.test(value)) {
+    throw httpError(400, 'Enter a valid 16-character invite code.');
+  }
+  return value.toLowerCase();
+}
+
+function inviteCodeHash(code) {
+  return crypto.createHash('sha256').update(code).digest('hex');
 }
 
 function validatePlayerFields(body) {
@@ -227,16 +304,13 @@ const addTeamLeaderPlayer = asyncHandler(async (req, res) => {
   const slug = body.slug || slugify(body.name);
   try {
     await withTransaction(async (client) => {
-      const ownedTeam = await client.query(
-        `SELECT pt.id, t.settings FROM tournament_team_leaders ttl
-         JOIN participant_teams pt ON pt.id = ttl.participant_team_id
-         JOIN tournaments t ON t.id = pt.tournament_id
-         WHERE ttl.tournament_id = $1 AND ttl.user_id = $2 AND pt.id = $3
-         FOR UPDATE OF pt`,
-        [req.params.tournamentId, req.user.id, req.params.id],
+      const roster = await lockTeamLeaderRoster(
+        client,
+        req.params.tournamentId,
+        req.params.id,
+        req.user.id,
       );
-      if (!ownedTeam.rows[0]) throw httpError(403, 'You can manage only your own tournament team');
-      const roster = await lockTeamRoster(client, req.params.tournamentId, req.params.id);
+      assertPlayerRegistrationStrategy(roster.settings, 'direct', req.user.role === 'admin');
       assertRosterCapacity(roster);
       await client.query(
         `INSERT INTO participant_players
@@ -340,6 +414,7 @@ const addParticipantPlayer = asyncHandler(async (req, res) => {
   try {
     await withTransaction(async (client) => {
       const roster = await lockTeamRoster(client, req.params.tournamentId, req.params.id);
+      assertPlayerRegistrationStrategy(roster.settings, 'direct', req.user.role === 'admin');
       assertRosterCapacity(roster);
       await client.query(
         `INSERT INTO participant_players
@@ -403,7 +478,259 @@ const listParticipantPlayers = asyncHandler(async (req, res) => {
   const tournament = await access.getTournamentOrThrow(pt.tournament_id);
   await access.requireTournamentInspect(tournament, req.user);
   const rows = await many(`${playerJoinSql} WHERE pp.participant_team_id = $1 ORDER BY pp.shirt_number`, [pt.id]);
-  res.json({ participantPlayers: rows.map(map.participantPlayer) });
+  const reserved = await one(
+    `SELECT COUNT(*) AS count FROM participant_player_invite_codes
+     WHERE participant_team_id = $1 AND expires_at > NOW()`,
+    [pt.id],
+  );
+  res.json({
+    participantPlayers: rows.map(map.participantPlayer),
+    reservedInviteCodes: Number(reserved.count),
+  });
+});
+
+async function lockTeamLeaderRoster(client, tournamentId, teamId, userId) {
+  const owned = await client.query(
+    `SELECT pt.id FROM tournament_team_leaders ttl
+     JOIN participant_teams pt ON pt.id = ttl.participant_team_id
+     WHERE ttl.tournament_id = $1 AND ttl.user_id = $2 AND pt.id = $3
+       AND pt.tournament_id = $1
+     FOR UPDATE OF pt`,
+    [tournamentId, userId, teamId],
+  );
+  if (!owned.rows[0]) throw httpError(403, 'You can manage only your own tournament team');
+  return lockTeamRoster(client, tournamentId, teamId);
+}
+
+async function getInviteRoster(req, client, isTeamLeader) {
+  if (isTeamLeader) {
+    return lockTeamLeaderRoster(
+      client,
+      req.params.tournamentId,
+      req.params.id,
+      req.user.id,
+    );
+  }
+  return lockTeamRoster(client, req.params.tournamentId, req.params.id);
+}
+
+const issuePlayerInviteCode = (isTeamLeader) => asyncHandler(async (req, res) => {
+  await recordInviteAttempt(req.user.id, 'issue');
+  const invite = await withTransaction(async (client) => {
+    const roster = await getInviteRoster(req, client, isTeamLeader);
+    assertPlayerRegistrationStrategy(roster.settings, 'invite_code');
+    assertRosterCapacity(roster, roster.count + 1);
+    await client.query(
+      `DELETE FROM participant_player_invite_codes
+       WHERE participant_team_id = $1 AND expires_at <= NOW()`,
+      [req.params.id],
+    );
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const code = crypto.randomBytes(8).toString('hex');
+      const result = await client.query(
+        `INSERT INTO participant_player_invite_codes
+          (id, code_hash, participant_team_id, tournament_id, creator_id, expires_at)
+         VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '7 days')
+         ON CONFLICT (code_hash) DO NOTHING
+         RETURNING id, created_at, expires_at`,
+        [id(), inviteCodeHash(code), req.params.id, req.params.tournamentId, req.user.id],
+      );
+      if (result.rows[0]) return { ...result.rows[0], code };
+    }
+    throw httpError(503, 'Unable to generate a unique invite code. Please retry.');
+  });
+  res.status(201).json({
+    inviteCode: {
+      id: invite.id,
+      code: invite.code,
+      createdAt: invite.created_at,
+      expiresAt: invite.expires_at,
+    },
+  });
+});
+
+const listPlayerInviteCodes = (isTeamLeader) => asyncHandler(async (req, res) => {
+  const codes = await withTransaction(async (client) => {
+    const roster = await getInviteRoster(req, client, isTeamLeader);
+    assertPlayerRegistrationStrategy(roster.settings, 'invite_code');
+    await client.query(
+      `DELETE FROM participant_player_invite_codes
+       WHERE participant_team_id = $1 AND expires_at <= NOW()`,
+      [req.params.id],
+    );
+    const result = await client.query(
+      `SELECT id, created_at, expires_at
+       FROM participant_player_invite_codes
+       WHERE participant_team_id = $1 AND tournament_id = $2 AND expires_at > NOW()
+       ORDER BY created_at`,
+      [req.params.id, req.params.tournamentId],
+    );
+    return result.rows;
+  });
+  res.json({
+    inviteCodes: codes.map((code) => ({
+      id: code.id,
+      createdAt: code.created_at,
+      expiresAt: code.expires_at,
+    })),
+  });
+});
+
+const revokePlayerInviteCode = (isTeamLeader) => asyncHandler(async (req, res) => {
+  const result = await withTransaction(async (client) => {
+    await getInviteRoster(req, client, isTeamLeader);
+    return client.query(
+      `DELETE FROM participant_player_invite_codes
+       WHERE id = $1 AND participant_team_id = $2 AND tournament_id = $3`,
+      [req.params.codeId, req.params.id, req.params.tournamentId],
+    );
+  });
+  if (!result.rowCount) throw httpError(404, 'Invite code not found.');
+  res.status(204).end();
+});
+
+const validatePlayerInviteCode = asyncHandler(async (req, res) => {
+  await recordInviteAttempt(req.user.id, 'redeem');
+  const code = normalizedInviteCode(req.body?.code);
+  const details = await withTransaction(async (client) => {
+    const candidate = await client.query(
+      `SELECT participant_team_id, tournament_id FROM participant_player_invite_codes
+       WHERE code_hash = $1 AND expires_at > NOW()`,
+      [inviteCodeHash(code)],
+    );
+    if (!candidate.rows[0]) {
+      throw httpError(400, 'This invite code is invalid, expired, revoked, or already used.');
+    }
+    const existingMembership = await client.query(
+      `SELECT 1 FROM participant_players WHERE joined_by_user_id = $1`,
+      [req.user.id],
+    );
+    if (existingMembership.rows[0]) {
+      throw httpError(409, 'You have already joined a team and cannot redeem another invite code.');
+    }
+    const roster = await lockTeamRoster(
+      client,
+      candidate.rows[0].tournament_id,
+      candidate.rows[0].participant_team_id,
+    );
+    const invite = await client.query(
+      `SELECT ic.id, pt.id AS team_id, pt.name AS team_name, t.name AS tournament_name
+       FROM participant_player_invite_codes ic
+       JOIN participant_teams pt ON pt.id = ic.participant_team_id
+       JOIN tournaments t ON t.id = ic.tournament_id
+       WHERE ic.code_hash = $1 AND ic.expires_at > NOW()
+       FOR UPDATE OF ic`,
+      [inviteCodeHash(code)],
+    );
+    if (!invite.rows[0]) {
+      throw httpError(400, 'This invite code is invalid, expired, revoked, or already used.');
+    }
+    assertPlayerRegistrationStrategy(roster.settings, 'invite_code');
+    assertRosterCapacity(roster, roster.count + 1, Math.max(0, roster.reservedInviteCodes - 1));
+    return {
+      participantTeamId: invite.rows[0].team_id,
+      teamName: invite.rows[0].team_name,
+      tournamentName: invite.rows[0].tournament_name,
+      maxPlayersPerTeam: roster.maximum,
+    };
+  });
+  res.json(details);
+});
+
+const getPlayerInviteMembership = asyncHandler(async (req, res) => {
+  const membership = await one(
+    `SELECT pp.id AS player_id, pp.name AS player_name,
+            pt.id AS participant_team_id, pt.name AS team_name,
+            t.id AS tournament_id, t.name AS tournament_name
+     FROM participant_players pp
+     JOIN participant_teams pt ON pt.id = pp.participant_team_id
+     JOIN tournaments t ON t.id = pt.tournament_id
+     WHERE pp.joined_by_user_id = $1`,
+    [req.user.id],
+  );
+  res.json({
+    membership: membership ? {
+      playerId: membership.player_id,
+      playerName: membership.player_name,
+      participantTeamId: membership.participant_team_id,
+      teamName: membership.team_name,
+      tournamentId: membership.tournament_id,
+      tournamentName: membership.tournament_name,
+    } : null,
+  });
+});
+
+const redeemPlayerInviteCode = asyncHandler(async (req, res) => {
+  await recordInviteAttempt(req.user.id, 'redeem');
+  const code = normalizedInviteCode(req.body?.code);
+  const body = req.body?.player;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw httpError(400, 'Player details are required.');
+  }
+  if (typeof body.name !== 'string' || !body.name.trim()) {
+    throw httpError(400, 'name is required');
+  }
+  validatePlayerFields(body);
+  const playerId = id();
+  try {
+    await withTransaction(async (client) => {
+      const candidate = await client.query(
+        `SELECT id, participant_team_id, tournament_id FROM participant_player_invite_codes
+         WHERE code_hash = $1 AND expires_at > NOW()`,
+        [inviteCodeHash(code)],
+      );
+      if (!candidate.rows[0]) {
+        throw httpError(400, 'This invite code is invalid, expired, revoked, or already used.');
+      }
+      const roster = await lockTeamRoster(
+        client,
+        candidate.rows[0].tournament_id,
+        candidate.rows[0].participant_team_id,
+      );
+      const invite = await client.query(
+        `SELECT id FROM participant_player_invite_codes
+         WHERE id = $1 AND code_hash = $2 AND expires_at > NOW()
+         FOR UPDATE`,
+        [candidate.rows[0].id, inviteCodeHash(code)],
+      );
+      if (!invite.rows[0]) {
+        throw httpError(400, 'This invite code is invalid, expired, revoked, or already used.');
+      }
+      const existingMembership = await client.query(
+        `SELECT 1 FROM participant_players WHERE joined_by_user_id = $1`,
+        [req.user.id],
+      );
+      if (existingMembership.rows[0]) {
+        throw httpError(409, 'You have already joined a team and cannot redeem another invite code.');
+      }
+      assertPlayerRegistrationStrategy(roster.settings, 'invite_code');
+      assertRosterCapacity(roster, roster.count + 1, Math.max(0, roster.reservedInviteCodes - 1));
+      await client.query(
+        `INSERT INTO participant_players
+          (id, participant_team_id, creator_id, joined_by_user_id, name, slug, nickname, date_of_birth,
+           nationality, position, preferred_foot, height_cm, shirt_number, role, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+        [playerId, candidate.rows[0].participant_team_id, req.user.id, req.user.id,
+          body.name.trim(), body.slug || slugify(body.name), optionalValue(body.nickname),
+          optionalValue(body.dateOfBirth), optionalValue(body.nationality),
+          optionalValue(body.position), optionalValue(body.preferredFoot),
+          optionalValue(body.heightCm), optionalValue(body.shirtNumber),
+          body.role || 'player', body.status || 'active'],
+      );
+      await client.query(
+        'DELETE FROM participant_player_invite_codes WHERE id = $1',
+        [candidate.rows[0].id],
+      );
+    });
+  } catch (error) {
+    if (error.code === '23505' && error.constraint === 'idx_participant_players_joined_user') {
+      throw httpError(409, 'You have already joined a team and cannot redeem another invite code.');
+    }
+    if (error.code === '23505') throw httpError(409, 'A player with this name or slug already exists on this team');
+    throw error;
+  }
+  const row = await one(`${playerJoinSql} WHERE pp.id = $1`, [playerId]);
+  res.status(201).json({ participantPlayer: map.participantPlayer(row) });
 });
 
 const updateParticipantPlayer = asyncHandler(async (req, res) => {
@@ -417,7 +744,7 @@ const updateParticipantPlayer = asyncHandler(async (req, res) => {
   try {
     await withTransaction(async (client) => {
       const roster = await lockTeamRoster(client, req.params.tournamentId, row.participant_team_id);
-      assertRosterCapacity(roster, roster.count);
+      assertRosterCapacity(roster, roster.count, 0);
       await client.query(
         `UPDATE participant_players
          SET name = $1, slug = $2, nickname = $3, date_of_birth = $4, nationality = $5,
@@ -479,6 +806,20 @@ module.exports = {
   addParticipantPlayer,
   autoAddParticipantPlayers,
   listParticipantPlayers,
+  issuePlayerInviteCode: issuePlayerInviteCode(false),
+  listPlayerInviteCodes: listPlayerInviteCodes(false),
+  revokePlayerInviteCode: revokePlayerInviteCode(false),
+  issueTeamLeaderPlayerInviteCode: issuePlayerInviteCode(true),
+  listTeamLeaderPlayerInviteCodes: listPlayerInviteCodes(true),
+  revokeTeamLeaderPlayerInviteCode: revokePlayerInviteCode(true),
+  validatePlayerInviteCode,
+  getPlayerInviteMembership,
+  redeemPlayerInviteCode,
   updateParticipantPlayer,
   removeParticipantPlayer,
+  playerRegistrationMode,
+  assertPlayerRegistrationStrategy,
+  assertRosterCapacity,
+  normalizedInviteCode,
+  inviteCodeHash,
 };

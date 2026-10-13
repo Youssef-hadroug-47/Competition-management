@@ -44,7 +44,8 @@ the static server is still running — refresh the browser afterwards.
 |---|---|
 | `public/index.html` | Home — left wireframe (logged out: logo, login/register buttons, exact-name tournament search, "création des tournois" CTA, public tournaments) or right wireframe (logged in: logo, profile circle with a menu, "My tournaments", "les tournois favoris", exact-name tournament search, "création des tournois", public tournaments) depending on session state. Private tournaments are excluded from the normal list, but exact-name search can reveal a locked private result. |
 | `public/tournament.html` | One tournament — info, role-protected draw control, match-information menus with moderator monitoring, voting, standings/bracket (stage-scoped toggle), top scorers/assisters, registered teams/rosters, private-tournament follower moderation, and creator-only staff management. Reachable from every tournament row/card on the site. |
-| `public/create-tournament.html` | Authenticated two-phase tournament builder. Collects general information (including the team-leader player cap), then uses a stage navigator with balanced team-count presets, league points, responsive group cards, direct advancement defaults for ranks 1–2, optional best-ranking places and knockout rounds before submitting through the existing API helpers. |
+| `public/join-team.html` | Redeem a player invite code without opening a tournament page first, including for private tournaments. Sign-in is required; a successful redemption creates the player and consumes the code. |
+| `public/create-tournament.html` | Authenticated two-phase tournament builder. Collects general information (including the roster cap and player-registration mode), then uses a stage navigator with balanced team-count presets, league points, responsive group cards, direct advancement defaults for ranks 1–2, optional best-ranking places and knockout rounds before submitting through the existing API helpers. |
 | `public/login.html` | Sign in with an email/password or Google OAuth. |
 | `public/register.html` | Create an email/password account or use Google OAuth; password signup waits for email verification and provides a resend action. |
 | `public/oauth-callback.html` | Completes Better Auth Google OAuth, exchanges the cookie session for the API JWT, then redirects to a validated same-origin destination. |
@@ -136,7 +137,15 @@ the URL shape.
   automatic filling action. Player identity, roster membership, and
   statistics are stored together per team in `participant_players`; players
   are not shared through a global catalog. Each player row records its
-  creator, and team leaders remain limited to 11 players.
+  creator. Tournament creators choose direct player forms, one-time invite
+  codes, or both for moderators and team leaders; admin auto-fill remains
+  available independently. Invite codes are 16 hex characters, hashed in the
+  database, single-use, expire after seven days, and reserve roster capacity.
+  Signed-in users can redeem them from the Teams & players view or the global
+  “Join with code” navigation link, without needing prior access to a private
+  tournament page. The tournament's configured maximum roster size applies to
+  every entry method. An account can use an invite code to join one team only;
+  after registration the app shows the team and removes the code-entry form.
 
 **Security specifics for this page** (in addition to the app-wide notes
 below): the `?id=` value is checked against a strict allow-list pattern

@@ -125,6 +125,7 @@ Lists all tournaments. Private tournaments are returned in a reduced/redacted sh
   "slug": "string (optional, auto-slugified from name)",
   "settings": {
     "maxPlayersPerTeam": "integer from 1 to 99 (default 11; applies to team leaders)",
+    "playerRegistrationMode": "'direct'|'invite_code'|'both' (default 'direct'; applies to moderators and team leaders)",
     "suspensionSystem": { "enabled": "boolean", "yellowCardsForSuspension": "integer" }
   },
   "stages": [ { "type": "'league'|'knockout'", "sequenceOrder": "number", "settings": {}, "groups": [ { "name", "sequenceOrder", "number_teams" } ] } ]
@@ -134,17 +135,20 @@ Lists all tournaments. Private tournaments are returned in a reduced/redacted sh
 ```json
 { "tournament": {...}, "stages": [...] }
 ```
-**Errors**: `400` missing name, player cap outside 1–99, or invalid stage type.
+**Errors**: `400` missing name, player cap outside 1–99, invalid player-registration mode, or invalid stage type.
 
 Tournament responses include `maxPlayersPerTeam` (default `11` for older
-tournaments). Team leaders receive `409` when trying to register a player
-after reaching this tournament-specific cap. Moderator/admin roster management
-is unchanged.
+tournaments) and `playerRegistrationMode`. `direct` allows moderators and team
+leaders to add players using the player form; `invite_code` requires a
+single-use code; `both` enables either method. Existing tournaments default to
+`direct`. Administrator auto-fill remains admin-only, and active invite codes
+reserve roster slots. Global administrators retain their existing direct
+management access in addition to auto-fill.
 
 ### `PATCH /tournaments/:tournamentId` — Auth + tournament role `moderator`
 **Body** *(all optional)*
 ```json
-{ "name", "status", "visibility", "numberOfTeams", "place", "settings": { "maxPlayersPerTeam": "integer from 1 to 99" } }
+{ "name", "status", "visibility", "numberOfTeams", "place", "settings": { "maxPlayersPerTeam": "integer from 1 to 99", "playerRegistrationMode": "'direct'|'invite_code'|'both'" } }
 ```
 **Response `200`**: `{ "tournament": {...} }`
 
@@ -309,7 +313,7 @@ Requires tournament to be inspectable (private tournaments enforce `requireTourn
 ## Participant Players (a tournament-scoped player on a team)
 
 ### `GET /tournaments/:tournamentId/participant-teams/:id/players` — Optional
-**Response `200`**: `{ "participantPlayers": [ { "id", "participantTeamId", "creatorId", "name", "slug", "nickname", "dateOfBirth", "nationality", "position", "preferredFoot", "heightCm", "shirtNumber", "role", "status", "yellowCards", "redCards", "goals", "assists", "player": {"id","name","slug","position"} } ] }`
+**Response `200`**: `{ "participantPlayers": [ { "id", "participantTeamId", "creatorId", "name", "slug", "nickname", "dateOfBirth", "nationality", "position", "preferredFoot", "heightCm", "shirtNumber", "role", "status", "yellowCards", "redCards", "goals", "assists", "player": {"id","name","slug","position"} } ], "reservedInviteCodes": 0 }`
 **Errors**: `403` private tournament, `404` participant team not found.
 
 ### `POST /tournaments/:tournamentId/participant-teams/:id/players` — Auth + tournament moderator/admin
@@ -322,14 +326,66 @@ from the authenticated user; slugs are unique within the team. The tournament's
 `maxPlayersPerTeam` cap is checked under a team-row lock before insertion.
 **Response `201`**: `{ "participantPlayer": {...} }`
 **Errors**: `400` missing name, `404` participant team not found, `409` duplicate team-local slug or configured roster limit reached.
+**Errors** also include `403` when direct player entry is disabled by tournament settings.
+
+### Player invite codes — Auth + tournament moderator/admin or owning team leader
+
+The moderator routes below manage any team in the tournament. Team leaders use
+the equivalent `/team-leader/teams/:id/player-invite-codes` paths and can only
+manage their own team. These operations are available only when
+`playerRegistrationMode` is `invite_code` or `both`.
+
+- `GET /tournaments/:tournamentId/participant-teams/:id/player-invite-codes`
+  returns active code metadata, never the code itself.
+- `POST /tournaments/:tournamentId/participant-teams/:id/player-invite-codes`
+  creates one code. Its response contains a 16-character hexadecimal code
+  exactly once; store/share it before leaving the response. Codes are hashed
+  at rest, expire after seven days, and reserve one roster slot.
+- `DELETE /tournaments/:tournamentId/participant-teams/:id/player-invite-codes/:codeId`
+  revokes an unused code and releases its reserved slot.
+- Team leaders use `GET|POST /tournaments/:tournamentId/team-leader/teams/:id/player-invite-codes`
+  and `DELETE /tournaments/:tournamentId/team-leader/teams/:id/player-invite-codes/:codeId`.
+
+Issuance is limited to 100 attempts per hour per account. Code validation and
+redemption are limited to 10 attempts per 15 minutes per account.
+**Errors**: `403` mode/ownership restriction, `404` team/code not found,
+`409` no unreserved roster capacity, `429` rate limit exceeded.
+
+### `GET /player-invite-codes/membership` — Authenticated user
+
+Returns the account's invite-code registration, or `{ "membership": null }`
+when it has not joined a team. An account can redeem a code for one team only;
+the database enforces this even if concurrent requests use different codes.
+
+### `POST /player-invite-codes/validate` — Authenticated user
+
+**Body**: `{ "code": "16 hex characters" }`
+
+Checks an unexpired unused code without consuming it, then returns its team and
+tournament names plus `participantTeamId`. The user can then complete the
+player form. It returns `409` if this account has already joined a team. This
+check does not replace redemption-time validation.
+
+### `POST /player-invite-codes/redeem` — Authenticated user
+
+**Body**: `{ "code": "16 hex characters", "player": { "name": "required", "...": "player fields" } }`
+
+Validates player fields and roster capacity and creates the player in the same
+transaction that deletes the code. Invalid submissions leave the code
+available; concurrent redemption can succeed only once. Successful redemption
+binds the account to that one team and hides further code entry in the UI.
+**Response `201`**: `{ "participantPlayer": {...} }`
+**Errors**: `400` invalid/expired/used code or invalid player data, `409`
+already joined a team, duplicate team-local slug, or full roster, `429` rate
+limit exceeded.
 
 ### `POST /tournaments/:tournamentId/participant-teams/:id/players/auto` — Auth + admin
 **Body**: `{ "count": "number (required)" }`
 
 Creates enough new team-scoped player rows to reach the requested roster size;
 the administrator is recorded as their creator. The requested total must not
-exceed the tournament's `maxPlayersPerTeam` cap, which is checked atomically
-before adding any players.
+exceed `maxPlayersPerTeam` after accounting for active invite-code reservations,
+which are checked atomically before adding any players.
 **Errors**: `400` invalid count, `404` participant team not found, `409` configured roster limit exceeded.
 
 ### `PATCH /tournaments/:tournamentId/participant-players/:id` — Auth + tournament role `moderator`

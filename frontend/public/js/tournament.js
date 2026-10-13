@@ -210,6 +210,7 @@
       navigationState,
       leaders: { promise: null, data: null },
       rosters: new Map(),
+      reservedInviteCodes: new Map(),
     };
     const savedStageId = navigationState.get('activeStageId');
     if (stages.some((stage) => stage.id === savedStageId)) state.activeStageId = savedStageId;
@@ -1705,7 +1706,13 @@
     if (state.rosters.has(participantTeamId)) return state.rosters.get(participantTeamId);
     const promise = Api.participantPlayers
       .list(state.tournamentId, participantTeamId)
-      .then((d) => d?.participantPlayers || [])
+      .then((d) => {
+        state.reservedInviteCodes.set(
+          participantTeamId,
+          Number(d?.reservedInviteCodes) || 0,
+        );
+        return d?.participantPlayers || [];
+      })
       .catch(() => []);
     state.rosters.set(participantTeamId, promise);
     return promise;
@@ -1722,6 +1729,136 @@
         ...extra,
       }),
     ]);
+  }
+
+  function renderPlayerInviteManager(state, participantTeam, players, inviteCodes) {
+    const teamLeader = state.viewerRole === 'team_leader' && !isAdmin();
+    const section = el('section', { class: 'builder-card player-invite-manager' }, [
+      el('div', { class: 'player-invite-manager__head' }, [
+        el('div', {}, [
+          el('h4', { text: 'Invite codes' }),
+          el('p', { class: 'field__hint', text: 'Share a code with one player. It expires after seven days and can be used once.' }),
+        ]),
+        el('span', { class: 'player-invite-manager__capacity' }),
+      ]),
+    ]);
+    const codesList = el('ul', { class: 'roster-list player-invite-manager__list' });
+    section.appendChild(codesList);
+    let codes = [...(inviteCodes || [])];
+    const cap = Number(state.tournament.maxPlayersPerTeam) || 11;
+    const capacityLabel = section.querySelector('.player-invite-manager__capacity');
+    const updateAvailable = () => {
+      const remaining = Math.max(0, cap - players.length - codes.length);
+      issueButton.disabled = remaining < 1;
+      issueButton.textContent = remaining < 1 ? 'No slots available' : 'Generate invite code';
+      capacityLabel.textContent = `${remaining} ${remaining === 1 ? 'slot' : 'slots'} available`;
+      capacityLabel.classList.toggle('player-invite-manager__capacity--full', remaining === 0);
+      state.reservedInviteCodes.set(participantTeam.id, codes.length);
+      const card = section.closest('.participant-team-card');
+      const directForm = card?.querySelector('.roster-player-form');
+      const directButton = directForm?.querySelector('button[type="submit"]');
+      if (directButton) directButton.disabled = remaining < 1;
+      const autoForm = card?.querySelector('.registration-form--auto');
+      if (autoForm) {
+        const countInput = autoForm.elements.count;
+        countInput.max = String(Math.max(0, cap - codes.length));
+        countInput.value = String(Math.max(0, cap - codes.length));
+        const autoButton = autoForm.querySelector('button[type="submit"]');
+        autoButton.disabled = remaining < 1;
+        autoButton.textContent = remaining < 1
+          ? 'Roster slots are reserved'
+          : 'Add missing players automatically';
+      }
+    };
+    const addCodeRow = (record) => {
+      const revokeButton = el('button', {
+        class: 'btn btn--danger btn--small',
+        type: 'button',
+        text: 'Revoke',
+      });
+      const row = el('li', { class: 'player-invite-manager__code' }, [
+        el('span', {
+          text: `Created ${new Date(record.createdAt).toLocaleString()} · expires ${new Date(record.expiresAt).toLocaleString()}`,
+        }),
+        revokeButton,
+      ]);
+      revokeButton.addEventListener('click', async () => {
+        revokeButton.disabled = true;
+        try {
+          await Api.playerInviteCodes.revoke(
+            state.tournamentId,
+            participantTeam.id,
+            record.id,
+            teamLeader,
+          );
+          codes = codes.filter((code) => code.id !== record.id);
+          row.remove();
+          updateAvailable();
+          state.rosters.delete(participantTeam.id);
+        } catch (error) {
+          showBanner(banner, friendlyErrorMessage(error));
+          revokeButton.disabled = false;
+        }
+      });
+      codesList.appendChild(row);
+    };
+    codes.forEach(addCodeRow);
+    const issueButton = el('button', {
+      class: 'btn btn--primary',
+      type: 'button',
+      text: 'Generate invite code',
+    });
+    const resultHost = el('div', { class: 'player-invite-manager__result', hidden: true });
+    section.append(
+      el('div', { class: 'player-invite-manager__actions' }, [issueButton]),
+      resultHost,
+    );
+    issueButton.addEventListener('click', async () => {
+      issueButton.disabled = true;
+      try {
+        const response = await Api.playerInviteCodes.issue(
+          state.tournamentId,
+          participantTeam.id,
+          teamLeader,
+        );
+        const record = response.inviteCode;
+        codes.push(record);
+        addCodeRow(record);
+        clear(resultHost);
+        const codeInput = el('input', {
+          type: 'text',
+          value: record.code,
+          readonly: 'readonly',
+          'aria-label': 'New one-time player invite code',
+        });
+        const copyButton = el('button', {
+          class: 'btn btn--secondary',
+          type: 'button',
+          text: 'Copy code',
+        });
+        copyButton.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(record.code);
+            copyButton.textContent = 'Copied';
+          } catch {
+            codeInput.focus();
+            codeInput.select();
+            showBanner(banner, 'Clipboard access was blocked. Select and copy the code manually.');
+          }
+        });
+        resultHost.append(
+          el('p', { class: 'field__hint', text: 'Copy this code now. For security, it cannot be viewed again.' }),
+          el('div', { class: 'player-invite-manager__token' }, [codeInput, copyButton]),
+        );
+        resultHost.hidden = false;
+        updateAvailable();
+      } catch (error) {
+        showBanner(banner, friendlyErrorMessage(error));
+        issueButton.disabled = false;
+      }
+    });
+    updateAvailable();
+    return section;
   }
 
   function adminCatalogForms(container, state) {
@@ -1779,7 +1916,7 @@
     }
   }
 
-  function rosterCard(container, state, participantTeam, players) {
+  function rosterCard(container, state, participantTeam, players, inviteCodes = []) {
     const teamName = participantTeam.team?.name || participantTeam.nickname || 'Unnamed team';
     const isOwnedByTeamLeader = state.viewerRole === 'team_leader'
       && state.teamLeader?.participantTeam?.id === participantTeam.id;
@@ -1787,6 +1924,11 @@
     const maxPlayersPerTeam = Number.isInteger(configuredPlayerCap) && configuredPlayerCap >= 1
       ? configuredPlayerCap
       : 11;
+    const registrationMode = state.tournament.playerRegistrationMode || 'direct';
+    const directEntryEnabled = isAdmin() || registrationMode === 'direct' || registrationMode === 'both';
+    const inviteCodeEnabled = registrationMode === 'invite_code' || registrationMode === 'both';
+    const reservedInviteCodes = Number(state.reservedInviteCodes.get(participantTeam.id)) || 0;
+    const availableSlots = Math.max(0, maxPlayersPerTeam - players.length - reservedInviteCodes);
     const canDelete = isAdmin() || state.viewerRole === 'moderator' || isOwnedByTeamLeader;
     const canManageRoster = isAdmin() || state.viewerRole === 'moderator' || isOwnedByTeamLeader;
     const children = [
@@ -1851,37 +1993,13 @@
       ]));
     });
     children.push(list);
-    if (canManageRoster && (isOwnedByTeamLeader ? players.length < maxPlayersPerTeam : true)) {
+    if (canManageRoster && inviteCodeEnabled) {
+      children.push(renderPlayerInviteManager(state, participantTeam, players, inviteCodes));
+    }
+    if (canManageRoster && directEntryEnabled && availableSlots > 0) {
       const playerForm = el('form', { class: 'management-form roster-player-form' }, [
         el('h4', { text: `Add player to ${teamName}` }),
-        el('div', { class: 'management-form-grid' }, [
-          catalogField('Name', 'text', 'name', 'Player name', true),
-          catalogField('Slug', 'text', 'slug', 'Auto-generated if empty'),
-          catalogField('Nickname', 'text', 'nickname', 'Optional'),
-          catalogField('Date of birth', 'date', 'dateOfBirth', ''),
-          catalogField('Nationality', 'text', 'nationality', 'Optional'),
-          catalogField('Position', 'text', 'position', 'Optional'),
-          catalogField('Preferred foot', 'text', 'preferredFoot', 'Left, right, both…'),
-          catalogField('Height (cm)', 'number', 'heightCm', 'Optional', false, { min: 1, max: 300 }),
-          catalogField('Shirt number', 'number', 'shirtNumber', 'Optional', false, { min: 1, max: 99 }),
-          el('div', { class: 'field' }, [
-            el('label', { text: 'Role' }),
-            el('select', { name: 'role' }, [
-              el('option', { value: 'player', text: 'Player' }),
-              el('option', { value: 'captain', text: 'Captain' }),
-              el('option', { value: 'goalkeeper', text: 'Goalkeeper' }),
-            ]),
-          ]),
-          el('div', { class: 'field' }, [
-            el('label', { text: 'Status' }),
-            el('select', { name: 'status' }, [
-              el('option', { value: 'active', text: 'Active' }),
-              el('option', { value: 'injured', text: 'Injured' }),
-              el('option', { value: 'suspended', text: 'Suspended' }),
-              el('option', { value: 'ineligible', text: 'Ineligible' }),
-            ]),
-          ]),
-        ]),
+        PlayerInvite.playerDetailsFields(),
         el('button', { class: 'btn btn--primary', type: 'submit', text: 'Add player' }),
       ]);
       playerForm.addEventListener('submit', async (event) => {
@@ -1900,8 +2018,10 @@
         } catch (err) { showBanner(banner, friendlyErrorMessage(err)); }
       });
       children.push(playerForm);
-    } else if (isOwnedByTeamLeader && players.length >= maxPlayersPerTeam) {
+    } else if (canManageRoster && players.length + reservedInviteCodes >= maxPlayersPerTeam) {
       children.push(el('p', { class: 'field__hint', text: `The ${maxPlayersPerTeam}-player limit for this tournament has been reached.` }));
+    } else if (canManageRoster && !directEntryEnabled && !inviteCodeEnabled) {
+      children.push(el('p', { class: 'field__hint', text: 'Player registration is disabled for tournament managers.' }));
     }
     if (isAdmin()) {
       const autoForm = el('form', { class: 'inline-form registration-form registration-form--auto' }, [
@@ -1909,11 +2029,16 @@
           type: 'number',
           name: 'count',
           min: 0,
-          max: maxPlayersPerTeam,
-          value: maxPlayersPerTeam,
+          max: Math.max(0, maxPlayersPerTeam - reservedInviteCodes),
+          value: Math.max(0, maxPlayersPerTeam - reservedInviteCodes),
           'aria-label': `Players for ${teamName}`,
         }),
-        el('button', { class: 'btn btn--secondary', type: 'submit', text: 'Add missing players automatically' }),
+        el('button', {
+          class: 'btn btn--secondary',
+          type: 'submit',
+          disabled: availableSlots === 0,
+          text: availableSlots === 0 ? 'Roster slots are reserved' : 'Add missing players automatically',
+        }),
       ]);
       autoForm.addEventListener('submit', async (event) => {
         event.preventDefault();
@@ -1952,6 +2077,16 @@
       ];
     }
     adminCatalogForms(container, state);
+    if (['invite_code', 'both'].includes(state.tournament.playerRegistrationMode)) {
+      PlayerInvite.renderRedeemer(container, {
+        onRedeemed: async (details) => {
+          UI.flashMessage(`Player added to ${details.teamName}.`);
+          state.rosters.delete(details.participantTeamId);
+          state.reservedInviteCodes.delete(details.participantTeamId);
+          await renderTeamsView(container, state);
+        },
+      });
+    }
     if (!state.participantTeams.length) {
       container.appendChild(el('p', { class: 'empty-state', text: 'No teams registered yet.' }));
       return;
@@ -1961,8 +2096,26 @@
     const rosters = await Promise.all(
       state.participantTeams.map(async (pt) => [pt, await loadRoster(state, pt.id)])
     );
-    const cards = rosters.map(([pt, players]) =>
-      rosterCard(container, state, pt, players)
+    const inviteModeEnabled = ['invite_code', 'both'].includes(state.tournament.playerRegistrationMode);
+    const cardsWithCodes = await Promise.all(rosters.map(async ([pt, players]) => {
+      const isOwnedByTeamLeader = state.viewerRole === 'team_leader'
+        && state.teamLeader?.participantTeam?.id === pt.id;
+      const canManageRoster = isAdmin() || state.viewerRole === 'moderator' || isOwnedByTeamLeader;
+      if (!inviteModeEnabled || !canManageRoster) return [pt, players, []];
+      try {
+        const result = await Api.playerInviteCodes.list(
+          state.tournamentId,
+          pt.id,
+          state.viewerRole === 'team_leader' && !isAdmin(),
+        );
+        return [pt, players, result.inviteCodes || []];
+      } catch (error) {
+        showBanner(banner, friendlyErrorMessage(error));
+        return [pt, players, []];
+      }
+    }));
+    const cards = cardsWithCodes.map(([pt, players, inviteCodes]) =>
+      rosterCard(container, state, pt, players, inviteCodes)
     );
     cards.forEach((card) => grid.appendChild(card));
     requestAnimationFrame(() => window.scrollTo({ top: scrollTop, behavior: 'auto' }));

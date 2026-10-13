@@ -507,6 +507,225 @@ footer.page__footer {
   margin: 0 0 12px;
 }
 
+.player-invite-manager,
+.player-invite-redeemer {
+  margin: 14px 0;
+}
+
+.player-invite-manager {
+  padding: 16px;
+  border-color: rgba(31, 122, 82, .24);
+  background: linear-gradient(145deg, rgba(31, 122, 82, .06), var(--bg) 58%);
+}
+
+.player-invite-manager__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.player-invite-manager__head h4 {
+  margin: 0 0 4px;
+  color: var(--text);
+}
+
+.player-invite-manager__head .field__hint {
+  margin: 0;
+}
+
+.player-invite-manager__capacity {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: rgba(31, 122, 82, .11);
+  color: var(--accent-dark);
+  font-size: .76rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.player-invite-manager__capacity--full {
+  background: rgba(166, 63, 49, .1);
+  color: var(--danger, #a63f31);
+}
+
+.player-invite-manager__list {
+  margin: 8px 0 12px;
+}
+
+.player-invite-manager__code {
+  align-items: center;
+  font-size: .82rem;
+}
+
+.player-invite-manager__actions {
+  display: flex;
+  justify-content: flex-start;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.player-invite-manager__result {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.player-invite-manager__result .field__hint {
+  margin: 0 0 8px;
+}
+
+.player-invite-manager__token {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.player-invite-manager__token input {
+  min-width: 0;
+  flex: 1;
+  font-family: monospace;
+  font-size: 1.1rem;
+  letter-spacing: 0.08em;
+  text-align: center;
+}
+
+.player-invite-redeemer {
+  width: min(100%, 680px);
+  overflow: hidden;
+  padding: 0;
+  border-color: rgba(31, 122, 82, .24);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.player-invite-redeemer__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 22px;
+  background: linear-gradient(125deg, rgba(31, 122, 82, .12), rgba(220, 163, 57, .1));
+}
+
+.player-invite-redeemer__head h2 {
+  margin: 0 0 5px;
+  font-size: 1.55rem;
+}
+
+.player-invite-redeemer__head .field__hint {
+  margin: 0;
+}
+
+.player-invite-redeemer__mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 1.35rem;
+  font-weight: 700;
+}
+
+.player-invite-redeemer__body {
+  display: grid;
+  gap: 14px;
+  padding: 22px;
+}
+
+.player-invite-redeemer__notice,
+.player-invite-redeemer__loading {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.player-invite-redeemer__membership,
+.player-invite-redeemer__team {
+  display: grid;
+  gap: 3px;
+  padding: 12px 14px;
+  border-left: 3px solid var(--accent);
+  border-radius: 4px 8px 8px 4px;
+  background: var(--bg);
+}
+
+.player-invite-redeemer__membership strong,
+.player-invite-redeemer__team strong {
+  color: var(--text);
+}
+
+.player-invite-code-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px 12px;
+}
+
+.player-invite-code-form .field {
+  grid-column: 1;
+  margin-bottom: 0;
+}
+
+.player-invite-code-form input[name="code"] {
+  font-family: monospace;
+  font-size: 1rem;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.player-invite-code-form .field__hint {
+  grid-column: 1;
+  margin: -6px 0 0;
+}
+
+.player-invite-code-form .btn {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: end;
+}
+
+.player-invite-redeemer__form .roster-player-form {
+  margin-top: 0;
+}
+
+.player-invite-redeemer__form .roster-player-form h3 {
+  margin: 2px 0 10px;
+}
+
+.player-invite-redeemer__form .roster-player-form > .btn {
+  margin: 8px 8px 0 0;
+}
+
+.player-invite-redeemer__team {
+  margin-bottom: 14px;
+}
+
+@media (max-width: 640px) {
+  .player-invite-manager__head { flex-direction: column; }
+  .player-invite-manager__capacity { align-self: flex-start; }
+  .player-invite-manager__actions .btn { width: 100%; }
+  .player-invite-manager__token { flex-direction: column; }
+  .player-invite-manager__token .btn { width: 100%; }
+  .player-invite-redeemer__head,
+  .player-invite-redeemer__body { padding: 17px; }
+  .player-invite-redeemer__head { gap: 10px; }
+  .player-invite-redeemer__head h2 { font-size: 1.3rem; }
+  .player-invite-code-form { grid-template-columns: 1fr; }
+  .player-invite-code-form .field,
+  .player-invite-code-form .field__hint,
+  .player-invite-code-form .btn { grid-column: 1; grid-row: auto; }
+  .player-invite-code-form .btn { width: 100%; }
+}
+
+.player-invite-redeemer__form {
+  margin-top: 0;
+}
+
 .roster-list {
   list-style: none;
   padding: 0;
@@ -558,6 +777,236 @@ footer.page__footer {
   justify-content: center;
   flex: 1;
   padding: 32px 24px;
+}
+
+.join-team-shell {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  justify-content: center;
+  max-width: 1200px;
+  min-height: 650px;
+  padding: 54px 32px 64px;
+}
+
+.join-team-shell::before {
+  position: absolute;
+  z-index: -1;
+  top: 5%;
+  right: 0;
+  bottom: 6%;
+  left: 0;
+  border: 1px solid rgba(31, 122, 82, .08);
+  border-radius: 28px;
+  background:
+    radial-gradient(ellipse at 13% 20%, rgba(232, 163, 61, .10), transparent 31%),
+    radial-gradient(ellipse at 78% 78%, rgba(31, 122, 82, .08), transparent 36%),
+    linear-gradient(135deg, rgba(255, 255, 255, .52), rgba(246, 247, 243, .2));
+  content: '';
+}
+
+.join-team-shell > .banner {
+  width: 100%;
+  max-width: 1040px;
+  align-self: flex-start;
+  grid-column: 1 / -1;
+}
+
+.join-team-layout {
+  display: grid;
+  width: 100%;
+  max-width: 1040px;
+  grid-template-columns: minmax(245px, .82fr) minmax(0, 1.4fr);
+  align-items: center;
+  gap: clamp(28px, 5vw, 68px);
+}
+
+.join-team-intro {
+  position: relative;
+  padding: 20px 0 20px 10px;
+}
+
+.join-team-intro::before {
+  position: absolute;
+  z-index: -1;
+  top: -32px;
+  left: -24px;
+  width: 190px;
+  height: 190px;
+  border: 1px solid rgba(31, 122, 82, .12);
+  border-radius: 50%;
+  box-shadow: 0 0 0 22px rgba(31, 122, 82, .025), 0 0 0 46px rgba(31, 122, 82, .02);
+  content: '';
+}
+
+.join-team-intro .eyebrow {
+  margin-bottom: 12px;
+}
+
+.join-team-intro h1 {
+  margin: 0;
+  color: var(--accent-dark);
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: clamp(2.8rem, 5vw, 4.2rem);
+  font-weight: 700;
+  letter-spacing: -.025em;
+  line-height: .94;
+}
+
+.join-team-intro h1 span {
+  color: var(--text);
+}
+
+.join-team-intro__copy {
+  max-width: 350px;
+  margin: 18px 0 26px;
+  color: var(--text-muted);
+  font-size: .98rem;
+  line-height: 1.65;
+}
+
+.join-team-steps {
+  display: grid;
+  gap: 17px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.join-team-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.join-team-steps li > span {
+  display: grid;
+  width: 31px;
+  height: 31px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(31, 122, 82, .2);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .7);
+  color: var(--accent-dark);
+  font-size: .68rem;
+  font-weight: 700;
+}
+
+.join-team-steps li div {
+  display: grid;
+  gap: 2px;
+  padding-top: 1px;
+}
+
+.join-team-steps strong {
+  color: var(--text);
+  font-size: .88rem;
+}
+
+.join-team-steps small {
+  color: var(--text-muted);
+  font-size: .76rem;
+  line-height: 1.45;
+}
+
+.join-team-intro__note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 30px;
+  color: var(--accent-dark);
+  font-size: .78rem;
+  font-weight: 600;
+}
+
+.join-team-intro__note span {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(31, 122, 82, .12);
+  font-size: .7rem;
+}
+
+.join-team-page {
+  width: 100%;
+}
+
+.join-team-page .player-invite-redeemer {
+  width: 100%;
+  max-width: 680px;
+  margin: 0 auto;
+}
+
+.join-team-shell + .page__footer {
+  padding-top: 0;
+}
+
+@media (max-width: 760px) {
+  .join-team-shell {
+    min-height: auto;
+    padding: 32px 20px 44px;
+  }
+
+  .join-team-shell::before {
+    top: 10px;
+    bottom: 14px;
+    border-radius: 18px;
+  }
+
+  .join-team-layout {
+    max-width: 560px;
+    grid-template-columns: 1fr;
+    gap: 22px;
+  }
+
+  .join-team-intro {
+    padding: 6px 4px 0;
+  }
+
+  .join-team-intro::before {
+    top: -20px;
+    left: auto;
+    right: 18px;
+    width: 112px;
+    height: 112px;
+  }
+
+  .join-team-intro h1 {
+    font-size: clamp(2.55rem, 11vw, 3.6rem);
+  }
+
+  .join-team-intro__copy {
+    max-width: 460px;
+    margin: 12px 0 16px;
+    font-size: .9rem;
+  }
+
+  .join-team-steps {
+    display: none;
+  }
+
+  .join-team-intro__note {
+    margin-top: 14px;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .join-team-intro,
+  .join-team-page .player-invite-redeemer {
+    animation: join-team-enter 480ms cubic-bezier(.2, .7, .2, 1) both;
+  }
+
+  .join-team-page .player-invite-redeemer {
+    animation-delay: 90ms;
+  }
+
+  @keyframes join-team-enter {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
 }
 
 .auth-card {

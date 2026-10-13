@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="referrer" content="no-referrer" />
+<title>Join a team — Tournly</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src https://fonts.gstatic.com; script-src 'self'; connect-src 'self' http://localhost:* https:; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Work+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+<div class="page">
+  <header class="topbar">
+    <a class="logo" href="/index.html"><span class="logo__mark" aria-hidden="true"></span>Tournly</a>
+    <div class="topbar__actions" id="topbar-actions"></div>
+  </header>
+  <main class="join-team-shell">
+    <div id="banner" class="banner" hidden role="alert"></div>
+    <div class="join-team-layout">
+      <section class="join-team-intro" aria-labelledby="join-team-title">
+        <p class="eyebrow">Your place on the team</p>
+        <h1 id="join-team-title">One code.<br><span>One new beginning.</span></h1>
+        <p class="join-team-intro__copy">Use the invitation from your team manager to register as a player and get ready for the tournament.</p>
+        <ol class="join-team-steps">
+          <li><span>01</span><div><strong>Enter your code</strong><small>We’ll confirm the team before you continue.</small></div></li>
+          <li><span>02</span><div><strong>Add your details</strong><small>Create your player profile for this roster.</small></div></li>
+          <li><span>03</span><div><strong>You’re in</strong><small>Your account can join one team using an invite.</small></div></li>
+        </ol>
+        <div class="join-team-intro__note"><span aria-hidden="true">✓</span> Secure, single-use team invitations</div>
+      </section>
+      <div id="join-team-content" class="join-team-page"></div>
+    </div>
+  </main>
+  <footer class="page__footer">Tournly — a small tournament organizer.</footer>
+</div>
+<script src="/js/config.js"></script>
+<script src="/js/session.js"></script>
+<script src="/js/ui.js"></script>
+<script src="/js/api.js"></script>
+<script src="/js/header.js"></script>
+<script src="/js/player-invite.js"></script>
+<script src="/js/join-team.js"></script>
+</body>
+</html>
