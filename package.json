@@ -6,13 +6,15 @@
   "scripts": {
     "start": "node src/server.js",
     "seed": "node scripts/seed.js",
-    "start:api": "npm start"
+    "start:api": "npm start",
+    "test:oauth": "node --test tests/oauth-link.test.js"
   },
   "engines": {
     "node": "22.x"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
+    "better-auth": "^1.7.7",
     "concurrently": "^10.0.5",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",

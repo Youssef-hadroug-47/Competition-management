@@ -7,7 +7,7 @@
 <!-- Icon inspired by https://www.flaticon.com/free-icons/soccer -->
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <meta http-equiv="Content-Security-Policy"
-  content="default-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src https://fonts.gstatic.com; script-src 'self'; connect-src 'self' http://localhost:* https:; img-src 'self' data:; object-src 'none'; base-uri 'self'; " />
+  content="default-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src https://fonts.gstatic.com; script-src 'self'; connect-src 'self' http://localhost:* https:; form-action 'self' http://localhost:* https:; img-src 'self' data:; object-src 'none'; base-uri 'self'; " />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Work+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -38,6 +38,9 @@
         <button type="submit" class="btn btn--primary" id="submit-btn" style="width:100%;">Sign in</button>
       </form>
 
+      <div class="auth-divider"><span>or</span></div>
+      <button type="button" class="btn btn--secondary google-sign-in" data-google-sign-in hidden>Continue with Google</button>
+
       <form id="resend-form" hidden>
         <div class="field">
           <label for="resend-email">Need a verification email?</label>
@@ -57,6 +60,7 @@
 <script src="/js/session.js"></script>
 <script src="/js/ui.js"></script>
 <script src="/js/api.js"></script>
+<script src="/js/google-auth.js"></script>
 <script src="/js/login.js"></script>
 </body>
 </html>

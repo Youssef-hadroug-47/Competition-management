@@ -44,9 +44,10 @@ the static server is still running — refresh the browser afterwards.
 |---|---|
 | `public/index.html` | Home — left wireframe (logged out: logo, login/register buttons, exact-name tournament search, "création des tournois" CTA, public tournaments) or right wireframe (logged in: logo, profile circle with a menu, "My tournaments", "les tournois favoris", exact-name tournament search, "création des tournois", public tournaments) depending on session state. Private tournaments are excluded from the normal list, but exact-name search can reveal a locked private result. |
 | `public/tournament.html` | One tournament — info, role-protected draw control, match-information menus with moderator monitoring, voting, standings/bracket (stage-scoped toggle), top scorers/assisters, registered teams/rosters, private-tournament follower moderation, and creator-only staff management. Reachable from every tournament row/card on the site. |
-| `public/create-tournament.html` | Authenticated two-phase tournament builder. Collects general information, then uses a stage navigator with balanced team-count presets, league points, responsive group cards, direct advancement defaults for ranks 1–2, optional best-ranking places and knockout rounds before submitting through the existing API helpers. |
-| `public/login.html` | Sign in |
-| `public/register.html` | Create account; signup waits for email verification, provides a resend action, and updates an open registration tab when verification completes. |
+| `public/create-tournament.html` | Authenticated two-phase tournament builder. Collects general information (including the team-leader player cap), then uses a stage navigator with balanced team-count presets, league points, responsive group cards, direct advancement defaults for ranks 1–2, optional best-ranking places and knockout rounds before submitting through the existing API helpers. |
+| `public/login.html` | Sign in with an email/password or Google OAuth. |
+| `public/register.html` | Create an email/password account or use Google OAuth; password signup waits for email verification and provides a resend action. |
+| `public/oauth-callback.html` | Completes Better Auth Google OAuth, exchanges the cookie session for the API JWT, then redirects to a validated same-origin destination. |
 | `public/verify-email.html` | Confirm the one-time email verification token and continue to sign in. |
 
 ## Tournament detail page (`tournament.html?id=<tournamentId>`)
@@ -177,10 +178,12 @@ frontend can responsibly do:
   tag (self + Google Fonts only, no inline scripts, no plugins, no
   framing). A real deployment should also set this as a response
   header, which can't be stripped by a proxy the way a meta tag can.
-- **CSRF**: not a meaningful risk *for this app* — requests carry an
+- **CSRF**: ordinary API requests carry an
   `Authorization` header the browser never attaches automatically
   (unlike cookies), and `credentials: 'omit'` in `api.js` means no
-  ambient cookie auth is sent either.
+  ambient cookie auth is sent either. The Google start request is a
+  top-level form post with server-side Origin validation; the callback
+  uses a short-lived one-time code rather than cross-site cookies.
 - **Expiry handling**: the JWT's `exp` claim is decoded client-side to
   proactively sign the user out and to attach a same-tab timer
   (`Session.scheduleExpiryLogout`). This is a UX nicety, not enforcement
@@ -205,7 +208,9 @@ frontend can responsibly do:
 
 Bearer-token-in-JS-storage is fundamentally weaker than an httpOnly
 cookie, because any successful XSS on the page can read
-`sessionStorage`. If/when the backend can be changed, the stronger
+`sessionStorage`. Google OAuth's temporary Better Auth session cookie is
+httpOnly, but application requests still use the established JWT contract.
+If/when the backend is migrated fully to cookie sessions, the stronger
 setup is:
 
 1. `/auth/login` and `/auth/register` set an `httpOnly`, `Secure`,

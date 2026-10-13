@@ -1,4 +1,4 @@
-const { query, withTransaction } = require('../db');
+const { query, withTransaction, parseJson } = require('../db');
 const { id, slugify } = require('../utils/ids');
 const { asyncHandler } = require('../utils/asyncHandler');
 const { httpError } = require('../middleware/error');
@@ -12,6 +12,40 @@ const run = async (text, values = []) => (await query(text, values)).rowCount;
 const optionalValue = (value) => value === '' || value == null ? null : value;
 const playerRoles = new Set(['player', 'captain', 'goalkeeper']);
 const playerStatuses = new Set(['active', 'injured', 'suspended', 'ineligible']);
+
+function tournamentPlayerCap(settings) {
+  const configuredCap = Number(settings?.maxPlayersPerTeam);
+  const defaultCap = map.defaultTournamentSettings().maxPlayersPerTeam;
+  return Number.isInteger(configuredCap) && configuredCap >= 1 && configuredCap <= 99
+    ? configuredCap
+    : defaultCap;
+}
+
+async function lockTeamRoster(client, tournamentId, participantTeamId) {
+  const teamResult = await client.query(
+    `SELECT pt.id, t.settings
+     FROM participant_teams pt
+     JOIN tournaments t ON t.id = pt.tournament_id
+     WHERE pt.id = $1 AND pt.tournament_id = $2
+     FOR UPDATE OF pt`,
+    [participantTeamId, tournamentId],
+  );
+  if (!teamResult.rows[0]) throw httpError(404, 'Participant team not found');
+  const countResult = await client.query(
+    'SELECT COUNT(*) AS count FROM participant_players WHERE participant_team_id = $1',
+    [participantTeamId],
+  );
+  return {
+    count: Number(countResult.rows[0].count),
+    maximum: tournamentPlayerCap(parseJson(teamResult.rows[0].settings, {})),
+  };
+}
+
+function assertRosterCapacity(roster, requestedCount = roster.count + 1) {
+  if (roster.count > roster.maximum || requestedCount > roster.maximum) {
+    throw httpError(409, `This tournament allows at most ${roster.maximum} players per team.`);
+  }
+}
 
 function validatePlayerFields(body) {
   if (body.role != null && !playerRoles.has(body.role)) {
@@ -194,20 +228,16 @@ const addTeamLeaderPlayer = asyncHandler(async (req, res) => {
   try {
     await withTransaction(async (client) => {
       const ownedTeam = await client.query(
-        `SELECT pt.id FROM tournament_team_leaders ttl
+        `SELECT pt.id, t.settings FROM tournament_team_leaders ttl
          JOIN participant_teams pt ON pt.id = ttl.participant_team_id
+         JOIN tournaments t ON t.id = pt.tournament_id
          WHERE ttl.tournament_id = $1 AND ttl.user_id = $2 AND pt.id = $3
          FOR UPDATE OF pt`,
         [req.params.tournamentId, req.user.id, req.params.id],
       );
       if (!ownedTeam.rows[0]) throw httpError(403, 'You can manage only your own tournament team');
-      const countResult = await client.query(
-        'SELECT COUNT(*) AS count FROM participant_players WHERE participant_team_id = $1',
-        [req.params.id],
-      );
-      if (Number(countResult.rows[0].count) >= 11) {
-        throw httpError(409, 'A team leader can register at most 11 players');
-      }
+      const roster = await lockTeamRoster(client, req.params.tournamentId, req.params.id);
+      assertRosterCapacity(roster);
       await client.query(
         `INSERT INTO participant_players
           (id, participant_team_id, creator_id, name, slug, nickname, date_of_birth,
@@ -241,6 +271,7 @@ const removeTeamLeaderPlayer = asyncHandler(async (req, res) => {
 
 const autoAddParticipantTeams = asyncHandler(async (req, res) => {
   const tournament = await access.getTournamentOrThrow(req.params.tournamentId);
+  console.log(tournament);
   const target = Number(req.body?.count ?? tournament.number_of_teams);
   if (!Number.isInteger(target) || target < 0) throw httpError(400, 'count must be a non-negative integer');
 
@@ -302,25 +333,26 @@ const playerJoinSql = `
 `;
 
 const addParticipantPlayer = asyncHandler(async (req, res) => {
-  const pt = await one('SELECT * FROM participant_teams WHERE id = $1', [req.params.id]);
-  if (!pt) throw httpError(404, 'Participant team not found');
-  if (pt.tournament_id !== req.params.tournamentId) throw httpError(404, 'Participant team not found');
   const body = req.body || {};
   if (!String(body.name || '').trim()) throw httpError(400, 'name is required');
   validatePlayerFields(body);
   const ppId = id();
   try {
-    await run(
-      `INSERT INTO participant_players
-        (id, participant_team_id, creator_id, name, slug, nickname, date_of_birth,
-         nationality, position, preferred_foot, height_cm, shirt_number, role, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-      [ppId, pt.id, req.user.id, body.name.trim(), body.slug || slugify(body.name),
-        optionalValue(body.nickname), optionalValue(body.dateOfBirth),
-        optionalValue(body.nationality), optionalValue(body.position),
-        optionalValue(body.preferredFoot), optionalValue(body.heightCm),
-        optionalValue(body.shirtNumber), body.role || 'player', body.status || 'active'],
-    );
+    await withTransaction(async (client) => {
+      const roster = await lockTeamRoster(client, req.params.tournamentId, req.params.id);
+      assertRosterCapacity(roster);
+      await client.query(
+        `INSERT INTO participant_players
+          (id, participant_team_id, creator_id, name, slug, nickname, date_of_birth,
+           nationality, position, preferred_foot, height_cm, shirt_number, role, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        [ppId, req.params.id, req.user.id, body.name.trim(), body.slug || slugify(body.name),
+          optionalValue(body.nickname), optionalValue(body.dateOfBirth),
+          optionalValue(body.nationality), optionalValue(body.position),
+          optionalValue(body.preferredFoot), optionalValue(body.heightCm),
+          optionalValue(body.shirtNumber), body.role || 'player', body.status || 'active'],
+      );
+    });
   } catch (error) {
     if (error.code === '23505') throw httpError(409, 'A player with this name or slug already exists on this team');
     throw error;
@@ -330,24 +362,13 @@ const addParticipantPlayer = asyncHandler(async (req, res) => {
 });
 
 const autoAddParticipantPlayers = asyncHandler(async (req, res) => {
-  const participantTeam = await one('SELECT * FROM participant_teams WHERE id = $1', [req.params.id]);
-  if (!participantTeam || participantTeam.tournament_id !== req.params.tournamentId) {
-    throw httpError(404, 'Participant team not found');
-  }
   const target = Number(req.body?.count);
   if (!Number.isInteger(target) || target < 0) throw httpError(400, 'count must be a non-negative integer');
 
   await withTransaction(async (client) => {
-    const teamLock = await client.query(
-      'SELECT id FROM participant_teams WHERE id = $1 AND tournament_id = $2 FOR UPDATE',
-      [participantTeam.id, req.params.tournamentId],
-    );
-    if (!teamLock.rows[0]) throw httpError(404, 'Participant team not found');
-    const countResult = await client.query(
-      'SELECT COUNT(*) AS count FROM participant_players WHERE participant_team_id = $1',
-      [participantTeam.id],
-    );
-    const currentTeamCount = Number(countResult.rows[0].count);
+    const roster = await lockTeamRoster(client, req.params.tournamentId, req.params.id);
+    assertRosterCapacity(roster, target);
+    const currentTeamCount = roster.count;
     const missing = Math.max(0, target - currentTeamCount);
     for (let index = 0; index < missing; index += 1) {
       const number = currentTeamCount + index + 1;
@@ -355,7 +376,7 @@ const autoAddParticipantPlayers = asyncHandler(async (req, res) => {
       let suffix = number;
       while ((await client.query(
         'SELECT 1 FROM participant_players WHERE participant_team_id = $1 AND slug = $2',
-        [participantTeam.id, slug],
+        [req.params.id, slug],
       )).rowCount) {
         suffix += 1;
         slug = `auto-player-${suffix}`;
@@ -365,13 +386,13 @@ const autoAddParticipantPlayers = asyncHandler(async (req, res) => {
           (id, participant_team_id, creator_id, name, slug, nickname, position,
            shirt_number, role, status)
          VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, 'player', 'active')`,
-        [id(), participantTeam.id, req.user.id, `Player ${suffix}`, slug,
+        [id(), req.params.id, req.user.id, `Player ${suffix}`, slug,
           `P${suffix}`, number],
       );
     }
   });
 
-  const rows = await many(`${playerJoinSql} WHERE pp.participant_team_id = $1 ORDER BY pp.shirt_number`, [participantTeam.id]);
+  const rows = await many(`${playerJoinSql} WHERE pp.participant_team_id = $1 ORDER BY pp.shirt_number`, [req.params.id]);
   res.status(201).json({ participantPlayers: rows.map(map.participantPlayer) });
 });
 
@@ -394,24 +415,29 @@ const updateParticipantPlayer = asyncHandler(async (req, res) => {
   if (body.name !== undefined && !String(body.name).trim()) throw httpError(400, 'name cannot be empty');
   validatePlayerFields(body);
   try {
-    await run(
-      `UPDATE participant_players
-       SET name = $1, slug = $2, nickname = $3, date_of_birth = $4, nationality = $5,
-           position = $6, preferred_foot = $7, height_cm = $8, shirt_number = $9,
-           role = $10, status = $11, yellow_cards = $12, red_cards = $13, goals = $14, assists = $15
-       WHERE id = $16`,
-      [body.name === undefined ? row.name : body.name.trim(),
-        body.slug === undefined ? row.slug : (body.slug || slugify(body.name ?? row.name)),
-        body.nickname === undefined ? row.nickname : optionalValue(body.nickname),
-        body.dateOfBirth === undefined ? row.date_of_birth : optionalValue(body.dateOfBirth),
-        body.nationality === undefined ? row.nationality : optionalValue(body.nationality),
-        body.position === undefined ? row.position : optionalValue(body.position),
-        body.preferredFoot === undefined ? row.preferred_foot : optionalValue(body.preferredFoot),
-        body.heightCm === undefined ? row.height_cm : optionalValue(body.heightCm),
-        body.shirtNumber === undefined ? row.shirt_number : optionalValue(body.shirtNumber),
-        body.role ?? row.role, body.status ?? row.status, body.yellowCards ?? row.yellow_cards,
-        body.redCards ?? row.red_cards, body.goals ?? row.goals, body.assists ?? row.assists, row.id],
-    );
+    await withTransaction(async (client) => {
+      const roster = await lockTeamRoster(client, req.params.tournamentId, row.participant_team_id);
+      assertRosterCapacity(roster, roster.count);
+      await client.query(
+        `UPDATE participant_players
+         SET name = $1, slug = $2, nickname = $3, date_of_birth = $4, nationality = $5,
+             position = $6, preferred_foot = $7, height_cm = $8, shirt_number = $9,
+             role = $10, status = $11, yellow_cards = $12, red_cards = $13, goals = $14, assists = $15
+         WHERE id = $16 AND participant_team_id = $17`,
+        [body.name === undefined ? row.name : body.name.trim(),
+          body.slug === undefined ? row.slug : (body.slug || slugify(body.name ?? row.name)),
+          body.nickname === undefined ? row.nickname : optionalValue(body.nickname),
+          body.dateOfBirth === undefined ? row.date_of_birth : optionalValue(body.dateOfBirth),
+          body.nationality === undefined ? row.nationality : optionalValue(body.nationality),
+          body.position === undefined ? row.position : optionalValue(body.position),
+          body.preferredFoot === undefined ? row.preferred_foot : optionalValue(body.preferredFoot),
+          body.heightCm === undefined ? row.height_cm : optionalValue(body.heightCm),
+          body.shirtNumber === undefined ? row.shirt_number : optionalValue(body.shirtNumber),
+          body.role ?? row.role, body.status ?? row.status, body.yellowCards ?? row.yellow_cards,
+          body.redCards ?? row.red_cards, body.goals ?? row.goals, body.assists ?? row.assists,
+          row.id, row.participant_team_id],
+      );
+    });
   } catch (error) {
     if (error.code === '23505') throw httpError(409, 'A player with this name or slug already exists on this team');
     throw error;

@@ -38,6 +38,20 @@
       select('Visibility', 'tournamentVisibility', [['public', 'Public'], ['private', 'Private']]),
       input('Number of teams', 'tournamentNumberOfTeams', 'number', { required: 'required', min: '3', max: '256' }),
     ]));
+    general.appendChild(el('section', { class: 'builder-card player-cap-settings' }, [
+      el('div', { class: 'builder-card__head' }, [
+        el('h3', { text: 'Team roster limit' }),
+        el('span', { class: 'badge', text: 'Tournament setting' }),
+      ]),
+      el('p', { class: 'field__hint', text: 'Choose the maximum number of players each team leader can register for a team.' }),
+      input('Maximum players per team', 'maxPlayersPerTeam', 'number', {
+        required: 'required',
+        min: '1',
+        max: '99',
+        value: '11',
+        inputmode: 'numeric',
+      }),
+    ]));
     const suspensionCard = el('div', { class: 'builder-card suspension-settings' }, [
       el('h3', { text: 'Suspension rules' }),
       el('p', { class: 'field__hint', text: 'Choose whether disciplinary suspensions are enforced throughout this tournament.' }),
@@ -419,6 +433,10 @@
     const name = form.elements.tournamentName.value.trim(); const teams = Number(form.elements.tournamentNumberOfTeams.value);
     if (!name) return 'Tournament name is required.';
     if (!Number.isInteger(teams) || teams < 3 || teams > 256) return 'Number of teams must be between 3 and 256.';
+    const maxPlayersPerTeam = Number(form.elements.maxPlayersPerTeam.value);
+    if (!Number.isInteger(maxPlayersPerTeam) || maxPlayersPerTeam < 1 || maxPlayersPerTeam > 99) {
+      return 'Maximum players per team must be between 1 and 99.';
+    }
     const yellowThreshold = Number(form.elements.yellowCardsForSuspension.value);
     if (!Number.isInteger(yellowThreshold) || yellowThreshold < 1 || yellowThreshold > 10) {
       return 'Yellow-card suspension threshold must be between 1 and 10.';
@@ -475,6 +493,7 @@
         visibility: form.elements.tournamentVisibility.value,
         numberOfTeams: Number(form.elements.tournamentNumberOfTeams.value),
         settings: {
+          maxPlayersPerTeam: Number(form.elements.maxPlayersPerTeam.value),
           suspensionSystem: {
             enabled: form.elements.suspensionSystemEnabled.checked,
             yellowCardsForSuspension: Number(form.elements.yellowCardsForSuspension.value),

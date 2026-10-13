@@ -1783,6 +1783,10 @@
     const teamName = participantTeam.team?.name || participantTeam.nickname || 'Unnamed team';
     const isOwnedByTeamLeader = state.viewerRole === 'team_leader'
       && state.teamLeader?.participantTeam?.id === participantTeam.id;
+    const configuredPlayerCap = Number(state.tournament.maxPlayersPerTeam);
+    const maxPlayersPerTeam = Number.isInteger(configuredPlayerCap) && configuredPlayerCap >= 1
+      ? configuredPlayerCap
+      : 11;
     const canDelete = isAdmin() || state.viewerRole === 'moderator' || isOwnedByTeamLeader;
     const canManageRoster = isAdmin() || state.viewerRole === 'moderator' || isOwnedByTeamLeader;
     const children = [
@@ -1847,7 +1851,7 @@
       ]));
     });
     children.push(list);
-    if (canManageRoster && (isOwnedByTeamLeader ? players.length < 11 : true)) {
+    if (canManageRoster && (isOwnedByTeamLeader ? players.length < maxPlayersPerTeam : true)) {
       const playerForm = el('form', { class: 'management-form roster-player-form' }, [
         el('h4', { text: `Add player to ${teamName}` }),
         el('div', { class: 'management-form-grid' }, [
@@ -1896,12 +1900,19 @@
         } catch (err) { showBanner(banner, friendlyErrorMessage(err)); }
       });
       children.push(playerForm);
-    } else if (isOwnedByTeamLeader && players.length >= 11) {
-      children.push(el('p', { class: 'field__hint', text: 'The 11-player limit has been reached.' }));
+    } else if (isOwnedByTeamLeader && players.length >= maxPlayersPerTeam) {
+      children.push(el('p', { class: 'field__hint', text: `The ${maxPlayersPerTeam}-player limit for this tournament has been reached.` }));
     }
     if (isAdmin()) {
       const autoForm = el('form', { class: 'inline-form registration-form registration-form--auto' }, [
-        el('input', { type: 'number', name: 'count', min: 0, value: '11', 'aria-label': `Players for ${teamName}` }),
+        el('input', {
+          type: 'number',
+          name: 'count',
+          min: 0,
+          max: maxPlayersPerTeam,
+          value: maxPlayersPerTeam,
+          'aria-label': `Players for ${teamName}`,
+        }),
         el('button', { class: 'btn btn--secondary', type: 'submit', text: 'Add missing players automatically' }),
       ]);
       autoForm.addEventListener('submit', async (event) => {

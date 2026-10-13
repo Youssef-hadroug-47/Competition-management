@@ -79,6 +79,48 @@ another email from the registration or sign-in page; resends are limited to
 one per minute. Existing accounts are marked verified when the schema adds the
 new column, so deployment does not lock out current users.
 
+### Google OAuth (Better Auth)
+
+Google sign-in is an additional login path; existing email/password
+registration, verification, and JWT-protected API requests remain unchanged.
+Better Auth persists provider accounts and short-lived OAuth sessions in
+PostgreSQL; stored provider tokens are encrypted with `BETTER_AUTH_SECRET`.
+After Google confirms a verified email, the callback links the
+Google identity to an existing Tournly account with the same email or creates
+a normal `user` account. Existing roles are preserved, and OAuth-only users
+cannot sign in with a password until a password is set through a separate
+password-management flow.
+
+Create a **Web application** OAuth client in Google Cloud Console. Add this
+authorized redirect URI exactly:
+
+```text
+https://YOUR_API_HOST/api/better-auth/callback/google
+```
+
+For local development, use
+`http://localhost:3000/api/better-auth/callback/google`. Configure these
+variables only on the API host (never in frontend config):
+
+```text
+BETTER_AUTH_SECRET=<at least 32 random characters>
+BETTER_AUTH_URL=https://YOUR_API_HOST
+GOOGLE_CLIENT_ID=<Google OAuth client ID>
+GOOGLE_CLIENT_SECRET=<Google OAuth client secret>
+FRONTEND_ORIGIN=https://YOUR_FRONTEND_ORIGIN
+CORS_ORIGINS=https://YOUR_FRONTEND_ORIGIN
+```
+
+`BETTER_AUTH_URL` is the API origin without `/api`; Better Auth adds its
+`/api/better-auth` base path. In production it must use HTTPS, and
+`CORS_ORIGINS` must include the frontend origin for the one-time code exchange.
+The callback session remains on the API origin; the frontend does not need to
+send Better Auth cookies cross-site. Local development defaults to
+`http://localhost:5173` and `http://127.0.0.1:5173`. The application creates
+Better Auth's dedicated PostgreSQL tables on startup and maps Better Auth
+identities to application user IDs in `oauth_user_links`. OAuth exchange codes
+are hashed at rest, expire in two minutes, and can be redeemed only once.
+
 ### Docker deployment
 
 Build and run the production container:
@@ -106,6 +148,11 @@ fly secrets set \
   SMTP_PASSWORD='your-smtp-password' \
   SMTP_FROM='Tournly <noreply@example.com>' \
   PUBLIC_APP_URL='https://your-frontend.vercel.app' \
+  FRONTEND_ORIGIN='https://your-frontend.vercel.app' \
+  BETTER_AUTH_URL='https://YOUR_APP_NAME.fly.dev' \
+  BETTER_AUTH_SECRET='your-long-random-better-auth-secret' \
+  GOOGLE_CLIENT_ID='your-google-client-id' \
+  GOOGLE_CLIENT_SECRET='your-google-client-secret' \
   CORS_ORIGINS='https://your-frontend.vercel.app'
 fly deploy
 ```
@@ -213,7 +260,8 @@ Send the JWT returned by login in the Authorization header.
 ## Domain
 
 - **Tournament** — name, slug, status, `public`/`private`, format (`stages`, `groups`, `division`, `league`, `knockout`, `custom`), number of teams, place.
-- **Stage** — `league` or `knockout`, `sequenceOrder` (World Cup: groups = 1, knockout = 2), JSON `settings` (`headToHeadMatches`, `extraTime`, `penalties`, `suspensionSystem`, points, teams advancing).
+- **Tournament settings** — Stored in `tournaments.settings` JSON. Includes `maxPlayersPerTeam` (default 11, configurable 1–99, enforced for team leaders) and the suspension system.
+- **Stage** — `league` or `knockout`, `sequenceOrder` (World Cup: groups = 1, knockout = 2), JSON `settings` (`headToHeadMatches`, `extraTime`, `penalties`, points, teams advancing).
 - **Group** — instance of a stage (`Group A`, `Playoffs`, `Round of 16`).
 - **Team** — one tournament-scoped row containing profile fields, `creator_id`, seed/group/status, cards, and tournament statistics. A team cannot be reused across tournaments.
 - **ParticipantPlayer** — the tournament-team-scoped player identity, roster entry, profile, and statistics.

@@ -7,6 +7,7 @@ const { asyncHandler } = require('../utils/asyncHandler');
 const { httpError } = require('../middleware/error');
 const { userPublic } = require('../services/mappers');
 const { sendVerificationEmail } = require('../services/emailService');
+const { getBetterAuth } = require('../services/betterAuth');
 const config = require('../config');
 
 const verificationLifetimeMs = 24 * 60 * 60 * 1000;
@@ -71,6 +72,196 @@ async function releaseVerificationCooldown(userId, token) {
     [userId, tokenHash],
   );
 }
+
+async function linkGoogleUserToApplication(client, googleUser) {
+  if (!googleUser?.emailVerified) throw httpError(401, 'A verified Google sign-in is required.');
+  if (typeof googleUser.id !== 'string' || !googleUser.id) {
+    throw httpError(400, 'Google did not provide a usable account identifier.');
+  }
+  const email = normalizeEmail(googleUser.email);
+  const name = String(googleUser.name || '').trim();
+  if (!email || !name) throw httpError(400, 'Google did not provide a usable account profile.');
+
+  const linked = await client.query(
+    `SELECT u.* FROM oauth_user_links l
+     JOIN users u ON u.id = l.app_user_id
+     WHERE l.better_auth_user_id = $1
+     FOR UPDATE OF l`,
+    [googleUser.id],
+  );
+  if (linked.rows[0]) {
+    if (normalizeEmail(linked.rows[0].email) !== email) {
+      throw httpError(409, 'The Google account email changed. Contact support to secure your account.');
+    }
+    return linked.rows[0];
+  }
+
+  let appUser = (await client.query(
+    'SELECT * FROM users WHERE lower(email) = $1 FOR UPDATE',
+    [email],
+  )).rows[0];
+  if (!appUser) {
+    const inserted = await client.query(
+      `INSERT INTO users (id, email, password_hash, name, role, email_verified)
+       VALUES ($1, $2, NULL, $3, 'user', true)
+       ON CONFLICT (email) DO NOTHING
+       RETURNING *`,
+      [id(), email, name],
+    );
+    appUser = inserted.rows[0] || (await client.query(
+      'SELECT * FROM users WHERE lower(email) = $1 FOR UPDATE',
+      [email],
+    )).rows[0];
+  }
+  if (!appUser) throw httpError(409, 'Unable to create or locate the application account.');
+  if (!appUser.email_verified) {
+    const verified = await client.query(
+      'UPDATE users SET email_verified = true WHERE id = $1 RETURNING *',
+      [appUser.id],
+    );
+    appUser = verified.rows[0];
+    await client.query('DELETE FROM email_verification_tokens WHERE user_id = $1', [appUser.id]);
+  }
+
+  await client.query(
+    `INSERT INTO oauth_user_links (better_auth_user_id, app_user_id)
+     VALUES ($1, $2)
+     ON CONFLICT (better_auth_user_id) DO NOTHING`,
+    [googleUser.id, appUser.id],
+  );
+  const finalLink = await client.query(
+    'SELECT app_user_id FROM oauth_user_links WHERE better_auth_user_id = $1',
+    [googleUser.id],
+  );
+  if (finalLink.rows[0]?.app_user_id !== appUser.id) {
+    throw httpError(409, 'This Google identity is already linked to another application account.');
+  }
+  return appUser;
+}
+
+function oauthRequestOriginAllowed(req) {
+  return config.oauthTrustedOrigins.includes(req.get('Origin'));
+}
+
+function validatedOAuthNext(value) {
+  if (value == null || value === '') return '/index';
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) {
+    throw httpError(400, 'The post-sign-in destination must be a same-origin path.');
+  }
+  let destination;
+  try {
+    destination = new URL(value, config.frontendOrigin);
+  } catch {
+    throw httpError(400, 'The post-sign-in destination is invalid.');
+  }
+  if (destination.origin !== new URL(config.frontendOrigin).origin) {
+    throw httpError(400, 'The post-sign-in destination must be a same-origin path.');
+  }
+  return `${destination.pathname}${destination.search}${destination.hash}`;
+}
+
+const googleOAuthProviders = (req, res) => {
+  res.json({ google: config.googleOAuthEnabled });
+};
+
+const startGoogleOAuth = asyncHandler(async (req, res) => {
+  if (!config.googleOAuthEnabled) {
+    throw httpError(503, 'Google sign-in is not configured on this server.');
+  }
+  if (!oauthRequestOriginAllowed(req)) {
+    throw httpError(403, 'Google sign-in can only be started from the configured application origin.');
+  }
+  const next = validatedOAuthNext(req.body?.next);
+  const callbackURL = new URL('/api/oauth/google/complete', config.betterAuthUrl);
+  callbackURL.searchParams.set('next', next);
+  const errorCallbackURL = new URL('/oauth-callback.html', config.frontendOrigin);
+  errorCallbackURL.hash = new URLSearchParams({ error: 'google', next }).toString();
+
+  const { auth } = await getBetterAuth();
+  const authResponse = await auth.handler(new Request(
+    new URL('/api/better-auth/sign-in/social', config.betterAuthUrl),
+    {
+      method: 'POST',
+      headers: {
+        Origin: config.betterAuthUrl,
+        'Content-Type': 'application/json',
+        'User-Agent': req.get('User-Agent') || '',
+      },
+      body: JSON.stringify({
+        provider: 'google',
+        callbackURL: callbackURL.toString(),
+        errorCallbackURL: errorCallbackURL.toString(),
+      }),
+    },
+  ));
+  const cookies = authResponse.headers.getSetCookie?.()
+    || [authResponse.headers.get('set-cookie')].filter(Boolean);
+  if (cookies.length) res.setHeader('Set-Cookie', cookies);
+  const result = await authResponse.json().catch(() => null);
+  if (!authResponse.ok) {
+    throw httpError(authResponse.status, result?.message || 'Unable to start Google sign-in.');
+  }
+  if (typeof result?.url !== 'string' || !result.url) {
+    throw httpError(502, 'Better Auth did not return a Google authorization URL.');
+  }
+  res.redirect(303, result.url);
+});
+
+function redirectOAuthCallback(res, next, error) {
+  const callback = new URL('/oauth-callback.html', config.frontendOrigin);
+  callback.hash = new URLSearchParams({ error, next }).toString();
+  res.set('Cache-Control', 'no-store');
+  res.set('Referrer-Policy', 'no-referrer');
+  res.redirect(303, callback.toString());
+}
+
+const completeGoogleOAuth = asyncHandler(async (req, res) => {
+  if (!config.googleOAuthEnabled) {
+    throw httpError(503, 'Google sign-in is not configured on this server.');
+  }
+  const next = validatedOAuthNext(req.query.next);
+  const { auth, fromNodeHeaders } = await getBetterAuth();
+  const betterSession = await auth.api.getSession({
+    headers: fromNodeHeaders(req.headers),
+  });
+  const googleUser = betterSession?.user;
+  if (!googleUser || !googleUser.emailVerified) {
+    redirectOAuthCallback(res, next, 'unverified');
+    return;
+  }
+
+  const exchangeCode = crypto.randomBytes(32).toString('base64url');
+  const exchangeHash = crypto.createHash('sha256').update(exchangeCode).digest('hex');
+  let user;
+  try {
+    user = await withTransaction(async (client) => {
+      const appUser = await linkGoogleUserToApplication(client, googleUser);
+      await client.query('DELETE FROM oauth_exchange_codes WHERE expires_at <= NOW()');
+      await client.query(
+        `INSERT INTO oauth_exchange_codes (code_hash, user_id, expires_at)
+         VALUES ($1, $2, NOW() + INTERVAL '2 minutes')`,
+        [exchangeHash, appUser.id],
+      );
+      return appUser;
+    });
+  } catch (error) {
+    if (error.code === '23505') {
+      redirectOAuthCallback(res, next, 'account');
+      return;
+    }
+    if (error.status === 409) {
+      redirectOAuthCallback(res, next, 'account');
+      return;
+    }
+    throw error;
+  }
+
+  const callback = new URL('/oauth-callback.html', config.frontendOrigin);
+  callback.hash = new URLSearchParams({ code: exchangeCode, next }).toString();
+  res.set('Cache-Control', 'no-store');
+  res.set('Referrer-Policy', 'no-referrer');
+  res.redirect(303, callback.toString());
+});
 
 const register = asyncHandler(async (req, res) => {
   const { email, password, name } = req.body || {};
@@ -182,10 +373,38 @@ const login = asyncHandler(async (req, res) => {
   if (!email || !password) throw httpError(400, 'email and password are required');
   const result = await query('SELECT * FROM users WHERE email = $1', [normalizeEmail(email)]);
   const user = result.rows[0];
-  if (!user || !(await bcrypt.compare(password, user.password_hash))) {
+  if (!user || !user.password_hash || !(await bcrypt.compare(password, user.password_hash))) {
     throw httpError(401, 'Invalid credentials');
   }
   if (!user.email_verified) throw httpError(403, 'Verify your email address before signing in.');
+  res.json({ user: userPublic(user), token: tokenFor(user) });
+});
+
+const exchangeGoogleCode = asyncHandler(async (req, res) => {
+  if (!config.googleOAuthEnabled) {
+    throw httpError(503, 'Google sign-in is not configured on this server.');
+  }
+  if (!oauthRequestOriginAllowed(req)) {
+    throw httpError(403, 'Google sign-in exchange is allowed only from the configured application origin.');
+  }
+  const code = req.body?.code;
+  if (typeof code !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(code)) {
+    throw httpError(400, 'The Google sign-in code is invalid or expired. Please sign in again.');
+  }
+  const codeHash = crypto.createHash('sha256').update(code).digest('hex');
+  const user = await withTransaction(async (client) => {
+    const found = await client.query(
+      `SELECT user_id FROM oauth_exchange_codes
+       WHERE code_hash = $1 AND expires_at > NOW()
+       FOR UPDATE`,
+      [codeHash],
+    );
+    if (!found.rows[0]) throw httpError(401, 'The Google sign-in code is invalid or expired. Please sign in again.');
+    await client.query('DELETE FROM oauth_exchange_codes WHERE code_hash = $1', [codeHash]);
+    const appUser = await client.query('SELECT * FROM users WHERE id = $1', [found.rows[0].user_id]);
+    if (!appUser.rows[0]) throw httpError(401, 'The application account for this Google sign-in no longer exists.');
+    return appUser.rows[0];
+  });
   res.json({ user: userPublic(user), token: tokenFor(user) });
 });
 
@@ -211,4 +430,17 @@ const updateRole = asyncHandler(async (req, res) => {
   res.json({ user: userPublic(user) });
 });
 
-module.exports = { register, verifyEmail, resendVerification, login, me, listUsers, updateRole };
+module.exports = {
+  register,
+  verifyEmail,
+  resendVerification,
+  login,
+  googleOAuthProviders,
+  startGoogleOAuth,
+  completeGoogleOAuth,
+  exchangeGoogleCode,
+  me,
+  listUsers,
+  updateRole,
+  linkGoogleUserToApplication,
+};

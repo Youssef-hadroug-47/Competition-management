@@ -52,6 +52,28 @@ No session is created until the address has been verified.
 **Response `200`**: `{ "user": { "id", "email", "name", "role", "emailVerified", "createdAt" }, "token": "JWT (7d expiry)" }`
 **Errors**: `400` missing fields, `401` invalid credentials, `403` email not verified.
 
+### `GET /auth/providers` — Public
+**Response `200`**: `{ "google": "boolean" }`
+
+### `POST /oauth/google/start` — Public, browser top-level form post
+**Body**: URL-encoded `{ "next": "same-origin application path (optional)" }`
+The server validates the request origin and destination, starts Better Auth,
+sets OAuth state cookies on the API origin, then redirects to Google.
+**Errors**: `403` untrusted origin, `400` invalid destination, `503` Google OAuth is not configured.
+
+Register this Google authorized redirect URI:
+`https://API_HOST/api/better-auth/callback/google`.
+Better Auth verifies the Google email and redirects to the API's internal
+`GET /oauth/google/complete` callback. The callback links the identity only
+when Google verified the same email, preserves an existing application role,
+and redirects to the frontend with a short-lived one-time code in the URL
+fragment.
+
+### `POST /oauth/google/exchange` — Public, configured application Origin required
+**Body**: `{ "code": "one-time OAuth exchange code" }`
+**Response `200`**: same `{ "user": ..., "token": "JWT (7d expiry)" }` contract as password login. Codes expire after two minutes and are consumed once.
+**Errors**: `400` invalid code, `401` expired/used code, `403` untrusted Origin.
+
 ### `GET /auth/me` — Auth
 **Response `200`**
 ```json
@@ -101,6 +123,10 @@ Lists all tournaments. Private tournaments are returned in a reduced/redacted sh
   "numberOfTeams": "number",
   "place": "string",
   "slug": "string (optional, auto-slugified from name)",
+  "settings": {
+    "maxPlayersPerTeam": "integer from 1 to 99 (default 11; applies to team leaders)",
+    "suspensionSystem": { "enabled": "boolean", "yellowCardsForSuspension": "integer" }
+  },
   "stages": [ { "type": "'league'|'knockout'", "sequenceOrder": "number", "settings": {}, "groups": [ { "name", "sequenceOrder", "number_teams" } ] } ]
 }
 ```
@@ -108,12 +134,17 @@ Lists all tournaments. Private tournaments are returned in a reduced/redacted sh
 ```json
 { "tournament": {...}, "stages": [...] }
 ```
-**Errors**: `400` missing name / invalid stage type.
+**Errors**: `400` missing name, player cap outside 1–99, or invalid stage type.
+
+Tournament responses include `maxPlayersPerTeam` (default `11` for older
+tournaments). Team leaders receive `409` when trying to register a player
+after reaching this tournament-specific cap. Moderator/admin roster management
+is unchanged.
 
 ### `PATCH /tournaments/:tournamentId` — Auth + tournament role `moderator`
 **Body** *(all optional)*
 ```json
-{ "name", "status", "visibility", "numberOfTeams", "place" }
+{ "name", "status", "visibility", "numberOfTeams", "place", "settings": { "maxPlayersPerTeam": "integer from 1 to 99" } }
 ```
 **Response `200`**: `{ "tournament": {...} }`
 
@@ -287,15 +318,19 @@ Requires tournament to be inspectable (private tournaments enforce `requireTourn
 { "name": "string (required)", "slug": "string (optional)", "nickname": "string", "dateOfBirth": "date", "nationality": "string", "position": "string", "preferredFoot": "string", "heightCm": "number", "shirtNumber": "number", "role": "'player'|'captain'|'goalkeeper' (default 'player')", "status": "'active'|'injured'|'suspended'|'ineligible' (default 'active')" }
 ```
 Creates a new player directly on the selected team. The server sets `creatorId`
-from the authenticated user; slugs are unique within the team.
+from the authenticated user; slugs are unique within the team. The tournament's
+`maxPlayersPerTeam` cap is checked under a team-row lock before insertion.
 **Response `201`**: `{ "participantPlayer": {...} }`
-**Errors**: `400` missing name, `404` participant team not found, `409` duplicate team-local slug.
+**Errors**: `400` missing name, `404` participant team not found, `409` duplicate team-local slug or configured roster limit reached.
 
 ### `POST /tournaments/:tournamentId/participant-teams/:id/players/auto` — Auth + admin
 **Body**: `{ "count": "number (required)" }`
 
 Creates enough new team-scoped player rows to reach the requested roster size;
-the administrator is recorded as their creator.
+the administrator is recorded as their creator. The requested total must not
+exceed the tournament's `maxPlayersPerTeam` cap, which is checked atomically
+before adding any players.
+**Errors**: `400` invalid count, `404` participant team not found, `409` configured roster limit exceeded.
 
 ### `PATCH /tournaments/:tournamentId/participant-players/:id` — Auth + tournament role `moderator`
 **Body** *(all optional)*
@@ -303,7 +338,8 @@ the administrator is recorded as their creator.
 { "name", "slug", "nickname", "dateOfBirth", "nationality", "position", "preferredFoot", "heightCm", "shirtNumber", "role", "status", "yellowCards", "redCards", "goals", "assists" }
 ```
 **Response `200`**: `{ "participantPlayer": {...} }`
-**Errors**: `404`
+The existing roster size is checked against the tournament cap before update.
+**Errors**: `404` participant player not found, `409` configured roster limit exceeded.
 
 ### `DELETE /tournaments/:tournamentId/participant-players/:id` — Auth + tournament role `moderator`
 **Response `204`**

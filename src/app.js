@@ -6,6 +6,7 @@ const routes = require('./routes');
 const { notFound, errorHandler } = require('./middleware/error');
 const crypto = require('crypto');
 const { runWithRequestContext } = require('./utils/requestContext');
+const { betterAuthHandler } = require('./services/betterAuth');
 
 function createApp({ staticDir } = {}) {
   const app = express();
@@ -13,7 +14,6 @@ function createApp({ staticDir } = {}) {
     ? { origin: config.corsOrigins }
     : undefined));
   app.use(morgan('dev'));
-  app.use(express.json({ limit: '1mb' }));
   if (config.performanceLogging) {
     app.use((req, res, next) => {
       const context = {
@@ -34,6 +34,9 @@ function createApp({ staticDir } = {}) {
       });
     });
   }
+  app.all('/api/better-auth/*', betterAuthHandler);
+  app.use(express.urlencoded({ extended: false, limit: '1kb' }));
+  app.use(express.json({ limit: '1mb' }));
   app.use('/api', routes);
   if (staticDir) app.use(express.static(staticDir));
   app.use(notFound);

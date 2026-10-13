@@ -56,6 +56,9 @@
     }
     form.hidden = true;
     resendForm.hidden = true;
+    document.querySelectorAll('[data-google-sign-in]').forEach((button) => {
+      button.hidden = true;
+    });
     intro.hidden = true;
     title.textContent = 'Email verified';
     verifiedStateMessage.textContent = `${email} is verified. Your account is ready to use.`;

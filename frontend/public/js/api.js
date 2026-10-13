@@ -5,10 +5,9 @@
  *  - builds the URL from config.js's API_BASE_URL (itself derived from .env)
  *  - attaches `Authorization: Bearer <token>` automatically when a session exists
  *  - sends/expects JSON only (no HTML forms, no reflected content types)
- *  - never sends cookies (`credentials: 'omit'`) — this API is bearer-token
- *    only, so there's nothing for the browser to attach, and this also
- *    means CSRF (which relies on ambient cookie auth) isn't a meaningful
- *    attack surface for these requests
+ *  - never sends cookies for ordinary API requests (`credentials: 'omit'`);
+ *    Google OAuth uses a top-level redirect and one-time code exchange so it
+ *    does not rely on cross-site auth cookies
  *  - on a 401, clears the local session and redirects to /login,
  *    since a 401 means the server has already stopped trusting the token
  *  - throws a typed ApiError with the server's own message when available,
@@ -52,7 +51,7 @@ function enc(value) {
   return encodeURIComponent(String(value));
 }
 
-async function request(method, path, { body, query, auth = true } = {}) {
+async function request(method, path, { body, query, auth = true, credentials = 'omit' } = {}) {
   const traceEnabled = window.localStorage.getItem('apiDebug') === 'true';
   const startedAt = performance.now();
 
@@ -73,7 +72,7 @@ async function request(method, path, { body, query, auth = true } = {}) {
     res = await fetch(url.toString(), {
       method,
       headers,
-      credentials: 'omit',
+      credentials,
       cache: 'no-store',
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
@@ -129,6 +128,13 @@ const Api = {
     verifyEmail: (token) => request('POST', '/auth/verify-email', { body: { token }, auth: false }),
     resendVerification: (email) =>
       request('POST', '/auth/resend-verification', { body: { email }, auth: false }),
+    providers: () => request('GET', '/auth/providers', { auth: false }),
+    googleStartUrl: () => apiUrl('/oauth/google/start').toString(),
+    exchangeGoogleCode: (code) =>
+      request('POST', '/oauth/google/exchange', {
+        body: { code },
+        auth: false,
+      }),
     me: () => request('GET', '/auth/me'),
   },
 

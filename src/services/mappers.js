@@ -14,6 +14,13 @@ function userPublic(row) {
 
 function tournament(row) {
   if (!row) return null;
+  const settings = { ...defaultTournamentSettings(), ...parseJson(row.settings, {}) };
+  const configuredPlayerCap = Number(settings.maxPlayersPerTeam);
+  const maxPlayersPerTeam = Number.isInteger(configuredPlayerCap)
+    && configuredPlayerCap >= 1
+    && configuredPlayerCap <= 99
+    ? configuredPlayerCap
+    : defaultTournamentSettings().maxPlayersPerTeam;
   return {
     id: row.id,
     name: row.name,
@@ -24,7 +31,8 @@ function tournament(row) {
     // format: row.format,
     numberOfTeams: row.number_of_teams,
     place: row.place,
-    suspensionSystem: parseJson(row.settings, defaultTournamentSettings()).suspensionSystem,
+    maxPlayersPerTeam,
+    suspensionSystem: settings.suspensionSystem,
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -33,6 +41,7 @@ function tournament(row) {
 
 function defaultTournamentSettings() {
   return {
+    maxPlayersPerTeam: 11,
     suspensionSystem: {
       enabled: true,
       yellowCardsForSuspension: 2,

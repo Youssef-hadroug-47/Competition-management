@@ -22,7 +22,11 @@ async function initialize() {
   if (!initialization) {
     initialization = fs
       .readFile(path.join(__dirname, 'schema.sql'), 'utf8')
-      .then((schema) => pool.query(schema));
+      .then((schema) => pool.query(schema))
+      .then(async () => {
+        const { initializeBetterAuth } = require('../services/betterAuth');
+        await initializeBetterAuth();
+      });
   }
   return initialization;
 }

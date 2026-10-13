@@ -12,6 +12,26 @@ const {
   deleteRole,
 } = require('../services/tournamentRolesService');
 
+function validatedPlayerCap(value, fallback = map.defaultTournamentSettings().maxPlayersPerTeam) {
+  let cap;
+  if (value === undefined) cap = Number(fallback);
+  else if (typeof value === 'number') cap = value;
+  else if (typeof value === 'string' && value.trim()) cap = Number(value);
+  else cap = Number.NaN;
+  if (!Number.isInteger(cap) || cap < 1 || cap > 99) {
+    throw httpError(400, 'Maximum players per team must be an integer between 1 and 99.');
+  }
+  return cap;
+}
+
+function readSettings(value) {
+  if (value == null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw httpError(400, 'settings must be an object.');
+  }
+  return value;
+}
+
 async function insertStageWithGroups(
   tournamentId,
   stageInput,
@@ -203,6 +223,8 @@ const create = asyncHandler(async (req, res) => {
   const body = req.body || {};
   if (!body.name) throw httpError(400, 'name is required');
   const visibility = body.visibility === 'private' ? 'private' : 'public';
+  const settings = readSettings(body.settings);
+  const maxPlayersPerTeam = validatedPlayerCap(settings.maxPlayersPerTeam);
   const tournamentId = id();
   await withTransaction(async (client) => {
     await client.query(
@@ -217,10 +239,11 @@ const create = asyncHandler(async (req, res) => {
         body.place || null,
         JSON.stringify({
           ...map.defaultTournamentSettings(),
-          ...(body.settings || {}),
+          ...settings,
+          maxPlayersPerTeam,
           suspensionSystem: {
             ...map.defaultTournamentSettings().suspensionSystem,
-            ...(body.settings?.suspensionSystem || {}),
+            ...(settings.suspensionSystem || {}),
           },
         }),
         req.user.id,
@@ -331,6 +354,24 @@ const getOne = asyncHandler(async (req, res) => {
 const update = asyncHandler(async (req, res) => {
   const row = await access.getTournamentOrThrow(req.params.tournamentId);
   const body = req.body || {};
+  const currentSettings = {
+    ...map.defaultTournamentSettings(),
+    ...parseJson(row.settings, {}),
+  };
+  const requestedSettings = readSettings(body.settings);
+  const settings = {
+    ...currentSettings,
+    ...requestedSettings,
+    maxPlayersPerTeam: validatedPlayerCap(
+      requestedSettings.maxPlayersPerTeam,
+      currentSettings.maxPlayersPerTeam,
+    ),
+    suspensionSystem: {
+      ...map.defaultTournamentSettings().suspensionSystem,
+      ...(currentSettings.suspensionSystem || {}),
+      ...(requestedSettings.suspensionSystem || {}),
+    },
+  };
   const next = {
     name: body.name ?? row.name,
     status: body.status ?? row.status,
@@ -339,13 +380,14 @@ const update = asyncHandler(async (req, res) => {
     place: body.place === undefined ? row.place : body.place,
   };
   await query(
-    'UPDATE tournaments SET name=$1,status=$2,visibility=$3,number_of_teams=$4,place=$5,updated_at=$6 WHERE id=$7',
+    'UPDATE tournaments SET name=$1,status=$2,visibility=$3,number_of_teams=$4,place=$5,settings=$6,updated_at=$7 WHERE id=$8',
     [
       next.name,
       next.status,
       next.visibility,
       next.number_of_teams,
       next.place,
+      JSON.stringify(settings),
       now(),
       row.id,
     ],

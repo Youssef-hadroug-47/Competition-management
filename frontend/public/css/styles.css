@@ -577,6 +577,25 @@ footer.page__footer {
   color: var(--text-muted);
 }
 
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0;
+  color: var(--text-muted);
+  font-size: .82rem;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.google-sign-in { width: 100%; }
+
 .verify-card {
   max-width: 480px;
   padding: 40px;
