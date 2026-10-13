@@ -40,17 +40,24 @@ function clear(node) {
 let flashTimer = null;
 
 function showBanner(node, message, kind = 'error') {
-  clear(node);
   if (!message) {
-    node.hidden = true;
+    if (node) {
+      clear(node);
+      node.hidden = true;
+    }
     return;
   }
-  node.hidden = false;
-  node.className = `banner banner--${kind}`;
-  node.textContent = message; // never innerHTML — message may echo user/API input
+  flashMessage(message, kind);
+  if (node) {
+    clear(node);
+    node.hidden = true;
+  }
 }
 
 function flashMessage(message, kind = 'error', duration = 3600) {
+  const text = String(message || '');
+  const readingDuration = Math.ceil(text.length / 15) * 1000;
+  const displayDuration = Math.max(duration, Math.min(12000, 3600 + readingDuration));
   let node = document.getElementById('app-flash-message');
   if (!node) {
     node = el('div', {
@@ -63,16 +70,22 @@ function flashMessage(message, kind = 'error', duration = 3600) {
   }
   clearTimeout(flashTimer);
   node.className = `flash-message flash-message--${kind}`;
-  node.textContent = message || '';
-  node.hidden = !message;
-  if (!message) return;
+  node.textContent = text;
+  node.hidden = !text;
+  if (!text) return;
   requestAnimationFrame(() => node.classList.add('flash-message--visible'));
   flashTimer = setTimeout(() => {
-    node.classList.remove('flash-message--visible');
-    setTimeout(() => {
-      if (!node.classList.contains('flash-message--visible')) node.hidden = true;
-    }, 220);
-  }, duration);
+    hideFlash();
+  }, displayDuration);
+}
+
+function hideFlash() {
+  const node = document.getElementById('app-flash-message');
+  if (!node) return;
+  node.classList.remove('flash-message--visible');
+  setTimeout(() => {
+    if (!node.classList.contains('flash-message--visible')) node.hidden = true;
+  }, 220);
 }
 
 /** Generic, non-leaky error text for anything unexpected from the network layer. */

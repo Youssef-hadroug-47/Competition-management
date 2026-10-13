@@ -14,6 +14,8 @@ router.get('/health', (req, res) => res.json({ ok: true }));
 
 router.post('/auth/register', auth.register);
 router.post('/auth/login', auth.login);
+router.post('/auth/verify-email', auth.verifyEmail);
+router.post('/auth/resend-verification', auth.resendVerification);
 router.get('/auth/me', requireAuth, auth.me);
 router.get('/users', requireAuth, requireRole('admin'), auth.listUsers);
 router.patch('/users/:id/role', requireAuth, requireRole('admin'), auth.updateRole);
@@ -41,32 +43,28 @@ router.post('/tournaments/:tournamentId/stages/:id/rounds', requireAuth, require
 router.patch('/tournaments/:tournamentId/rounds/:id', requireAuth, requireTournamentRole('moderator'), tournaments.updateRound);
 router.delete('/tournaments/:tournamentId/rounds/:id', requireAuth, requireTournamentRole('moderator'), tournaments.removeRound);
 
-router.get('/teams', authOptional, catalog.listTeams);
-router.get('/teams/:id', authOptional, catalog.getTeam);
-router.post('/teams', requireAuth, requireRole('admin'), catalog.createTeam);
-router.patch('/teams/:id', requireAuth, requireRole('admin'), catalog.updateTeam);
-router.delete('/teams/:id', requireAuth, requireRole('admin'), catalog.removeTeam);
-
-router.get('/players', authOptional, catalog.listPlayers);
-router.get('/players/:id', authOptional, catalog.getPlayer);
-router.post('/players', requireAuth, requireRole('admin'), catalog.createPlayer);
-router.patch('/players/:id', requireAuth, requireRole('admin'), catalog.updatePlayer);
-router.delete('/players/:id', requireAuth, requireRole('admin'), catalog.removePlayer);
+router.get('/tournaments/:tournamentId/teams', authOptional, catalog.listTeams);
+router.get('/tournaments/:tournamentId/teams/:id', authOptional, catalog.getTeam);
+router.post('/tournaments/:tournamentId/teams', requireAuth, requireTournamentModerator, catalog.createTeam);
+router.patch('/tournaments/:tournamentId/teams/:id', requireAuth, requireTournamentModerator, catalog.updateTeam);
+router.delete('/tournaments/:tournamentId/teams/:id', requireAuth, requireTournamentModerator, catalog.removeTeam);
 
 router.get('/tournaments/:tournamentId/participant-teams', authOptional, catalog.listParticipantTeams);
 router.post('/tournaments/:tournamentId/participant-teams', requireAuth, requireTournamentRole('moderator'), catalog.addParticipantTeam);
 router.post('/tournaments/:tournamentId/team-leader/team', requireAuth, requireTournamentRole('team_leader'), catalog.createTeamLeaderTeam);
 router.get('/tournaments/:tournamentId/team-leader/team', requireAuth, requireTournamentRole('team_leader'), catalog.getTeamLeaderTeam);
+router.delete('/tournaments/:tournamentId/team-leader/team/:id', requireAuth, requireTournamentRole('team_leader'), catalog.removeTeamLeaderTeam);
 router.post('/tournaments/:tournamentId/participant-teams/auto', requireAuth, requireRole('admin'), catalog.autoAddParticipantTeams);
 router.patch('/tournaments/:tournamentId/participant-teams/:id', requireAuth, requireTournamentRole('moderator'), catalog.updateParticipantTeam);
-router.delete('/tournaments/:tournamentId/participant-teams/:id', requireAuth, requireTournamentRole('moderator'), catalog.removeParticipantTeam);
+router.delete('/tournaments/:tournamentId/participant-teams/:id', requireAuth, requireTournamentModerator, catalog.removeParticipantTeam);
 
 router.get('/tournaments/:tournamentId/participant-teams/:id/players', authOptional, catalog.listParticipantPlayers);
-router.post('/tournaments/:tournamentId/participant-teams/:id/players', requireAuth, requireTournamentRole('moderator'), catalog.addParticipantPlayer);
+router.post('/tournaments/:tournamentId/participant-teams/:id/players', requireAuth, requireTournamentModerator, catalog.addParticipantPlayer);
 router.post('/tournaments/:tournamentId/team-leader/teams/:id/players', requireAuth, requireTournamentRole('team_leader'), catalog.addTeamLeaderPlayer);
+router.delete('/tournaments/:tournamentId/team-leader/teams/:id/players/:playerId', requireAuth, requireTournamentRole('team_leader'), catalog.removeTeamLeaderPlayer);
 router.post('/tournaments/:tournamentId/participant-teams/:id/players/auto', requireAuth, requireRole('admin'), catalog.autoAddParticipantPlayers);
 router.patch('/tournaments/:tournamentId/participant-players/:id', requireAuth, requireTournamentRole('moderator'), catalog.updateParticipantPlayer);
-router.delete('/tournaments/:tournamentId/participant-players/:id', requireAuth, requireTournamentRole('moderator'), catalog.removeParticipantPlayer);
+router.delete('/tournaments/:tournamentId/participant-players/:id', requireAuth, requireTournamentModerator, catalog.removeParticipantPlayer);
 
 router.post('/tournaments/:tournamentId/draw', requireAuth, requireTournamentRole('moderator'), matches.draw);
 router.delete('/tournaments/:tournamentId/stages/:id/reset', requireAuth, requireTournamentRole('moderator'), matches.resetStage);

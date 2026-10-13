@@ -68,7 +68,7 @@ async function getParticipant(participantTeamId) {
 
 async function rosterForTeam(teamId) {
   const result = await query(
-    `SELECT pp.id, pp.player_id
+    `SELECT pp.id
      FROM participant_players pp
      WHERE pp.participant_team_id = $1
        AND pp.status NOT IN ('ineligible', 'suspended')`
@@ -103,7 +103,7 @@ async function insertSimulatedEvent(match, {
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
     [
     eventId, match.id, match.tournament_id, type, phase, goalEventId, teamId,
-    playerId, assisterId, card, scored == null ? null : (scored ? 1 : 0),
+    playerId, assisterId, card, scored == null ? null : Boolean(scored),
     minute, JSON.stringify(payload), now()
     ]);
   return eventId;
@@ -297,7 +297,7 @@ async function simulateStage(stageId, { actorId, maxRounds = 40 } = {}) {
   const existingResult = await query('SELECT COUNT(*) AS c FROM matches WHERE stage_id = $1', [stage.id]);
   const existing = existingResult.rows[0];
   let drawResult = null;
-  if (existing.c === 0) {
+  if (Number(existing.c) === 0) {
     drawResult = await runDraw({ tournamentId: stage.tournament_id, stageId: stage.id });
   }
 

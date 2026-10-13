@@ -32,7 +32,7 @@
       createBody.appendChild(
         el('div', {}, [
           el('p', { text: 'Sign in to set up your own tournament — brackets, groups, matches and all.' }),
-          el('a', { class: 'btn btn--primary', href: '/login.html', text: 'Log in to create one' }),
+          el('a', { class: 'btn btn--primary', href: '/login', text: 'Log in to create one' }),
         ])
       );
       return;
@@ -53,7 +53,8 @@
   // in one place. `id` comes back from our own API responses, but we
   // still encode it before it ever touches a URL, on general principle.
   function tournamentHref(id) {
-    return `/tournament.html?id=${encodeURIComponent(id)}`;
+    console.log(`/tournament?id=${encodeURIComponent(id)}`);
+    return `/tournament?id=${encodeURIComponent(id)}`;
   }
 
   function tournamentRow(t) {
@@ -154,7 +155,7 @@
         : el('p', { class: 'empty-state', text: 'You do not own or moderate any tournaments yet.' }));
     } catch (err) {
       clear(myTournamentsBody);
-      myTournamentsBody.appendChild(el('p', { class: 'empty-state', text: friendlyErrorMessage(err) }));
+      UI.flashMessage(friendlyErrorMessage(err));
     }
   }
   async function loadPublicTournaments() {
@@ -207,8 +208,7 @@
         if (err.status === 404) {
           result.appendChild(el('p', { class: 'empty-state', text: 'No tournament has that exact name.' }));
         } else {
-          result.appendChild(el('p', { class: 'empty-state', text: friendlyErrorMessage(err) }));
-          showBanner(banner, friendlyErrorMessage(err));
+          UI.flashMessage(friendlyErrorMessage(err));
         }
       }
     });

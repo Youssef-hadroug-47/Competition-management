@@ -1,11 +1,13 @@
 (function () {
   const form = document.getElementById('login-form');
+  const resendForm = document.getElementById('resend-form');
+  const resendEmail = document.getElementById('resend-email');
   const banner = document.getElementById('banner');
   const submitBtn = document.getElementById('submit-btn');
 
   // If already signed in, there's nothing to do here.
   if (window.Session.isAuthenticated()) {
-    location.replace('/index.html');
+    location.replace('/index');
     return;
   }
 
@@ -16,8 +18,8 @@
   function safeNextPath() {
     const params = new URLSearchParams(location.search);
     const next = params.get('next');
-    if (!next) return '/index.html';
-    if (!next.startsWith('/') || next.startsWith('//')) return '/index.html';
+    if (!next) return '/index';
+    if (!next.startsWith('/') || next.startsWith('//')) return '/index';
     return next;
   }
 
@@ -42,13 +44,23 @@
       form.password.value = ''; // never leave the password sitting in the DOM
       location.href = safeNextPath();
     } catch (err) {
-      // The backend intentionally returns the same generic "Invalid
-      // credentials" message whether the email or the password was
-      // wrong, so we don't re-word it here either — doing so could
-      // reveal which one was incorrect.
       UI.showBanner(banner, UI.friendlyErrorMessage(err));
+      if (err.status === 403) {
+        resendEmail.value = email;
+        resendForm.hidden = false;
+      }
       submitBtn.disabled = false;
       submitBtn.textContent = 'Sign in';
+    }
+  });
+
+  resendForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    try {
+      const result = await Api.auth.resendVerification(resendEmail.value.trim());
+      UI.flashMessage(result.message, 'success');
+    } catch (err) {
+      UI.showBanner(banner, UI.friendlyErrorMessage(err));
     }
   });
 })();

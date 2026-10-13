@@ -28,6 +28,13 @@ async function requireTournamentInspect(tournament, user) {
   }
 }
 
+async function requireTournamentManage(tournament, user) {
+  if (!user) throw httpError(401, 'Authentication required');
+  if (user.role === 'admin' || user.id === tournament.created_by) return;
+  if (await getRole(tournament.id, user.id) === 'moderator') return;
+  throw httpError(403, 'Tournament moderator access required');
+}
+
 async function requireTeamLeader(tournamentId, user) {
   if (!user || user.role !== 'admin') {
     const role = user ? await getRole(tournamentId, user.id) : null;
@@ -56,6 +63,7 @@ module.exports = {
   getFollow,
   canInspectTournament,
   requireTournamentInspect,
+  requireTournamentManage,
   requireTeamLeader,
   requireAdmin,
   requireRefereeOrAdmin,

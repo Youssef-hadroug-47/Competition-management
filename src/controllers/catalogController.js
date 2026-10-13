@@ -9,105 +9,105 @@ const { getRole } = require('../services/tournamentRolesService');
 const one = async (text, values = []) => (await query(text, values)).rows[0];
 const many = async (text, values = []) => (await query(text, values)).rows;
 const run = async (text, values = []) => (await query(text, values)).rowCount;
+const optionalValue = (value) => value === '' || value == null ? null : value;
+const playerRoles = new Set(['player', 'captain', 'goalkeeper']);
+const playerStatuses = new Set(['active', 'injured', 'suspended', 'ineligible']);
+
+function validatePlayerFields(body) {
+  if (body.role != null && !playerRoles.has(body.role)) {
+    throw httpError(400, 'role must be player, captain, or goalkeeper');
+  }
+  if (body.status != null && !playerStatuses.has(body.status)) {
+    throw httpError(400, 'status must be active, injured, suspended, or ineligible');
+  }
+  for (const [field, minimum, maximum] of [['shirtNumber', 1, 99], ['heightCm', 1, 300]]) {
+    if (body[field] == null || body[field] === '') continue;
+    const value = Number(body[field]);
+    if (!Number.isInteger(value) || value < minimum || value > maximum) {
+      throw httpError(400, `${field} must be an integer from ${minimum} to ${maximum}`);
+    }
+  }
+}
+
+const participantJoinSql = 'SELECT pt.* FROM participant_teams pt';
 
 const listTeams = asyncHandler(async (req, res) => {
-  const rows = await many('SELECT * FROM teams ORDER BY name', []);
-  res.json({ teams: rows.map(map.team) });
+  const tournament = await access.getTournamentOrThrow(req.params.tournamentId);
+  await access.requireTournamentInspect(tournament, req.user);
+  const rows = await many(`${participantJoinSql} WHERE pt.tournament_id = $1 ORDER BY pt.name`, [tournament.id]);
+  res.json({ teams: rows.map(map.participantTeam) });
 });
 
 const getTeam = asyncHandler(async (req, res) => {
-  const row = await one('SELECT * FROM teams WHERE id = $1', [req.params.id]);
+  const row = await one(`${participantJoinSql} WHERE pt.id = $1`, [req.params.id]);
   if (!row) throw httpError(404, 'Team not found');
-  res.json({ team: map.team(row) });
+  const tournament = await access.getTournamentOrThrow(row.tournament_id);
+  await access.requireTournamentInspect(tournament, req.user);
+  res.json({ team: map.participantTeam(row) });
 });
 
 const createTeam = asyncHandler(async (req, res) => {
+  const tournament = await access.getTournamentOrThrow(req.params.tournamentId);
+  await access.requireTournamentManage(tournament, req.user);
   const body = req.body || {};
-  if (!body.name) throw httpError(400, 'name is required');
+  if (!String(body.name || '').trim()) throw httpError(400, 'name is required');
   const teamId = id();
   await run(
-    `INSERT INTO teams (id, name, slug, short_name, primary_color, secondary_color, city, country, founded_year)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
-  , [teamId, body.name.trim(), body.slug || slugify(body.name), body.shortName || null, body.primaryColor || body.colors?.primary || null, body.secondaryColor || body.colors?.secondary || null, body.city || null, body.country || null, body.foundedYear || null]);
-  res.status(201).json({ team: map.team(await one('SELECT * FROM teams WHERE id = $1', [teamId])) });
+    `INSERT INTO participant_teams
+      (id, tournament_id, creator_id, name, slug, short_name, primary_color, secondary_color, city, country, founded_year, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'registered')`,
+    [teamId, tournament.id, req.user.id, body.name.trim(), body.slug || slugify(body.name),
+      body.shortName || null, body.primaryColor || body.colors?.primary || null,
+      body.secondaryColor || body.colors?.secondary || null, body.city || null,
+      body.country || null, body.foundedYear || null],
+  );
+  res.status(201).json({ team: map.participantTeam(await one(`${participantJoinSql} WHERE pt.id = $1`, [teamId])) });
 });
 
 const updateTeam = asyncHandler(async (req, res) => {
-  const row = await one('SELECT * FROM teams WHERE id = $1', [req.params.id]);
-  if (!row) throw httpError(404, 'Team not found');
+  const row = await one(`${participantJoinSql} WHERE pt.id = $1`, [req.params.id]);
+  if (!row || row.tournament_id !== req.params.tournamentId) throw httpError(404, 'Team not found');
+  const tournament = await access.getTournamentOrThrow(row.tournament_id);
+  await access.requireTournamentManage(tournament, req.user);
   const body = req.body || {};
   await run(
-    `UPDATE teams SET name = $1, short_name = $2, primary_color = $3, secondary_color = $4, city = $5, country = $6, founded_year = $7
-     WHERE id = $8`
-  , [body.name ?? row.name, body.shortName ?? row.short_name, body.primaryColor ?? body.colors?.primary ?? row.primary_color, body.secondaryColor ?? body.colors?.secondary ?? row.secondary_color, body.city ?? row.city, body.country ?? row.country, body.foundedYear ?? row.founded_year, row.id]);
-  res.json({ team: map.team(await one('SELECT * FROM teams WHERE id = $1', [row.id])) });
+    `UPDATE participant_teams
+     SET name=$1, short_name=$2, primary_color=$3, secondary_color=$4, city=$5, country=$6, founded_year=$7
+     WHERE id=$8`,
+    [body.name ?? row.name, body.shortName ?? row.short_name,
+      body.primaryColor ?? body.colors?.primary ?? row.primary_color,
+      body.secondaryColor ?? body.colors?.secondary ?? row.secondary_color,
+      body.city ?? row.city, body.country ?? row.country,
+      body.foundedYear ?? row.founded_year, row.id],
+  );
+  res.json({ team: map.participantTeam(await one(`${participantJoinSql} WHERE pt.id = $1`, [row.id])) });
 });
 
 const removeTeam = asyncHandler(async (req, res) => {
-  const info = await run('DELETE FROM teams WHERE id = $1', [req.params.id]);
-  if (!info.rowCount) throw httpError(404, 'Team not found');
+  const row = await one('SELECT tournament_id FROM participant_teams WHERE id = $1', [req.params.id]);
+  if (!row || row.tournament_id !== req.params.tournamentId) throw httpError(404, 'Team not found');
+  const tournament = await access.getTournamentOrThrow(row.tournament_id);
+  await access.requireTournamentManage(tournament, req.user);
+  if (!(await run('DELETE FROM participant_teams WHERE id = $1', [req.params.id]))) {
+    throw httpError(404, 'Team not found');
+  }
   res.status(204).end();
 });
-
-const listPlayers = asyncHandler(async (req, res) => {
-  const rows = await many('SELECT * FROM players ORDER BY name', []);
-  res.json({ players: rows.map(map.player) });
-});
-
-const getPlayer = asyncHandler(async (req, res) => {
-  const row = await one('SELECT * FROM players WHERE id = $1', [req.params.id]);
-  if (!row) throw httpError(404, 'Player not found');
-  res.json({ player: map.player(row) });
-});
-
-const createPlayer = asyncHandler(async (req, res) => {
-  const body = req.body || {};
-  if (!body.name) throw httpError(400, 'name is required');
-  const playerId = id();
-  await run(
-    `INSERT INTO players (id, name, slug, nickname, date_of_birth, nationality, position, preferred_foot, height_cm)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
-  , [playerId, body.name.trim(), body.slug || slugify(body.name), body.nickname || null, body.dateOfBirth || null, body.nationality || null, body.position || null, body.preferredFoot || null, body.heightCm || null]);
-  res.status(201).json({ player: map.player(await one('SELECT * FROM players WHERE id = $1', [playerId])) });
-});
-
-const updatePlayer = asyncHandler(async (req, res) => {
-  const row = await one('SELECT * FROM players WHERE id = $1', [req.params.id]);
-  if (!row) throw httpError(404, 'Player not found');
-  const body = req.body || {};
-  await run(
-    `UPDATE players SET name = $1, nickname = $2, date_of_birth = $3, nationality = $4, position = $5, preferred_foot = $6, height_cm = $7
-     WHERE id = $8`
-  , [body.name ?? row.name, body.nickname ?? row.nickname, body.dateOfBirth ?? row.date_of_birth, body.nationality ?? row.nationality, body.position ?? row.position, body.preferredFoot ?? row.preferred_foot, body.heightCm ?? row.height_cm, row.id]);
-  res.json({ player: map.player(await one('SELECT * FROM players WHERE id = $1', [row.id])) });
-});
-
-const removePlayer = asyncHandler(async (req, res) => {
-  const info = await run('DELETE FROM players WHERE id = $1', [req.params.id]);
-  if (!info.rowCount) throw httpError(404, 'Player not found');
-  res.status(204).end();
-});
-
-const participantJoinSql = `
-  SELECT pt.*, t.name AS team_name, t.slug AS team_slug, t.primary_color, t.secondary_color
-  FROM participant_teams pt
-  JOIN teams t ON t.id = pt.team_id
-`;
 
 const addParticipantTeam = asyncHandler(async (req, res) => {
   const tournament = await access.getTournamentOrThrow(req.params.tournamentId);
-  const { teamId, seed, nickname } = req.body || {};
-  if (!teamId) throw httpError(400, 'teamId is required');
-  const team = await one('SELECT * FROM teams WHERE id = $1', [teamId]);
-  if (!team) throw httpError(404, 'Team not found');
-  if (await one('SELECT 1 FROM participant_teams WHERE tournament_id = $1 AND team_id = $2', [tournament.id, teamId])) {
-    throw httpError(409, 'Team is already registered in this tournament');
-  }
+  const body = req.body || {};
+  if (!String(body.name || '').trim()) throw httpError(400, 'name is required');
   const ptId = id();
   await run(
-    `INSERT INTO participant_teams (id, tournament_id, team_id, seed, nickname, status)
-     VALUES ($1, $2, $3, $4, $5, 'registered')`
-  , [ptId, tournament.id, teamId, seed ?? null, nickname || null]);
+    `INSERT INTO participant_teams
+      (id, tournament_id, creator_id, name, slug, short_name, primary_color, secondary_color, city, country, founded_year, seed, nickname, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'registered')`,
+    [ptId, tournament.id, req.user.id, body.name.trim(), body.slug || slugify(body.name),
+      body.shortName || null, body.primaryColor || null, body.secondaryColor || null,
+      body.city || null, body.country || null, body.foundedYear || null,
+      body.seed ?? null, body.nickname || null],
+  );
   const row = await one(`${participantJoinSql} WHERE pt.id = $1`, [ptId]);
   res.status(201).json({ participantTeam: map.participantTeam(row) });
 });
@@ -115,29 +115,22 @@ const addParticipantTeam = asyncHandler(async (req, res) => {
 const createTeamLeaderTeam = asyncHandler(async (req, res) => {
   const tournament = await access.getTournamentOrThrow(req.params.tournamentId);
   const userId = req.user.id;
-  if (await getRole(tournament.id, userId) !== 'team_leader') {
-    throw httpError(403, 'Assigned tournament team leader access required');
-  }
+  await access.requireTeamLeader(tournament.id, req.user);
   if (await one('SELECT 1 FROM tournament_team_leaders WHERE tournament_id = $1 AND user_id = $2', [tournament.id, userId])) {
     throw httpError(409, 'You already created a team for this tournament');
   }
   const body = req.body || {};
   if (!String(body.name || '').trim()) throw httpError(400, 'Team name is required');
-  const teamId = id();
   const participantTeamId = id();
-  const slug = body.slug || slugify(body.name);
   try {
     await withTransaction(async (client) => {
       await client.query(
-        `INSERT INTO teams (id, name, slug, short_name, primary_color, secondary_color, city, country)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [teamId, body.name.trim(), slug, body.shortName || null, body.primaryColor || null,
-          body.secondaryColor || null, body.city || null, body.country || null],
-      );
-      await client.query(
-        `INSERT INTO participant_teams (id, tournament_id, team_id, nickname, status)
-         VALUES ($1, $2, $3, $4, 'registered')`,
-        [participantTeamId, tournament.id, teamId, body.nickname || null],
+        `INSERT INTO participant_teams
+          (id, tournament_id, creator_id, name, slug, short_name, primary_color, secondary_color, city, country, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'registered')`,
+        [participantTeamId, tournament.id, userId, body.name.trim(), body.slug || slugify(body.name),
+          body.shortName || null, body.primaryColor || null, body.secondaryColor || null,
+          body.city || null, body.country || null],
       );
       await client.query(
         `INSERT INTO tournament_team_leaders (tournament_id, user_id, participant_team_id)
@@ -146,7 +139,7 @@ const createTeamLeaderTeam = asyncHandler(async (req, res) => {
       );
     });
   } catch (error) {
-    if (error.code === '23505') throw httpError(409, 'A team with this slug or ownership already exists');
+    if (error.code === '23505') throw httpError(409, 'A team with this name or ownership already exists');
     throw error;
   }
   const row = await one(`${participantJoinSql} WHERE pt.id = $1`, [participantTeamId]);
@@ -164,7 +157,7 @@ const getTeamLeaderTeam = asyncHandler(async (req, res) => {
      WHERE ttl.tournament_id = $1 AND ttl.user_id = $2`
   , [tournament.id, req.user.id]);
   if (!row) return res.json({ participantTeam: null, participantPlayers: [] });
-  const players = await many(`${playerJoinSql} WHERE pp.participant_team_id = $1 ORDER BY pp.shirt_number, p.name`, [row.id]);
+  const players = await many(`${playerJoinSql} WHERE pp.participant_team_id = $1 ORDER BY pp.shirt_number, pp.name`, [row.id]);
   res.json({ participantTeam: map.participantTeam(row), participantPlayers: players.map(map.participantPlayer) });
 });
 
@@ -178,38 +171,72 @@ async function teamLeaderOwnedTeam(tournamentId, userId, participantTeamId) {
   return row;
 }
 
+const removeTeamLeaderTeam = asyncHandler(async (req, res) => {
+  const team = await teamLeaderOwnedTeam(
+    req.params.tournamentId,
+    req.user.id,
+    req.params.id,
+  );
+  const result = await run(
+    'DELETE FROM participant_teams WHERE id = $1 AND tournament_id = $2',
+    [team.id, req.params.tournamentId],
+  );
+  if (!result) throw httpError(404, 'Team not found');
+  res.status(204).end();
+});
+
 const addTeamLeaderPlayer = asyncHandler(async (req, res) => {
-  const pt = await teamLeaderOwnedTeam(req.params.tournamentId, req.user.id, req.params.id);
-  const count = Number((await one(
-    'SELECT COUNT(*) AS count FROM participant_players WHERE participant_team_id = $1',
-    [pt.id],
-  )).count);
-  if (count >= 11) throw httpError(409, 'A team leader can register at most 11 players');
   const body = req.body || {};
-  if (!String(body.name || '').trim()) throw httpError(400, 'Player name is required');
-  const playerId = id();
+  if (!String(body.name || '').trim()) throw httpError(400, 'name is required');
+  validatePlayerFields(body);
   const participantPlayerId = id();
   const slug = body.slug || slugify(body.name);
   try {
     await withTransaction(async (client) => {
-      await client.query(
-        `INSERT INTO players (id, name, slug, nickname, date_of_birth, nationality, position, preferred_foot, height_cm)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [playerId, body.name.trim(), slug, body.nickname || null, body.dateOfBirth || null,
-          body.nationality || null, body.position || null, body.preferredFoot || null, body.heightCm || null],
+      const ownedTeam = await client.query(
+        `SELECT pt.id FROM tournament_team_leaders ttl
+         JOIN participant_teams pt ON pt.id = ttl.participant_team_id
+         WHERE ttl.tournament_id = $1 AND ttl.user_id = $2 AND pt.id = $3
+         FOR UPDATE OF pt`,
+        [req.params.tournamentId, req.user.id, req.params.id],
       );
+      if (!ownedTeam.rows[0]) throw httpError(403, 'You can manage only your own tournament team');
+      const countResult = await client.query(
+        'SELECT COUNT(*) AS count FROM participant_players WHERE participant_team_id = $1',
+        [req.params.id],
+      );
+      if (Number(countResult.rows[0].count) >= 11) {
+        throw httpError(409, 'A team leader can register at most 11 players');
+      }
       await client.query(
-        `INSERT INTO participant_players (id, participant_team_id, player_id, shirt_number, role, status)
-         VALUES ($1, $2, $3, $4, $5, 'active')`,
-        [participantPlayerId, pt.id, playerId, body.shirtNumber ?? null, body.role || 'player'],
+        `INSERT INTO participant_players
+          (id, participant_team_id, creator_id, name, slug, nickname, date_of_birth,
+           nationality, position, preferred_foot, height_cm, shirt_number, role, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        [participantPlayerId, req.params.id, req.user.id, body.name.trim(), slug,
+          optionalValue(body.nickname), optionalValue(body.dateOfBirth),
+          optionalValue(body.nationality), optionalValue(body.position),
+          optionalValue(body.preferredFoot), optionalValue(body.heightCm),
+          optionalValue(body.shirtNumber), body.role || 'player', body.status || 'active'],
       );
     });
   } catch (error) {
-    if (error.code === '23505') throw httpError(409, 'A player with this slug already exists');
+    if (error.code === '23505') throw httpError(409, 'A player with this name or slug already exists on this team');
     throw error;
   }
-  const row = await one(`${playerJoinSql} WHERE pp.id = $1`, [participantPlayerId]);
+  const row = await one('SELECT * FROM participant_players WHERE id = $1', [participantPlayerId]);
   res.status(201).json({ participantPlayer: map.participantPlayer(row) });
+});
+
+const removeTeamLeaderPlayer = asyncHandler(async (req, res) => {
+  await teamLeaderOwnedTeam(req.params.tournamentId, req.user.id, req.params.id);
+  const result = await run(
+    `DELETE FROM participant_players
+     WHERE id = $1 AND participant_team_id = $2`,
+    [req.params.playerId, req.params.id],
+  );
+  if (!result) throw httpError(404, 'Player not found');
+  res.status(204).end();
 });
 
 const autoAddParticipantTeams = asyncHandler(async (req, res) => {
@@ -217,34 +244,21 @@ const autoAddParticipantTeams = asyncHandler(async (req, res) => {
   const target = Number(req.body?.count ?? tournament.number_of_teams);
   if (!Number.isInteger(target) || target < 0) throw httpError(400, 'count must be a non-negative integer');
 
-  const registered = await many('SELECT team_id FROM participant_teams WHERE tournament_id = $1', [tournament.id]);
-  const registeredIds = new Set(registered.map((row) => row.team_id));
-  let teams = await many('SELECT * FROM teams ORDER BY name', []);
-  let nextNumber = teams.length + 1;
-
-  while (teams.length < target) {
-    let slug = `auto-team-${nextNumber}`;
-    while (await one('SELECT 1 FROM teams WHERE slug = $1', [slug])) {
-      nextNumber += 1;
-      slug = `auto-team-${nextNumber}`;
-    }
-    const teamId = id();
+  const registered = await many('SELECT id FROM participant_teams WHERE tournament_id = $1', [tournament.id]);
+  const missing = Math.max(0, target - registered.length);
+  const creatorId = req.user.id;
+  for (let index = 0; index < missing; index += 1) {
+    const number = registered.length + index + 1;
     await run(
-      'INSERT INTO teams (id, name, slug, short_name) VALUES ($1, $2, $3, $4)'
-    , [teamId, `Team ${nextNumber}`, slug, `T${nextNumber}`]);
-    teams.push(await one('SELECT * FROM teams WHERE id = $1', [teamId]));
-    nextNumber += 1;
+      `INSERT INTO participant_teams
+        (id, tournament_id, creator_id, name, slug, short_name, seed, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'registered')`,
+      [id(), tournament.id, creatorId, `Team ${number}`, `auto-team-${tournament.id}-${number}`,
+        `T${number}`, number],
+    );
   }
 
-  const missing = Math.max(0, target - registered.length);
-  const available = teams.filter((team) => !registeredIds.has(team.id)).slice(0, missing);
-  await Promise.all(available.map((team, index) => run(
-    `INSERT INTO participant_teams (id, tournament_id, team_id, seed, status)
-     VALUES ($1, $2, $3, $4, 'registered')`,
-    [id(), tournament.id, team.id, registered.length + index + 1]
-  )));
-
-  const rows = await many(`${participantJoinSql} WHERE pt.tournament_id = $1 ORDER BY pt.seed, t.name`, [tournament.id]);
+  const rows = await many(`${participantJoinSql} WHERE pt.tournament_id = $1 ORDER BY pt.seed, pt.name`, [tournament.id]);
   res.status(201).json({ participantTeams: rows.map(map.participantTeam) });
 });
 
@@ -253,7 +267,7 @@ const listParticipantTeams = asyncHandler(async (req, res) => {
   await access.requireTournamentInspect(tournament, req.user);
   
   const rows = await many(
-    `${participantJoinSql} WHERE pt.tournament_id = $1 ORDER BY pt.seed, t.name`,
+    `${participantJoinSql} WHERE pt.tournament_id = $1 ORDER BY pt.seed, pt.name`,
     [tournament.id],
   );
 
@@ -278,14 +292,13 @@ const removeParticipantTeam = asyncHandler(async (req, res) => {
   const row = await one('SELECT tournament_id FROM participant_teams WHERE id = $1', [req.params.id]);
   if (!row || row.tournament_id !== req.params.tournamentId) throw httpError(404, 'Participant team not found');
   const info = await run('DELETE FROM participant_teams WHERE id = $1', [req.params.id]);
-  if (!info.rowCount) throw httpError(404, 'Participant team not found');
+  if (!info) throw httpError(404, 'Participant team not found');
   res.status(204).end();
 });
 
 const playerJoinSql = `
-  SELECT pp.*, p.name AS player_name, p.slug AS player_slug, p.position AS player_position
+  SELECT pp.*
   FROM participant_players pp
-  JOIN players p ON p.id = pp.player_id
 `;
 
 const addParticipantPlayer = asyncHandler(async (req, res) => {
@@ -293,22 +306,25 @@ const addParticipantPlayer = asyncHandler(async (req, res) => {
   if (!pt) throw httpError(404, 'Participant team not found');
   if (pt.tournament_id !== req.params.tournamentId) throw httpError(404, 'Participant team not found');
   const body = req.body || {};
-  if (!body.playerId) throw httpError(400, 'playerId is required');
-  const player = await one('SELECT * FROM players WHERE id = $1', [body.playerId]);
-  if (!player) throw httpError(404, 'Player not found');
-  if (await one(
-    `SELECT 1
-     FROM participant_players pp
-     JOIN participant_teams pt ON pt.id = pp.participant_team_id
-     WHERE pt.tournament_id = $1 AND pp.player_id = $2`
-  , [pt.tournament_id, body.playerId])) {
-    throw httpError(409, 'Player is already registered in this tournament');
-  }
+  if (!String(body.name || '').trim()) throw httpError(400, 'name is required');
+  validatePlayerFields(body);
   const ppId = id();
-  await run(
-    `INSERT INTO participant_players (id, participant_team_id, player_id, shirt_number, role, status)
-     VALUES ($1, $2, $3, $4, $5, $6)`
-  , [ppId, pt.id, body.playerId, body.shirtNumber ?? null, body.role || 'player', body.status || 'active']);
+  try {
+    await run(
+      `INSERT INTO participant_players
+        (id, participant_team_id, creator_id, name, slug, nickname, date_of_birth,
+         nationality, position, preferred_foot, height_cm, shirt_number, role, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+      [ppId, pt.id, req.user.id, body.name.trim(), body.slug || slugify(body.name),
+        optionalValue(body.nickname), optionalValue(body.dateOfBirth),
+        optionalValue(body.nationality), optionalValue(body.position),
+        optionalValue(body.preferredFoot), optionalValue(body.heightCm),
+        optionalValue(body.shirtNumber), body.role || 'player', body.status || 'active'],
+    );
+  } catch (error) {
+    if (error.code === '23505') throw httpError(409, 'A player with this name or slug already exists on this team');
+    throw error;
+  }
   const row = await one(`${playerJoinSql} WHERE pp.id = $1`, [ppId]);
   res.status(201).json({ participantPlayer: map.participantPlayer(row) });
 });
@@ -321,42 +337,39 @@ const autoAddParticipantPlayers = asyncHandler(async (req, res) => {
   const target = Number(req.body?.count);
   if (!Number.isInteger(target) || target < 0) throw httpError(400, 'count must be a non-negative integer');
 
-  const existing = await many(
-    `SELECT pp.player_id
-     FROM participant_players pp
-     JOIN participant_teams pt ON pt.id = pp.participant_team_id
-     WHERE pt.tournament_id = $1`
-  , [participantTeam.tournament_id]);
-  const currentTeamCount = Number((await one(
-    'SELECT COUNT(*) AS count FROM participant_players WHERE participant_team_id = $1'
-  , [participantTeam.id])).count);
-  const existingIds = new Set(existing.map((row) => row.player_id));
-  let players = await many('SELECT * FROM players ORDER BY name', []);
-  let nextNumber = players.length + 1;
-  const missing = Math.max(0, target - currentTeamCount);
-
-  while (players.filter((player) => !existingIds.has(player.id)).length < missing) {
-    let slug = `auto-player-${nextNumber}`;
-    while (await one('SELECT 1 FROM players WHERE slug = $1', [slug])) {
-      nextNumber += 1;
-      slug = `auto-player-${nextNumber}`;
+  await withTransaction(async (client) => {
+    const teamLock = await client.query(
+      'SELECT id FROM participant_teams WHERE id = $1 AND tournament_id = $2 FOR UPDATE',
+      [participantTeam.id, req.params.tournamentId],
+    );
+    if (!teamLock.rows[0]) throw httpError(404, 'Participant team not found');
+    const countResult = await client.query(
+      'SELECT COUNT(*) AS count FROM participant_players WHERE participant_team_id = $1',
+      [participantTeam.id],
+    );
+    const currentTeamCount = Number(countResult.rows[0].count);
+    const missing = Math.max(0, target - currentTeamCount);
+    for (let index = 0; index < missing; index += 1) {
+      const number = currentTeamCount + index + 1;
+      let slug = `auto-player-${number}`;
+      let suffix = number;
+      while ((await client.query(
+        'SELECT 1 FROM participant_players WHERE participant_team_id = $1 AND slug = $2',
+        [participantTeam.id, slug],
+      )).rowCount) {
+        suffix += 1;
+        slug = `auto-player-${suffix}`;
+      }
+      await client.query(
+        `INSERT INTO participant_players
+          (id, participant_team_id, creator_id, name, slug, nickname, position,
+           shirt_number, role, status)
+         VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, 'player', 'active')`,
+        [id(), participantTeam.id, req.user.id, `Player ${suffix}`, slug,
+          `P${suffix}`, number],
+      );
     }
-    const playerId = id();
-    await run(
-      `INSERT INTO players (id, name, slug, nickname, position)
-       VALUES ($1, $2, $3, $4, 'player')`
-    , [playerId, `Player ${nextNumber}`, slug, `P${nextNumber}`]);
-    players.push(await one('SELECT * FROM players WHERE id = $1', [playerId]));
-    nextNumber += 1;
-  }
-
-  const available = players.filter((player) => !existingIds.has(player.id)).slice(0, missing);
-  await Promise.all(available.map((player, index) => run(
-    `INSERT INTO participant_players
-       (id, participant_team_id, player_id, shirt_number, role, status)
-     VALUES ($1, $2, $3, $4, 'player', 'active')`,
-    [id(), participantTeam.id, player.id, currentTeamCount + index + 1]
-  )));
+  });
 
   const rows = await many(`${playerJoinSql} WHERE pp.participant_team_id = $1 ORDER BY pp.shirt_number`, [participantTeam.id]);
   res.status(201).json({ participantPlayers: rows.map(map.participantPlayer) });
@@ -378,10 +391,31 @@ const updateParticipantPlayer = asyncHandler(async (req, res) => {
   const pt = await one('SELECT tournament_id FROM participant_teams WHERE id = $1', [row.participant_team_id]);
   if (!pt || pt.tournament_id !== req.params.tournamentId) throw httpError(404, 'Participant player not found');
   const body = req.body || {};
-  await run(
-    `UPDATE participant_players SET shirt_number = $1, role = $2, status = $3, yellow_cards = $4, red_cards = $5, goals = $6, assists = $7
-     WHERE id = $8`
-  , [body.shirtNumber ?? row.shirt_number, body.role ?? row.role, body.status ?? row.status, body.yellowCards ?? row.yellow_cards, body.redCards ?? row.red_cards, body.goals ?? row.goals, body.assists ?? row.assists, row.id]);
+  if (body.name !== undefined && !String(body.name).trim()) throw httpError(400, 'name cannot be empty');
+  validatePlayerFields(body);
+  try {
+    await run(
+      `UPDATE participant_players
+       SET name = $1, slug = $2, nickname = $3, date_of_birth = $4, nationality = $5,
+           position = $6, preferred_foot = $7, height_cm = $8, shirt_number = $9,
+           role = $10, status = $11, yellow_cards = $12, red_cards = $13, goals = $14, assists = $15
+       WHERE id = $16`,
+      [body.name === undefined ? row.name : body.name.trim(),
+        body.slug === undefined ? row.slug : (body.slug || slugify(body.name ?? row.name)),
+        body.nickname === undefined ? row.nickname : optionalValue(body.nickname),
+        body.dateOfBirth === undefined ? row.date_of_birth : optionalValue(body.dateOfBirth),
+        body.nationality === undefined ? row.nationality : optionalValue(body.nationality),
+        body.position === undefined ? row.position : optionalValue(body.position),
+        body.preferredFoot === undefined ? row.preferred_foot : optionalValue(body.preferredFoot),
+        body.heightCm === undefined ? row.height_cm : optionalValue(body.heightCm),
+        body.shirtNumber === undefined ? row.shirt_number : optionalValue(body.shirtNumber),
+        body.role ?? row.role, body.status ?? row.status, body.yellowCards ?? row.yellow_cards,
+        body.redCards ?? row.red_cards, body.goals ?? row.goals, body.assists ?? row.assists, row.id],
+    );
+  } catch (error) {
+    if (error.code === '23505') throw httpError(409, 'A player with this name or slug already exists on this team');
+    throw error;
+  }
   res.json({
     participantPlayer: map.participantPlayer(await one(`${playerJoinSql} WHERE pp.id = $1`, [row.id])),
   });
@@ -396,7 +430,7 @@ const removeParticipantPlayer = asyncHandler(async (req, res) => {
   `, [req.params.id]);
   if (!row || row.tournament_id !== req.params.tournamentId) throw httpError(404, 'Participant player not found');
   const info = await run('DELETE FROM participant_players WHERE id = $1', [req.params.id]);
-  if (!info.rowCount) throw httpError(404, 'Participant player not found');
+  if (!info) throw httpError(404, 'Participant player not found');
   res.status(204).end();
 });
 
@@ -406,15 +440,12 @@ module.exports = {
   createTeam,
   updateTeam,
   removeTeam,
-  listPlayers,
-  getPlayer,
-  createPlayer,
-  updatePlayer,
-  removePlayer,
   addParticipantTeam,
   createTeamLeaderTeam,
   getTeamLeaderTeam,
+  removeTeamLeaderTeam,
   addTeamLeaderPlayer,
+  removeTeamLeaderPlayer,
   autoAddParticipantTeams,
   listParticipantTeams,
   updateParticipantTeam,

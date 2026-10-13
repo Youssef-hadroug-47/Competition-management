@@ -146,6 +146,8 @@ function pairKnockoutParticipants(participants, forbiddenPairs) {
 // Keep transaction-scoped queries in AsyncLocalStorage so nested draw helpers
 // share the checked-out PostgreSQL client.
 async function runInTransaction(fn) {
+  const currentClient = transactionContext.getStore();
+  if (currentClient) return fn(currentClient);
   return withTransaction(async (client) => transactionContext.run(client, () => fn(client)));
 }
 
@@ -164,8 +166,10 @@ async function getIncomingParticipants(stage) {
   return (await many(
       `SELECT DISTINCT pt.* FROM stage_promotions sp
        JOIN participant_teams pt ON pt.id = sp.participant_team_id
-       WHERE sp.target_stage_id = ?`
-    , [stage.id]));
+       WHERE sp.target_stage_id = ?
+         AND sp.tournament_id = ?
+         AND pt.tournament_id = ?`
+    , [stage.id, stage.tournament_id, stage.tournament_id]));
 }
 
 // Which stages currently have promotions feeding `stage` — used for
@@ -176,8 +180,9 @@ async function getFeederStageSequenceOrders(stage) {
       `SELECT DISTINCT s.sequence_order AS seq FROM stage_promotions sp
        JOIN stages s ON s.id = sp.source_stage_id
        WHERE sp.target_stage_id = ?
+         AND sp.tournament_id = ?
        ORDER BY seq ASC`
-    , [stage.id])).map((r) => r.seq);
+    , [stage.id, stage.tournament_id])).map((r) => r.seq);
 }
 
 async function isStageComplete(stage) {
@@ -405,9 +410,14 @@ async function rankGroupTeams(groupId, tiebreakers) {
      LEFT JOIN matches m
        ON m.group_id = ?
       AND (m.home_participant_team_id = pt.id OR m.away_participant_team_id = pt.id)
-     WHERE pt.group_id = ?
-        OR m.id IS NOT NULL`
-  , [groupId, groupId]);
+     WHERE pt.tournament_id = (
+         SELECT s.tournament_id
+         FROM groups g
+         JOIN stages s ON s.id = g.stage_id
+         WHERE g.id = ?
+       )
+       AND (pt.group_id = ? OR m.id IS NOT NULL)`
+  , [groupId, groupId, groupId]);
   if (!teams.length) return teams;
 
   const cardRows = await getCardsForTeams(teams);
@@ -503,6 +513,22 @@ async function finalizeLeagueStage(stage) {
     targetStageId: c.targetStageId,
     rankPosition: index + 1,
   }));
+
+  const promotionTargets = [...new Set([
+    ...directPromotions.map(({ targetStageId }) => targetStageId),
+    ...rankedPromotions.map(({ targetStageId }) => targetStageId),
+  ])];
+  if (promotionTargets.length) {
+    const placeholders = promotionTargets.map((_, index) => `$${index + 2}`).join(', ');
+    const targets = await many(
+      `SELECT id FROM stages
+       WHERE tournament_id = $1 AND id IN (${placeholders})`,
+      [stage.tournament_id, ...promotionTargets],
+    );
+    if (targets.length !== promotionTargets.length) {
+      throw httpError(400, 'Promotion rules must target stages in the same tournament');
+    }
+  }
 
   await runInTransaction(async () => {
     await run('DELETE FROM stage_promotions WHERE source_stage_id = ?', [stage.id]);
@@ -759,6 +785,10 @@ async function resetStage({ tournamentId, stageId, scopeStageIds = null }) {
     , [tournamentId, ...stageGroupIds])).forEach(({ id }) => assignedTeamIds.add(id));
   }
 
+  // Resetting a stage must restore every unified participant-team projection
+  // touched by its finished league matches before those matches are deleted.
+  // Match-event rows may also contain phase/shootout events without a player;
+  // those rows must not abort the reset.
   await runInTransaction(async () => {
     for (const match of matches) {
       if (match.status === 'finished') {
@@ -779,14 +809,14 @@ async function resetStage({ tournamentId, stageId, scopeStageIds = null }) {
                 goals_for = GREATEST(0, goals_for - ?), goals_against = GREATEST(0, goals_against - ?),
                 points = GREATEST(0, points - ?) WHERE id = ?`
             , [1, wins, draws, losses, goalsFor, goalsAgainst, points, team.id]);
-            reverse(home, homeWin ? 1 : 0, draw ? 1 : 0, homeWin ? 0 : 1, homeScore, awayScore, homeWin ? pts.win : draw ? pts.draw : pts.loss);
-            reverse(away, homeWin ? 0 : 1, draw ? 1 : 0, homeWin ? 1 : 0, awayScore, homeScore, homeWin ? pts.loss : draw ? pts.draw : pts.win);
+            await reverse(home, homeWin ? 1 : 0, draw ? 1 : 0, homeWin ? 0 : 1, homeScore, awayScore, homeWin ? pts.win : draw ? pts.draw : pts.loss);
+            await reverse(away, homeWin ? 0 : 1, draw ? 1 : 0, homeWin ? 1 : 0, awayScore, homeScore, homeWin ? pts.loss : draw ? pts.draw : pts.win);
           }
         }
       }
       const events = await many('SELECT type, card, player_id, payload FROM match_events WHERE match_id = ?', [match.id]);
       for (const event of events) {
-        if (!event.player_id) return;
+        if (!event.player_id) continue;
         const payload = parseJson(event.payload, {});
         const column = event.type === 'goal' && !payload.ownGoal
           ? 'goals'
@@ -947,10 +977,18 @@ async function advanceKnockoutStage(stageId) {
 //     promotions into the next stage). May need to be called again after
 //     each subsequent round finishes.
 // Returns null if the stage isn't in a state that needs anything done yet.
-async function finalizeStageIfComplete(stageId) {
-  const stage = await one('SELECT * FROM stages WHERE id = ?', [stageId]);
-  if (!stage) return null;
-  return stage.type === 'league' ? await finalizeLeagueStage(stage) : await advanceKnockoutStage(stage.id);
+async function finalizeStageIfComplete(stageId, client = null) {
+  const finalize = async () => {
+    const stage = await one('SELECT * FROM stages WHERE id = ?', [stageId], client);
+    if (!stage) return null;
+    return stage.type === 'league'
+      ? await finalizeLeagueStage(stage)
+      : await advanceKnockoutStage(stage.id);
+  };
+
+  if (client) return transactionContext.run(client, finalize);
+
+  return finalize();
 }
 
 async function stagePromotionSnapshot(stageId) {

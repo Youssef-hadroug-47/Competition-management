@@ -209,7 +209,6 @@
       activeTab: navigationState.get('activeTab', 'matches'),
       navigationState,
       leaders: { promise: null, data: null },
-      catalog: { teams: null, players: null },
       rosters: new Map(),
     };
     const savedStageId = navigationState.get('activeStageId');
@@ -276,7 +275,7 @@
       button.textContent = 'Deleting…';
       try {
         await Api.tournaments.remove(tournamentId);
-        location.href = '/index.html';
+        location.href = '/index';
       } catch (err) {
         button.disabled = false;
         button.textContent = 'Delete tournament';
@@ -441,69 +440,10 @@
       { id: 'teams', label: 'Teams & players', render: renderTeamsView },
       { id: 'votes', label: 'Voting', render: renderVotesView },
     ];
-    if (state.viewerRole === 'team_leader') {
-      tabs.unshift({ id: 'my-team', label: 'My team', render: renderTeamLeaderView });
-    }
     if (state.tournament.visibility === 'private' && state.viewerRole === 'moderator') {
       tabs.push({ id: 'followers', label: 'Followers', render: renderFollowersView });
     }
 
-    async function renderTeamLeaderView(container, state) {
-      clear(container);
-      container.appendChild(el('p', { class: 'empty-state', text: 'Loading your team…' }));
-      try {
-        const data = await Api.teamLeader.get(state.tournamentId);
-        clear(container);
-        const team = data.participantTeam;
-        const players = data.participantPlayers || [];
-        if (!team) {
-          const form = el('form', { class: 'management-form' }, [
-            el('h2', { text: 'Create your tournament team' }),
-            el('p', { class: 'field__hint', text: 'You can create one team for this tournament.' }),
-            el('input', { name: 'name', required: 'required', placeholder: 'Team name', 'aria-label': 'Team name' }),
-            el('button', { class: 'btn btn--primary', type: 'submit', text: 'Create team' }),
-          ]);
-          form.addEventListener('submit', async (event) => {
-            event.preventDefault();
-            const button = form.querySelector('button');
-            button.disabled = true;
-            try { await Api.teamLeader.createTeam(state.tournamentId, { name: form.elements.name.value.trim() }); await renderTeamLeaderView(container, state); }
-            catch (err) { button.disabled = false; showBanner(banner, friendlyErrorMessage(err)); }
-          });
-          container.appendChild(form);
-          return;
-        }
-        const roster = el('div', { class: 'participant-team-card' }, [
-          el('h2', { text: team.team?.name || team.nickname || 'My team' }),
-          el('p', { class: 'field__hint', text: `${players.length}/11 players registered` }),
-          el('ul', { class: 'catalog-list' }, players.map((player) => el('li', { text: [player.player?.name, player.position].filter(Boolean).join(' · ') }))),
-        ]);
-        if (players.length < 11) {
-          const form = el('form', { class: 'management-form' }, [
-            el('h3', { text: 'Add player' }),
-            el('input', { name: 'name', required: 'required', placeholder: 'Player name', 'aria-label': 'Player name' }),
-            el('input', { name: 'position', placeholder: 'Position (optional)', 'aria-label': 'Position' }),
-            el('button', { class: 'btn btn--primary', type: 'submit', text: 'Add player' }),
-          ]);
-          form.addEventListener('submit', async (event) => {
-            event.preventDefault();
-            const button = form.querySelector('button');
-            button.disabled = true;
-            try {
-              await Api.teamLeader.addPlayer(state.tournamentId, team.id, { name: form.elements.name.value.trim(), position: form.elements.position.value.trim() || undefined });
-              await renderTeamLeaderView(container, state);
-            } catch (err) { button.disabled = false; showBanner(banner, friendlyErrorMessage(err)); }
-          });
-          roster.appendChild(form);
-        } else {
-          roster.appendChild(el('p', { class: 'field__hint', text: 'The 11-player roster limit has been reached.' }));
-        }
-        container.appendChild(roster);
-      } catch (err) {
-        clear(container);
-        container.appendChild(el('p', { class: 'empty-state', text: friendlyErrorMessage(err) }));
-      }
-    }
     if (Session.getUser()?.id === state.tournament.createdBy) {
       tabs.push({ id: 'staff', label: 'Staff management', render: renderStaffView });
     }
@@ -547,7 +487,7 @@
       followers = Array.isArray(data?.followers) ? data.followers : [];
     } catch (err) {
       clear(container);
-      container.appendChild(el('p', { class: 'empty-state', text: friendlyErrorMessage(err) }));
+      UI.flashMessage(friendlyErrorMessage(err));
       return;
     }
 
@@ -619,7 +559,7 @@
       roles = Array.isArray(data) ? data : data?.roles || [];
     } catch (err) {
       clear(container);
-      container.appendChild(el('p', { class: 'empty-state', text: friendlyErrorMessage(err) }));
+      UI.flashMessage(friendlyErrorMessage(err));
       return;
     }
 
@@ -936,7 +876,7 @@
       }
     } catch (err) {
       clear(list);
-      list.appendChild(el('p', { class: 'empty-state', text: friendlyErrorMessage(err) }));
+      UI.flashMessage(friendlyErrorMessage(err));
     }
   }
 
@@ -1062,7 +1002,7 @@
     const administrator = isAdmin();
     actions.appendChild(el('a', {
       class: 'btn btn--primary',
-      href: `/referee.html?tournamentId=${encodeURIComponent(state.tournamentId)}&matchId=${encodeURIComponent(detail.match.id)}`,
+      href: `/referee?tournamentId=${encodeURIComponent(state.tournamentId)}&matchId=${encodeURIComponent(detail.match.id)}`,
       text: 'View match timeline',
     }));
     if (!administrator && ['scheduled', 'postponed'].includes(status)) {
@@ -1159,7 +1099,7 @@
     shell.appendChild(el('div', { class: 'match-menu__controls' }, [
       el('a', {
         class: 'btn btn--ghost',
-        href: `/referee.html?tournamentId=${encodeURIComponent(state.tournamentId)}&matchId=${encodeURIComponent(detail.match.id)}`,
+        href: `/referee?tournamentId=${encodeURIComponent(state.tournamentId)}&matchId=${encodeURIComponent(detail.match.id)}`,
         text: 'View match timeline',
       }),
     ]));
@@ -1204,7 +1144,7 @@
           el('h2', { id: 'match-menu-title', text: 'Match details' }),
           el('button', { class: 'btn btn--ghost match-menu__close', type: 'button', text: 'Close', 'aria-label': 'Close match details', onclick: close }),
         ]));
-        shell.appendChild(el('p', { class: 'empty-state', text: friendlyErrorMessage(err) }));
+        UI.flashMessage(friendlyErrorMessage(err));
         return;
       }
       renderMatchMenuContent(shell, state, detail, refresh, close);
@@ -1569,7 +1509,7 @@
       }
     } catch (err) {
       clear(container);
-      container.appendChild(el('p', { class: 'empty-state', text: friendlyErrorMessage(err) }));
+      UI.flashMessage(friendlyErrorMessage(err));
       return;
     }
 
@@ -1759,16 +1699,8 @@
   }
 
   // ---------------------------------------------------------------
-  // View: registered teams and tournament rosters.
-  // Catalog records are reusable; only moderators can attach them to
-  // this tournament, while admins can also create new catalog records.
+  // View: tournament-scoped teams and rosters.
   // ---------------------------------------------------------------
-  async function loadCatalog(state) {
-    if (!state.catalog.teams) state.catalog.teams = Api.teams.list().then((d) => d?.teams || []);
-    if (!state.catalog.players) state.catalog.players = Api.players.list().then((d) => d?.players || []);
-    return Promise.all([state.catalog.teams, state.catalog.players]);
-  }
-
   async function loadRoster(state, participantTeamId) {
     if (state.rosters.has(participantTeamId)) return state.rosters.get(participantTeamId);
     const promise = Api.participantPlayers
@@ -1793,9 +1725,11 @@
   }
 
   function adminCatalogForms(container, state) {
-    if (Session.getUser()?.role !== 'admin') return;
+    const isTeamLeader = state.viewerRole === 'team_leader';
+    const canManageTeams = isAdmin() || state.viewerRole === 'moderator' || isTeamLeader;
+    if (!canManageTeams) return;
     const teamForm = el('form', { class: 'management-form' }, [
-      el('h3', { text: 'Create catalog team' }),
+      el('h3', { text: isTeamLeader ? 'Create your tournament team' : 'Create tournament team' }),
       el('div', { class: 'management-form-grid' }, [
         catalogField('Name', 'text', 'name', 'Team name', true),
         catalogField('Slug', 'text', 'slug', 'Auto-generated if empty'),
@@ -1808,74 +1742,24 @@
       ]),
       el('button', { class: 'btn btn--primary', type: 'submit', text: 'Create team' }),
     ]);
-    const playerForm = el('form', { class: 'management-form' }, [
-      el('h3', { text: 'Create catalog player' }),
-      el('div', { class: 'management-form-grid' }, [
-        catalogField('Name', 'text', 'name', 'Player name', true),
-        catalogField('Slug', 'text', 'slug', 'Auto-generated if empty'),
-        catalogField('Nickname', 'text', 'nickname', 'Optional'),
-        catalogField('Date of birth', 'date', 'dateOfBirth', ''),
-        catalogField('Nationality', 'text', 'nationality', 'Optional'),
-        catalogField('Position', 'text', 'position', 'Optional'),
-        catalogField('Preferred foot', 'text', 'preferredFoot', 'Left, right, both…'),
-        catalogField('Height (cm)', 'number', 'heightCm', 'Optional', false, { min: 1, max: 300 }),
-      ]),
-      el('button', { class: 'btn btn--primary', type: 'submit', text: 'Create player' }),
-    ]);
     teamForm.addEventListener('submit', async (event) => {
       event.preventDefault();
       const data = Object.fromEntries(new FormData(teamForm));
       try {
-        await Api.teams.create(data);
+        let created;
+        if (isTeamLeader) {
+          created = await Api.teamLeader.createTeam(state.tournamentId, data);
+        } else {
+          created = await Api.teams.create(state.tournamentId, data);
+        }
         teamForm.reset();
-        state.catalog.teams = null;
+        if (created?.team || created?.participantTeam) {
+          state.participantTeams.push(created.team || created.participantTeam);
+        }
         renderTeamsView(container, state);
       } catch (err) { showBanner(banner, friendlyErrorMessage(err)); }
     });
-    playerForm.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const data = Object.fromEntries(new FormData(playerForm));
-      try {
-        await Api.players.create(data);
-        playerForm.reset();
-        state.catalog.players = null;
-        renderTeamsView(container, state);
-      } catch (err) { showBanner(banner, friendlyErrorMessage(err)); }
-    });
-    container.appendChild(el('div', { class: 'management-forms' }, [teamForm, playerForm]));
-  }
-
-  function teamRegistrationForm(container, state, catalogTeams) {
-
-    const canManageTeams = state.viewerRole === 'moderator';
-    const canAutoFillTeams = isAdmin();
-    if (!canManageTeams && !canAutoFillTeams) return;
-    const available = catalogTeams.filter((team) => !state.participantTeams.some((pt) => pt.teamId === team.id));
-    const forms = [];
-    if (canManageTeams && available.length) {
-      const select = el('select', { name: 'teamId', required: 'required', 'aria-label': 'Catalog team' },
-        available.map((team) => el('option', { value: team.id, text: team.name })));
-      const seed = el('input', { type: 'number', name: 'seed', min: 1, placeholder: 'Seed (optional)' });
-      const nickname = el('input', { type: 'text', name: 'nickname', maxlength: 80, placeholder: 'Tournament nickname (optional)' });
-      const form = el('form', { class: 'inline-form registration-form' }, [
-        select, seed, nickname,
-        el('button', { class: 'btn btn--primary', type: 'submit', text: 'Register team' }),
-      ]);
-      form.addEventListener('submit', async (event) => {
-        event.preventDefault();
-        try {
-          const data = await Api.participantTeams.add(state.tournamentId, {
-            teamId: select.value,
-            seed: seed.value ? Number(seed.value) : undefined,
-            nickname: nickname.value.trim() || undefined,
-          });
-          state.participantTeams.push(data.participantTeam);
-          renderTeamsView(container, state);
-        } catch (err) { showBanner(banner, friendlyErrorMessage(err)); }
-      });
-      forms.push(form);
-    }
-    if (canAutoFillTeams) {
+    if (isAdmin()) {
       const autoForm = el('form', { class: 'inline-form registration-form' }, [
         el('button', { class: 'btn btn--secondary', type: 'submit', text: 'Add missing teams automatically' }),
       ]);
@@ -1888,33 +1772,42 @@
           renderTeamsView(container, state);
         } catch (err) { showBanner(banner, friendlyErrorMessage(err)); }
       });
-      forms.push(autoForm);
+      container.appendChild(autoForm);
     }
-    container.appendChild(el('div', { class: 'management-toolbar' }, [
-      el('div', {}, [
-        el('h3', { text: 'Register tournament teams' }),
-        el('p', { class: 'field__hint', text: 'The tournament team limit is used automatically. Existing catalog teams are reused before placeholders are created.' }),
-      ]),
-      el('div', { class: 'management-forms management-forms--compact' }, forms),
-    ]));
+    if (!isTeamLeader || !state.teamLeader?.participantTeam) {
+      container.appendChild(el('div', { class: 'management-forms' }, [teamForm]));
+    }
   }
 
-  function catalogDirectory(container, catalogTeams, catalogPlayers) {
-    const teamItems = catalogTeams.length
-      ? catalogTeams.map((team) => el('li', { text: [team.name, team.shortName].filter(Boolean).join(' · ') }))
-      : [el('li', { class: 'empty-state', text: 'No catalog teams available.' })];
-    const playerItems = catalogPlayers.length
-      ? catalogPlayers.map((player) => el('li', { text: [player.name, player.position, player.nationality].filter(Boolean).join(' · ') }))
-      : [el('li', { class: 'empty-state', text: 'No catalog players available.' })];
-    container.appendChild(el('div', { class: 'catalog-directory' }, [
-      el('div', {}, [el('h3', { text: 'Available teams' }), el('ul', { class: 'catalog-list' }, teamItems)]),
-      el('div', {}, [el('h3', { text: 'Available players' }), el('ul', { class: 'catalog-list' }, playerItems)]),
-    ]));
-  }
-
-  function rosterCard(container, state, participantTeam, players, catalogPlayers, assignedPlayerIds) {
+  function rosterCard(container, state, participantTeam, players) {
     const teamName = participantTeam.team?.name || participantTeam.nickname || 'Unnamed team';
-    const children = [el('h3', { text: teamName })];
+    const isOwnedByTeamLeader = state.viewerRole === 'team_leader'
+      && state.teamLeader?.participantTeam?.id === participantTeam.id;
+    const canDelete = isAdmin() || state.viewerRole === 'moderator' || isOwnedByTeamLeader;
+    const canManageRoster = isAdmin() || state.viewerRole === 'moderator' || isOwnedByTeamLeader;
+    const children = [
+      el('div', { class: 'participant-team-card__heading' }, [
+        el('h3', { text: teamName }),
+        ...(canDelete ? [el('button', {
+          class: 'btn btn--danger btn--small',
+          type: 'button',
+          text: 'Delete team',
+          onclick: async () => {
+            if (!await confirmAction('Delete registered team?', `Remove ${teamName} and its players from this tournament?`, 'Delete team')) return;
+            try {
+              if (isOwnedByTeamLeader) {
+                await Api.teamLeader.removeTeam(state.tournamentId, participantTeam.id);
+              } else {
+                await Api.participantTeams.remove(state.tournamentId, participantTeam.id);
+              }
+              state.participantTeams = state.participantTeams.filter((team) => team.id !== participantTeam.id);
+              state.rosters.delete(participantTeam.id);
+              await renderTeamsView(container, state);
+            } catch (err) { showBanner(banner, friendlyErrorMessage(err)); }
+          },
+        })] : []),
+      ]),
+    ];
     const list = el('ul', { class: 'roster-list' });
     if (!players.length) list.appendChild(el('li', { class: 'empty-state', text: 'No players assigned yet.' }));
     players.forEach((pp) => {
@@ -1927,53 +1820,84 @@
         .filter(([, value]) => Number(value) > 0)
         .map(([label, value]) => `${label} ${value}`);
       list.appendChild(el('li', {}, [
-        el('span', { text: `${pp.player?.name || 'Unknown player'}${pp.shirtNumber != null ? ` · #${pp.shirtNumber}` : ''}` }),
-        el('span', {
-          class: 'roster-list__meta',
-          text: [pp.role || 'player', ...eventTotals].join(' · '),
-        }),
+        el('div', { class: 'roster-list__info' }, [
+          el('span', { text: `${pp.name || pp.player?.name || 'Unknown player'}${pp.shirtNumber != null ? ` · #${pp.shirtNumber}` : ''}` }),
+          el('span', {
+            class: 'roster-list__meta',
+            text: [pp.role || 'player', ...eventTotals].join(' · '),
+          }),
+        ]),
+        ...(canDelete ? [el('button', {
+          class: 'btn btn--danger btn--small',
+          type: 'button',
+          text: 'Delete',
+          onclick: async () => {
+            if (!await confirmAction('Delete registered player?', `Remove ${pp.name || pp.player?.name || 'this player'} from ${teamName}?`, 'Delete player')) return;
+            try {
+              if (isOwnedByTeamLeader) {
+                await Api.teamLeader.removePlayer(state.tournamentId, participantTeam.id, pp.id);
+              } else {
+                await Api.participantPlayers.remove(state.tournamentId, pp.id);
+              }
+              state.rosters.delete(participantTeam.id);
+              await renderTeamsView(container, state);
+            } catch (err) { showBanner(banner, friendlyErrorMessage(err)); }
+          },
+        })] : []),
       ]));
     });
     children.push(list);
-    if (state.viewerRole === 'moderator') {
-      const currentTeamPlayers = new Set(players.map((pp) => pp.playerId));
-      const available = catalogPlayers.filter((p) =>
-        !assignedPlayerIds.has(p.id) || currentTeamPlayers.has(p.id)
-      );
-      if (available.length) {
-        const select = el('select', { required: 'required', 'aria-label': `Player for ${teamName}` },
-          available.map((p) => el('option', { value: p.id, text: p.name })));
-        const shirtNumber = el('input', { type: 'number', name: 'shirtNumber', min: 1, max: 99, placeholder: 'Shirt #' });
-        const role = el('select', { name: 'role', 'aria-label': `Role for ${teamName}` }, [
-          el('option', { value: 'player', text: 'Player' }),
-          el('option', { value: 'captain', text: 'Captain' }),
-          el('option', { value: 'goalkeeper', text: 'Goalkeeper' }),
-        ]);
-        const status = el('select', { name: 'status', 'aria-label': `Status for ${teamName}` }, [
-          el('option', { value: 'active', text: 'Active' }),
-          el('option', { value: 'injured', text: 'Injured' }),
-          el('option', { value: 'suspended', text: 'Suspended' }),
-          el('option', { value: 'ineligible', text: 'Ineligible' }),
-        ]);
-        const form = el('form', { class: 'inline-form registration-form' }, [
-          select, shirtNumber, role, status,
-          el('button', { class: 'btn btn--ghost', type: 'submit', text: 'Register player' }),
-        ]);
-        form.addEventListener('submit', async (event) => {
-          event.preventDefault();
-          try {
-            await Api.participantPlayers.add(state.tournamentId, participantTeam.id, {
-              playerId: select.value,
-              shirtNumber: shirtNumber.value ? Number(shirtNumber.value) : undefined,
-              role: role.value,
-              status: status.value,
-            });
-            state.rosters.delete(participantTeam.id);
-            renderTeamsView(container, state);
-          } catch (err) { showBanner(banner, friendlyErrorMessage(err)); }
-        });
-        children.push(form);
-      }
+    if (canManageRoster && (isOwnedByTeamLeader ? players.length < 11 : true)) {
+      const playerForm = el('form', { class: 'management-form roster-player-form' }, [
+        el('h4', { text: `Add player to ${teamName}` }),
+        el('div', { class: 'management-form-grid' }, [
+          catalogField('Name', 'text', 'name', 'Player name', true),
+          catalogField('Slug', 'text', 'slug', 'Auto-generated if empty'),
+          catalogField('Nickname', 'text', 'nickname', 'Optional'),
+          catalogField('Date of birth', 'date', 'dateOfBirth', ''),
+          catalogField('Nationality', 'text', 'nationality', 'Optional'),
+          catalogField('Position', 'text', 'position', 'Optional'),
+          catalogField('Preferred foot', 'text', 'preferredFoot', 'Left, right, both…'),
+          catalogField('Height (cm)', 'number', 'heightCm', 'Optional', false, { min: 1, max: 300 }),
+          catalogField('Shirt number', 'number', 'shirtNumber', 'Optional', false, { min: 1, max: 99 }),
+          el('div', { class: 'field' }, [
+            el('label', { text: 'Role' }),
+            el('select', { name: 'role' }, [
+              el('option', { value: 'player', text: 'Player' }),
+              el('option', { value: 'captain', text: 'Captain' }),
+              el('option', { value: 'goalkeeper', text: 'Goalkeeper' }),
+            ]),
+          ]),
+          el('div', { class: 'field' }, [
+            el('label', { text: 'Status' }),
+            el('select', { name: 'status' }, [
+              el('option', { value: 'active', text: 'Active' }),
+              el('option', { value: 'injured', text: 'Injured' }),
+              el('option', { value: 'suspended', text: 'Suspended' }),
+              el('option', { value: 'ineligible', text: 'Ineligible' }),
+            ]),
+          ]),
+        ]),
+        el('button', { class: 'btn btn--primary', type: 'submit', text: 'Add player' }),
+      ]);
+      playerForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const data = Object.fromEntries(new FormData(playerForm));
+        if (data.shirtNumber) data.shirtNumber = Number(data.shirtNumber);
+        if (data.heightCm) data.heightCm = Number(data.heightCm);
+        try {
+          if (isOwnedByTeamLeader) {
+            await Api.teamLeader.addPlayer(state.tournamentId, participantTeam.id, data);
+          } else {
+            await Api.participantPlayers.add(state.tournamentId, participantTeam.id, data);
+          }
+          state.rosters.delete(participantTeam.id);
+          await renderTeamsView(container, state);
+        } catch (err) { showBanner(banner, friendlyErrorMessage(err)); }
+      });
+      children.push(playerForm);
+    } else if (isOwnedByTeamLeader && players.length >= 11) {
+      children.push(el('p', { class: 'field__hint', text: 'The 11-player limit has been reached.' }));
     }
     if (isAdmin()) {
       const autoForm = el('form', { class: 'inline-form registration-form registration-form--auto' }, [
@@ -1999,18 +1923,24 @@
     const scrollTop = window.scrollY;
     clear(container);
     container.appendChild(el('p', { class: 'empty-state', text: 'Loading teams and players…' }));
-    let catalogTeams, catalogPlayers;
     try {
-      [catalogTeams, catalogPlayers] = await loadCatalog(state);
+      state.teamLeader = state.viewerRole === 'team_leader'
+        ? await Api.teamLeader.get(state.tournamentId)
+        : null;
     } catch (err) {
       clear(container);
-      container.appendChild(el('p', { class: 'empty-state', text: friendlyErrorMessage(err) }));
+      UI.flashMessage(friendlyErrorMessage(err));
       return;
     }
     clear(container);
-    catalogDirectory(container, catalogTeams, catalogPlayers);
+    if (state.teamLeader?.participantTeam) {
+      const ownedId = state.teamLeader.participantTeam.id;
+      state.participantTeams = [
+        ...state.participantTeams.filter((team) => team.id !== ownedId),
+        state.teamLeader.participantTeam,
+      ];
+    }
     adminCatalogForms(container, state);
-    teamRegistrationForm(container, state, catalogTeams);
     if (!state.participantTeams.length) {
       container.appendChild(el('p', { class: 'empty-state', text: 'No teams registered yet.' }));
       return;
@@ -2020,11 +1950,8 @@
     const rosters = await Promise.all(
       state.participantTeams.map(async (pt) => [pt, await loadRoster(state, pt.id)])
     );
-    const assignedPlayerIds = new Set(
-      rosters.flatMap(([, players]) => players.map((player) => player.playerId))
-    );
     const cards = rosters.map(([pt, players]) =>
-      rosterCard(container, state, pt, players, catalogPlayers, assignedPlayerIds)
+      rosterCard(container, state, pt, players)
     );
     cards.forEach((card) => grid.appendChild(card));
     requestAnimationFrame(() => window.scrollTo({ top: scrollTop, behavior: 'auto' }));
@@ -2109,7 +2036,7 @@
       data = await loadLeaders(state);
     } catch (err) {
       clear(container);
-      container.appendChild(el('p', { class: 'empty-state', text: friendlyErrorMessage(err) }));
+      UI.flashMessage(friendlyErrorMessage(err));
       return;
     }
     clear(container);

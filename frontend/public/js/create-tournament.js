@@ -1,6 +1,6 @@
 (function () {
   const { el, clear, showBanner, friendlyErrorMessage } = UI;
-  if (!Session.isAuthenticated()) { location.href = '/login.html?next=%2Fcreate-tournament'; return; }
+  if (!Session.isAuthenticated()) { location.href = '/login?next=%2Fcreate-tournament'; return; }
   Header.render(document.getElementById('topbar-actions'));
   const form = document.getElementById('create-wizard-form');
   const general = document.getElementById('phase-general');
@@ -38,7 +38,7 @@
       select('Visibility', 'tournamentVisibility', [['public', 'Public'], ['private', 'Private']]),
       input('Number of teams', 'tournamentNumberOfTeams', 'number', { required: 'required', min: '3', max: '256' }),
     ]));
-    general.appendChild(el('div', { class: 'builder-card suspension-settings' }, [
+    const suspensionCard = el('div', { class: 'builder-card suspension-settings' }, [
       el('h3', { text: 'Suspension rules' }),
       el('p', { class: 'field__hint', text: 'Choose whether disciplinary suspensions are enforced throughout this tournament.' }),
       el('label', { class: 'suspension-mechanic-toggle' }, [
@@ -65,7 +65,8 @@
         value: 2,
         required: 'required',
       }),
-    ]));
+    ]);
+    general.appendChild(suspensionCard);
     const scopeOptions = [...general.querySelectorAll('[name="suspensionScope"]')];
     const suspensionEnabled = general.querySelector('[name="suspensionSystemEnabled"]');
     const suspensionOptions = [...general.querySelectorAll('[name="yellowCardsForSuspension"], [name="suspensionScope"]')];
@@ -73,7 +74,7 @@
       suspensionOptions.forEach((option) => {
         option.disabled = !suspensionEnabled.checked;
       });
-      general.classList.toggle('suspension-settings--disabled', !suspensionEnabled.checked);
+      suspensionCard.classList.toggle('suspension-settings--disabled', !suspensionEnabled.checked);
     };
     suspensionEnabled.addEventListener('change', syncSuspensionOptions);
     syncSuspensionOptions();
@@ -500,7 +501,7 @@
           if (rules.length) await Api.groups.update(tournamentId, response.group.id, { promotion_rules: JSON.stringify(rules) });
         }
       }
-      location.href = `/tournament.html?id=${encodeURIComponent(tournamentId)}`;
+      location.href = `/tournament?id=${encodeURIComponent(tournamentId)}`;
     } catch (err) { showBanner(banner, friendlyErrorMessage(err)); next.disabled = false; next.textContent = 'Create tournament'; }
   }
   function advanceWizard() {

@@ -28,33 +28,40 @@ Unless noted, all bodies are JSON. Fields marked *(optional)* fall back to the e
 
 ### `POST /auth/register` — Public
 **Body**
-```json
-{ "email": "string (required)", "password": "string (required)", "name": "string (required)", "role": "'user' | 'referee' (optional, defaults to 'user')" }
-```
-**Response `201`**
-```json
-{ "user": { "id", "email", "name", "role", "createdAt" }, "token": "JWT (7d expiry)" }
-```
-**Errors**: `400` missing fields.
+`{ "email": "valid email", "password": "at least 8 characters", "name": "1-120 characters" }`
+
+**Response `201`**: `{ "message": "Account created. Check your email for a verification link." }`
+No session is created until the address has been verified.
+**Errors**: `400` invalid or missing fields, `409` email already registered, `503` verification email delivery failed.
+
+### `POST /auth/verify-email` — Public
+**Body**: `{ "token": "one-time token from verification email" }`
+**Response `200`**: `{ "message": "Email verified. You can now sign in.", "email": "verified address" }`
+**Errors**: `400` invalid, expired, or already-used token; response advises requesting a new verification email.
+
+### `POST /auth/resend-verification` — Public
+**Body**: `{ "email": "string" }`
+**Response `202`**: generic troubleshooting guidance whether or not an unverified account exists, to avoid disclosing account state. Resends are limited to one email per address each minute.
+**Errors**: `400` invalid email, `503` delivery/configuration guidance when email sending fails.
 
 ### `POST /auth/login` — Public
 **Body**
 ```json
 { "email": "string (required)", "password": "string (required)" }
 ```
-**Response `200`**: same shape as register.
-**Errors**: `400` missing fields, `401` invalid credentials.
+**Response `200`**: `{ "user": { "id", "email", "name", "role", "emailVerified", "createdAt" }, "token": "JWT (7d expiry)" }`
+**Errors**: `400` missing fields, `401` invalid credentials, `403` email not verified.
 
 ### `GET /auth/me` — Auth
 **Response `200`**
 ```json
-{ "user": { "id", "email", "name", "role", "createdAt" } }
+{ "user": { "id", "email", "name", "role", "emailVerified", "createdAt" } }
 ```
 
 ### `GET /users` — Auth + admin
 **Response `200`**
 ```json
-{ "users": [ { "id", "email", "name", "role", "createdAt" } ] }
+{ "users": [ { "id", "email", "name", "role", "emailVerified", "createdAt" } ] }
 ```
 
 ### `PATCH /users/:id/role` — Auth + admin
@@ -230,31 +237,12 @@ Also nulls `group_id` on any matches referencing this round.
 
 ---
 
-## Players
+## Tournament players
 
-### `GET /players` — Optional
-**Response `200`**: `{ "players": [ { "id", "name", "slug", "nickname", "dateOfBirth", "nationality", "position", "preferredFoot", "heightCm", "createdAt" } ] }`
-
-### `GET /players/:id` — Optional
-**Response `200`**: `{ "player": {...} }`
-**Errors**: `404`
-
-### `POST /players` — Auth + admin
-**Body**
-```json
-{ "name": "string (required)", "slug": "string (optional)", "nickname", "dateOfBirth", "nationality", "position", "preferredFoot", "heightCm" }
-```
-**Response `201`**: `{ "player": {...} }`
-**Errors**: `400` missing name.
-
-### `PATCH /players/:id` — Auth + admin
-**Body** *(all optional)*
-**Response `200`**: `{ "player": {...} }`
-**Errors**: `404`
-
-### `DELETE /players/:id` — Auth + admin
-**Response `204`**
-**Errors**: `404`
+Player identity/profile, roster membership, and statistics live together in
+the team-scoped `participant_players` row. There is no global `/players`
+catalog. The row ID is the player ID used by match events, suspensions, and
+votes; `creatorId` identifies the authenticated user who created it.
 
 ---
 
@@ -287,24 +275,32 @@ Requires tournament to be inspectable (private tournaments enforce `requireTourn
 
 ---
 
-## Participant Players (a player's roster spot on a participant team)
+## Participant Players (a tournament-scoped player on a team)
 
 ### `GET /tournaments/:tournamentId/participant-teams/:id/players` — Optional
-**Response `200`**: `{ "participantPlayers": [ { "id", "participantTeamId", "playerId", "shirtNumber", "role", "status", "yellowCards", "redCards", "goals", "assists", "player": {"id","name","slug","position"} } ] }`
+**Response `200`**: `{ "participantPlayers": [ { "id", "participantTeamId", "creatorId", "name", "slug", "nickname", "dateOfBirth", "nationality", "position", "preferredFoot", "heightCm", "shirtNumber", "role", "status", "yellowCards", "redCards", "goals", "assists", "player": {"id","name","slug","position"} } ] }`
 **Errors**: `403` private tournament, `404` participant team not found.
 
-### `POST /tournaments/:tournamentId/participant-teams/:id/players` — Auth + tournament role `moderator`
+### `POST /tournaments/:tournamentId/participant-teams/:id/players` — Auth + tournament moderator/admin
 **Body**
 ```json
-{ "playerId": "string (required)", "shirtNumber": "number", "role": "'player'|'captain'|'goalkeeper' (default 'player')", "status": "'active'|'injured'|'suspended'|'ineligible' (default 'active')" }
+{ "name": "string (required)", "slug": "string (optional)", "nickname": "string", "dateOfBirth": "date", "nationality": "string", "position": "string", "preferredFoot": "string", "heightCm": "number", "shirtNumber": "number", "role": "'player'|'captain'|'goalkeeper' (default 'player')", "status": "'active'|'injured'|'suspended'|'ineligible' (default 'active')" }
 ```
+Creates a new player directly on the selected team. The server sets `creatorId`
+from the authenticated user; slugs are unique within the team.
 **Response `201`**: `{ "participantPlayer": {...} }`
-**Errors**: `400` missing playerId, `404` participant team / player not found.
+**Errors**: `400` missing name, `404` participant team not found, `409` duplicate team-local slug.
+
+### `POST /tournaments/:tournamentId/participant-teams/:id/players/auto` — Auth + admin
+**Body**: `{ "count": "number (required)" }`
+
+Creates enough new team-scoped player rows to reach the requested roster size;
+the administrator is recorded as their creator.
 
 ### `PATCH /tournaments/:tournamentId/participant-players/:id` — Auth + tournament role `moderator`
 **Body** *(all optional)*
 ```json
-{ "shirtNumber", "role", "status", "yellowCards", "redCards", "goals", "assists" }
+{ "name", "slug", "nickname", "dateOfBirth", "nationality", "position", "preferredFoot", "heightCm", "shirtNumber", "role", "status", "yellowCards", "redCards", "goals", "assists" }
 ```
 **Response `200`**: `{ "participantPlayer": {...} }`
 **Errors**: `404`
@@ -532,4 +528,3 @@ Casts a vote for a nominee.
 
 
 ---
-

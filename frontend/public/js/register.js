@@ -1,10 +1,26 @@
 (function () {
   const form = document.getElementById('register-form');
+  const resendForm = document.getElementById('resend-form');
+  const resendEmail = document.getElementById('resend-email');
+  const title = document.getElementById('register-title');
+  const intro = document.getElementById('register-intro');
+  const verifiedState = document.getElementById('verified-state');
+  const verifiedStateMessage = document.getElementById('verified-state-message');
   const banner = document.getElementById('banner');
   const submitBtn = document.getElementById('submit-btn');
+  const pendingEmailKey = 'tournly:pending-verification-email';
+  const verifiedEmailKey = 'tournly:verified-email';
+  let verificationChannel = null;
+  try {
+    if ('BroadcastChannel' in window) {
+      verificationChannel = new BroadcastChannel('tournly:email-verification');
+    }
+  } catch {
+    // Storage events provide the cross-tab fallback.
+  }
 
   if (window.Session.isAuthenticated()) {
-    location.replace('/index.html');
+    location.replace('/index');
     return;
   }
 
@@ -12,6 +28,67 @@
     // Deliberately simple — real validation happens server-side; this
     // just catches obvious typos before spending a round trip.
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  }
+
+  function readPendingEmail() {
+    try {
+      return sessionStorage.getItem(pendingEmailKey);
+    } catch {
+      return null;
+    }
+  }
+
+  function writePendingEmail(email) {
+    try {
+      sessionStorage.setItem(pendingEmailKey, email.toLowerCase());
+    } catch {
+      // Verification still works; only the in-page status sync is unavailable.
+    }
+  }
+
+  function showVerifiedState(email) {
+    const pendingEmail = readPendingEmail();
+    if (typeof email !== 'string' || !pendingEmail || email.toLowerCase() !== pendingEmail.toLowerCase()) return;
+    try {
+      sessionStorage.removeItem(pendingEmailKey);
+    } catch {
+      // The success UI can still be shown if session storage is disabled.
+    }
+    form.hidden = true;
+    resendForm.hidden = true;
+    intro.hidden = true;
+    title.textContent = 'Email verified';
+    verifiedStateMessage.textContent = `${email} is verified. Your account is ready to use.`;
+    verifiedState.hidden = false;
+    if (verificationChannel) verificationChannel.close();
+  }
+
+  function handleVerifiedEmail(email) {
+    showVerifiedState(email);
+  }
+
+  if (verificationChannel) {
+    verificationChannel.addEventListener('message', (event) => {
+      if (event.data?.type === 'verified') handleVerifiedEmail(event.data.email);
+    });
+  }
+  window.addEventListener('pagehide', () => verificationChannel?.close());
+  window.addEventListener('storage', (event) => {
+    if (event.key !== verifiedEmailKey || !event.newValue) return;
+    try {
+      const verification = JSON.parse(event.newValue);
+      if (Date.now() - verification.at < 10 * 60 * 1000) handleVerifiedEmail(verification.email);
+    } catch {
+      // Ignore malformed values from browser storage.
+    }
+  });
+  try {
+    const verification = JSON.parse(localStorage.getItem(verifiedEmailKey) || 'null');
+    if (verification && Date.now() - verification.at < 10 * 60 * 1000) {
+      handleVerifiedEmail(verification.email);
+    }
+  } catch {
+    // Storage may be unavailable in private browsing; the open-tab channel remains usable.
   }
 
   form.addEventListener('submit', async (event) => {
@@ -39,18 +116,33 @@
     submitBtn.textContent = 'Creating account…';
 
     try {
-      // Note: this backend's /auth/register accepts an optional `role`
-      // field ('user' | 'referee'). We deliberately never send one from
-      // this public form — role escalation belongs behind the admin-only
-      // PATCH /users/:id/role endpoint, not a self-service signup form.
       const result = await Api.auth.register({ name, email, password });
-      window.Session.start(result.token, result.user);
       form.password.value = '';
-      location.href = '/index.html';
+      resendEmail.value = email;
+      writePendingEmail(email);
+      resendForm.hidden = false;
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Verification email sent';
+      UI.flashMessage(result.message || 'Account created. Check your email for a verification link.', 'success');
     } catch (err) {
       UI.showBanner(banner, UI.friendlyErrorMessage(err));
       submitBtn.disabled = false;
       submitBtn.textContent = 'Create account';
+      if (err.status === 503) {
+        resendEmail.value = email;
+        writePendingEmail(email);
+        resendForm.hidden = false;
+      }
+    }
+  });
+
+  resendForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    try {
+      const result = await Api.auth.resendVerification(resendEmail.value.trim());
+      UI.flashMessage(result.message, 'success');
+    } catch (err) {
+      UI.showBanner(banner, UI.friendlyErrorMessage(err));
     }
   });
 })();

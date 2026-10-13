@@ -46,7 +46,8 @@ the static server is still running — refresh the browser afterwards.
 | `public/tournament.html` | One tournament — info, role-protected draw control, match-information menus with moderator monitoring, voting, standings/bracket (stage-scoped toggle), top scorers/assisters, registered teams/rosters, private-tournament follower moderation, and creator-only staff management. Reachable from every tournament row/card on the site. |
 | `public/create-tournament.html` | Authenticated two-phase tournament builder. Collects general information, then uses a stage navigator with balanced team-count presets, league points, responsive group cards, direct advancement defaults for ranks 1–2, optional best-ranking places and knockout rounds before submitting through the existing API helpers. |
 | `public/login.html` | Sign in |
-| `public/register.html` | Create account |
+| `public/register.html` | Create account; signup waits for email verification, provides a resend action, and updates an open registration tab when verification completes. |
+| `public/verify-email.html` | Confirm the one-time email verification token and continue to sign in. |
 
 ## Tournament detail page (`tournament.html?id=<tournamentId>`)
 
@@ -127,15 +128,14 @@ the URL shape.
   parallel (`Promise.allSettled`, so one team's failure doesn't blank the
   whole list) and ranks client-side. Fine for normal tournament sizes;
   would want a real backend aggregate if rosters get very large.
-- **Teams & players**: all viewers who can inspect a tournament can see
-  the available catalog plus registered teams and rosters. Tournament
-  moderators can register catalog teams and assign catalog players, including
-  seed, nickname, shirt number, role, and status. Global admins can use the
-  reuse-first automatic filling actions for the tournament team count and a
-  selected roster size; placeholder catalog records are created only when
-  necessary.
-  Admins also get forms on this tab to create reusable catalog teams and
-  players.
+- **Teams & players**: all viewers who can inspect a tournament can see its
+  tournament-scoped teams and rosters. Teams contain their own competition
+  profile and statistics and cannot be reused across tournaments. Moderators
+  and admins create teams directly in the tournament; admins can also use the
+  automatic filling action. Player identity, roster membership, and
+  statistics are stored together per team in `participant_players`; players
+  are not shared through a global catalog. Each player row records its
+  creator, and team leaders remain limited to 11 players.
 
 **Security specifics for this page** (in addition to the app-wide notes
 below): the `?id=` value is checked against a strict allow-list pattern
@@ -279,7 +279,7 @@ target match is abandoned, its Include/Exclude decision returns to pending;
 decisions for other target matches are unchanged.
 
 Tournament owners can assign the `team_leader` tournament role. A team leader
-can create one new catalog team for that tournament and add up to 11 players
-through the dedicated **My team** workflow. Team creation and roster additions
-are ownership-checked and enforced by the backend; the role does not grant
-moderator, referee, or global catalog-management permissions.
+uses the same **Teams & players** management layout as an admin, but can create
+only one tournament-scoped team and add up to 11 players to that team.
+Team creation and roster additions are ownership-checked and enforced by the
+backend; the role does not grant moderator, referee, or global permissions.

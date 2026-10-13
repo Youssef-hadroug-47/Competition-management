@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="referrer" content="no-referrer" />
+<title>Verify email — Tournly</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src https://fonts.gstatic.com; script-src 'self'; connect-src 'self' http://localhost:* https:; img-src 'self' data:; object-src 'none'; base-uri 'self'; " />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Work+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+<div class="page">
+  <header class="topbar">
+    <a class="logo" href="/index"><span class="logo__mark" aria-hidden="true"></span>Tournly</a>
+  </header>
+  <div class="auth-shell">
+    <main class="auth-card verify-card">
+      <div class="verify-card__icon" aria-hidden="true">
+        <svg viewBox="0 0 48 48" focusable="false">
+          <rect x="5" y="10" width="38" height="28" rx="5"></rect>
+          <path d="m8 14 16 13 16-13"></path>
+        </svg>
+      </div>
+      <p class="verify-card__eyebrow">One last step</p>
+      <h1 id="verification-title">Confirm your email</h1>
+      <p class="verify-card__intro">Verify your address to finish setting up your Tournly account.</p>
+      <div id="verification-status" class="verify-card__status" data-state="waiting">
+        <span id="verification-status-icon" class="verify-card__status-icon" aria-hidden="true">i</span>
+        <p id="verification-message" role="status" aria-live="polite">Use the secure link in your email, then confirm below.</p>
+      </div>
+      <button id="verify-button" class="btn btn--primary verify-card__button" type="button" hidden>
+        Verify email address
+      </button>
+      <a id="verification-home-link" class="verify-card__home-link" href="/index" hidden>Go to Tournly home</a>
+      <p class="verify-card__help">Link expired or not working? <a href="/register">Request a new verification email</a>.</p>
+      <a class="verify-card__signin" href="/login">Already verified? Sign in</a>
+    </main>
+  </div>
+  <footer class="page__footer">Tournly — a small tournament organizer.</footer>
+</div>
+<script src="/js/config.js"></script>
+<script src="/js/session.js"></script>
+<script src="/js/ui.js"></script>
+<script src="/js/api.js"></script>
+<script src="/js/verify-email.js"></script>
+</body>
+</html>

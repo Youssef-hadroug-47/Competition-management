@@ -9,7 +9,9 @@ const { runWithRequestContext } = require('./utils/requestContext');
 
 function createApp({ staticDir } = {}) {
   const app = express();
-  app.use(cors());
+  app.use(cors(config.corsOrigins.length
+    ? { origin: config.corsOrigins }
+    : undefined));
   app.use(morgan('dev'));
   app.use(express.json({ limit: '1mb' }));
   if (config.performanceLogging) {

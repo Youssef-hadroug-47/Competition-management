@@ -2,7 +2,14 @@ const { parseJson } = require('../db');
 
 function userPublic(row) {
   if (!row) return null;
-  return { id: row.id, email: row.email, name: row.name, role: row.role, createdAt: row.created_at };
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    role: row.role,
+    emailVerified: row.email_verified ?? true,
+    createdAt: row.created_at,
+  };
 }
 
 function tournament(row) {
@@ -86,43 +93,13 @@ function round(row) {
   };
 }
 
-function team(row) {
-  if (!row) return null;
-  return {
-    id: row.id,
-    name: row.name,
-    slug: row.slug,
-    shortName: row.short_name,
-    colors: { primary: row.primary_color, secondary: row.secondary_color },
-    city: row.city,
-    country: row.country,
-    foundedYear: row.founded_year,
-    createdAt: row.created_at,
-  };
-}
-
-function player(row) {
-  if (!row) return null;
-  return {
-    id: row.id,
-    name: row.name,
-    slug: row.slug,
-    nickname: row.nickname,
-    dateOfBirth: row.date_of_birth,
-    nationality: row.nationality,
-    position: row.position,
-    preferredFoot: row.preferred_foot,
-    heightCm: row.height_cm,
-    createdAt: row.created_at,
-  };
-}
-
 function participantTeam(row) {
   if (!row) return null;
   return {
     id: row.id,
     tournamentId: row.tournament_id,
-    teamId: row.team_id,
+    creatorId: row.creator_id,
+    teamId: row.id,
     groupId: row.group_id,
     seed: row.seed,
     nickname: row.nickname,
@@ -137,12 +114,16 @@ function participantTeam(row) {
       goalDifference: row.goals_for - row.goals_against,
       points: row.points,
     },
-    team: row.team_name
+    team: row.name
       ? {
-          id: row.team_id,
-          name: row.team_name,
-          slug: row.team_slug,
+          id: row.id,
+          name: row.name,
+          slug: row.slug,
+          shortName: row.short_name,
           colors: { primary: row.primary_color, secondary: row.secondary_color },
+          city: row.city,
+          country: row.country,
+          foundedYear: row.founded_year,
         }
       : undefined,
   };
@@ -153,7 +134,15 @@ function participantPlayer(row) {
   return {
     id: row.id,
     participantTeamId: row.participant_team_id,
-    playerId: row.player_id,
+    creatorId: row.creator_id,
+    name: row.name,
+    slug: row.slug,
+    nickname: row.nickname,
+    dateOfBirth: row.date_of_birth,
+    nationality: row.nationality,
+    position: row.position,
+    preferredFoot: row.preferred_foot,
+    heightCm: row.height_cm,
     shirtNumber: row.shirt_number,
     role: row.role,
     status: row.status,
@@ -161,8 +150,9 @@ function participantPlayer(row) {
     redCards: row.red_cards,
     goals: row.goals,
     assists: row.assists,
-    player: row.player_name
-      ? { id: row.player_id, name: row.player_name, slug: row.player_slug, position: row.player_position }
+    createdAt: row.created_at,
+    player: row.name
+      ? { id: row.id, name: row.name, slug: row.slug, position: row.position }
       : undefined,
   };
 }
@@ -246,8 +236,6 @@ module.exports = {
   stage,
   group,
   round,
-  team,
-  player,
   participantTeam,
   participantPlayer,
   match,

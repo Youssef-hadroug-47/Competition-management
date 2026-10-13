@@ -35,16 +35,13 @@ async function snapshot(matchId, tournamentId) {
   const match = await getMatch(matchId, tournamentId);
   const events = await many(
     `SELECT e.*,
-            t.name AS team_name,
-            p.name AS player_name,
-            a.name AS assister_name
+            pt.name AS team_name,
+            pp.name AS player_name,
+            ap.name AS assister_name
      FROM match_events e
      LEFT JOIN participant_teams pt ON pt.id = e.team_id
-     LEFT JOIN teams t ON t.id = pt.team_id
      LEFT JOIN participant_players pp ON pp.id = e.player_id
-     LEFT JOIN players p ON p.id = pp.player_id
      LEFT JOIN participant_players ap ON ap.id = e.assister_id
-     LEFT JOIN players a ON a.id = ap.player_id
      WHERE e.match_id = ?
      ORDER BY e.created_at ASC, e.id ASC`
   , [matchId]);
@@ -197,7 +194,7 @@ async function validateEventEligibility({ matchId, eventId = null, type, teamId,
     'SELECT id FROM participant_players WHERE id = ? AND participant_team_id = ?'
   , [playerId, teamId]);
   if (!participant) throw httpError(400, 'Player does not belong to the selected team');
-  const events = eventRowsForEligibility(matchId, eventId);
+  const events = await eventRowsForEligibility(matchId, eventId);
   const playerCards = events.filter((event) => event.player_id === playerId && event.type === 'card');
   const yellowCards = playerCards.filter((event) => event.card === 'yellow').length;
   const redCard = playerCards.some((event) => event.card === 'red');
@@ -278,7 +275,7 @@ async function updateEvent({ matchId, tournamentId, eventId, refereeId, adminOve
     goalEventId,
     phase: changes.phase ?? event.phase,
     card: changes.card ?? event.card,
-    scored: changes.scored == null ? event.scored : (changes.scored ? 1 : 0),
+    scored: changes.scored == null ? event.scored : Boolean(changes.scored),
   });
   await run(
     `UPDATE match_events SET phase = ?, goal_event_id = ?, team_id = ?, player_id = ?, assister_id = ?,
@@ -289,7 +286,7 @@ async function updateEvent({ matchId, tournamentId, eventId, refereeId, adminOve
     changes.playerId ?? event.player_id,
     changes.assisterId ?? event.assister_id,
     changes.card ?? event.card,
-    changes.scored == null ? event.scored : (changes.scored ? 1 : 0),
+    changes.scored == null ? event.scored : Boolean(changes.scored),
     minute,
     JSON.stringify(payload),
     eventId]);
@@ -413,7 +410,7 @@ async function addEvent({ matchId, tournamentId, refereeId, adminOverride = fals
       payload.playerId || null,
       payload.assisterId || null,
       payload.card || null,
-      payload.scored == null ? null : (payload.scored ? 1 : 0),
+      payload.scored == null ? null : Boolean(payload.scored),
       eventMinute,
       JSON.stringify(payload),
       clientEventId]);

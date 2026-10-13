@@ -76,7 +76,7 @@ async function finishMatchRecord({ matchRow, homeScore, awayScore, extraTimeHome
     const stage = await one(client, 'SELECT * FROM stages WHERE id=$1', [matchRow.stage_id]);
     const settings = parseJson(stage?.settings, map.defaultStageSettings(stage?.type));
     if (stage?.type === 'league' && !reopened) await applyResultToTableInternal(client, matchRow, Number(homeScore), Number(awayScore), settings.points);
-    const advance = reopened ? null : await finalizeStageIfComplete(stage.id);
+    const advance = reopened ? null : await finalizeStageIfComplete(stage.id, client);
     const match = await one(client, 'SELECT * FROM matches WHERE id=$1', [matchRow.id]);
     await writeAudit(client, { matchBefore: matchRow, matchAfter: match, userId, action });
     return { match, advance, stage };
@@ -175,11 +175,11 @@ async function cancelMatchRecord(matchRow) {
 }
 async function participantTeamWithTeam(idValue) {
   if (!idValue) return null;
-  return one(null, `SELECT pt.*,t.name AS team_name,t.slug AS team_slug,t.primary_color,t.secondary_color FROM participant_teams pt JOIN teams t ON t.id=pt.team_id WHERE pt.id=$1`, [idValue]);
+  return one(null, 'SELECT pt.* FROM participant_teams pt WHERE pt.id=$1', [idValue]);
 }
 async function squadFor(idValue) {
   if (!idValue) return [];
-  return many(null, `SELECT pp.*,p.name AS player_name,p.slug AS player_slug,p.position AS player_position FROM participant_players pp JOIN players p ON p.id=pp.player_id WHERE pp.participant_team_id=$1 ORDER BY pp.shirt_number`, [idValue]);
+  return many(null, `SELECT pp.* FROM participant_players pp WHERE pp.participant_team_id=$1 ORDER BY pp.shirt_number`, [idValue]);
 }
 async function getMatchDetail(matchId) {
   const row = await one(null, 'SELECT * FROM matches WHERE id=$1', [matchId]); if (!row) return null;

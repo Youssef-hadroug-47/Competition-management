@@ -126,6 +126,9 @@ const Api = {
   auth: {
     register: (payload) => request('POST', '/auth/register', { body: payload, auth: false }),
     login: (payload) => request('POST', '/auth/login', { body: payload, auth: false }),
+    verifyEmail: (token) => request('POST', '/auth/verify-email', { body: { token }, auth: false }),
+    resendVerification: (email) =>
+      request('POST', '/auth/resend-verification', { body: { email }, auth: false }),
     me: () => request('GET', '/auth/me'),
   },
 
@@ -182,21 +185,14 @@ const Api = {
     remove: (tournamentId, roundId) => request('DELETE', `/tournaments/${enc(tournamentId)}/rounds/${enc(roundId)}`),
   },
 
-  // ---- Catalog: teams & players ----
+  // ---- Tournament-scoped teams ----
   teams: {
-    list: () => request('GET', '/teams'),
-    get: (id) => request('GET', `/teams/${enc(id)}`),
-    create: (payload) => request('POST', '/teams', { body: payload }),
-    update: (id, payload) => request('PATCH', `/teams/${enc(id)}`, { body: payload }),
-    remove: (id) => request('DELETE', `/teams/${enc(id)}`),
-  },
-
-  players: {
-    list: () => request('GET', '/players'),
-    get: (id) => request('GET', `/players/${enc(id)}`),
-    create: (payload) => request('POST', '/players', { body: payload }),
-    update: (id, payload) => request('PATCH', `/players/${enc(id)}`, { body: payload }),
-    remove: (id) => request('DELETE', `/players/${enc(id)}`),
+    list: (tournamentId) => request('GET', `/tournaments/${enc(tournamentId)}/teams`),
+    get: (tournamentId, id) => request('GET', `/tournaments/${enc(tournamentId)}/teams/${enc(id)}`),
+    create: (tournamentId, payload) => request('POST', `/tournaments/${enc(tournamentId)}/teams`, { body: payload }),
+    update: (tournamentId, id, payload) =>
+      request('PATCH', `/tournaments/${enc(tournamentId)}/teams/${enc(id)}`, { body: payload }),
+    remove: (tournamentId, id) => request('DELETE', `/tournaments/${enc(tournamentId)}/teams/${enc(id)}`),
   },
 
   participantTeams: {
@@ -215,6 +211,10 @@ const Api = {
       request('POST', `/tournaments/${enc(tournamentId)}/team-leader/team`, { body: payload }),
     addPlayer: (tournamentId, participantTeamId, payload) =>
       request('POST', `/tournaments/${enc(tournamentId)}/team-leader/teams/${enc(participantTeamId)}/players`, { body: payload }),
+    removeTeam: (tournamentId, participantTeamId) =>
+      request('DELETE', `/tournaments/${enc(tournamentId)}/team-leader/team/${enc(participantTeamId)}`),
+    removePlayer: (tournamentId, participantTeamId, participantPlayerId) =>
+      request('DELETE', `/tournaments/${enc(tournamentId)}/team-leader/teams/${enc(participantTeamId)}/players/${enc(participantPlayerId)}`),
   },
 
   participantPlayers: {

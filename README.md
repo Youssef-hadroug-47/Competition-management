@@ -1,6 +1,6 @@
 # Tournament Manager API
 
-Express REST API for creating and managing sports tournaments. Roles, private/public visibility, multi-stage formats, automatic draws, and a split between catalog entities (`Team`, `Player`) and tournament entries (`ParticipantTeam`, `ParticipantPlayer`).
+Express REST API for creating and managing sports tournaments. Roles, private/public visibility, multi-stage formats, automatic draws, and tournament-scoped team/player entries.
 
 Requires **Node.js 22.5+** and a PostgreSQL database.
 
@@ -54,6 +54,31 @@ Optional variables are `LOAD_TEST_BASE_URL` (defaults to
 `http://127.0.0.1:3000/api`) and `LOAD_TEST_TOKEN` for testing authenticated
 read routes. The script never creates, updates, deletes, or draws data.
 
+### Email verification
+
+Public registrations require clicking a one-time verification link before
+sign-in is allowed. Configure SMTP delivery and the browser-visible frontend
+origin on the API host:
+
+```text
+SMTP_HOST
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER
+SMTP_PASSWORD
+SMTP_FROM
+PUBLIC_APP_URL=https://your-frontend.example.com
+```
+
+Set `SMTP_SECURE=true` for implicit TLS (commonly port 465); port 587 uses
+STARTTLS. SMTP authentication is optional for relays that do not require it.
+`PUBLIC_APP_URL` is the frontend origin used to construct verification links.
+Verification links expire after 24 hours and keep their token in the URL
+fragment until the user explicitly confirms it. Unverified users can request
+another email from the registration or sign-in page; resends are limited to
+one per minute. Existing accounts are marked verified when the schema adds the
+new column, so deployment does not lock out current users.
+
 ### Docker deployment
 
 Build and run the production container:
@@ -62,6 +87,46 @@ Build and run the production container:
 docker build -t tournament-manager .
 docker run --rm -p 3000:3000 --env-file .env tournament-manager
 ```
+
+### Fly.io API deployment
+
+The repository includes `fly.toml` for the persistent API deployment. It
+keeps one machine running because referee Server-Sent Events require a
+long-lived process. Change the `app` value in `fly.toml` to a globally unique
+Fly app name, then run these commands from the repository root:
+
+```bash
+fly auth login
+fly launch --no-deploy
+fly secrets set \
+  DATABASE_URL='your-supabase-session-pooler-url' \
+  JWT_SECRET='your-long-random-secret' \
+  SMTP_HOST='your-smtp-host' \
+  SMTP_USER='your-smtp-user' \
+  SMTP_PASSWORD='your-smtp-password' \
+  SMTP_FROM='Tournly <noreply@example.com>' \
+  PUBLIC_APP_URL='https://your-frontend.vercel.app' \
+  CORS_ORIGINS='https://your-frontend.vercel.app'
+fly deploy
+```
+
+Do not commit `.env` or database credentials. `fly secrets list` shows names
+and metadata, not secret values. Check startup and deployment status with:
+
+```bash
+fly status
+fly logs
+curl -i https://YOUR_APP_NAME.fly.dev/api/health
+```
+
+The API URL for the static Vercel frontend is:
+
+```text
+https://YOUR_APP_NAME.fly.dev/api
+```
+
+Set that value as the Vercel frontend's `API_BASE_URL`. Keep the Fly machine
+running for SSE; do not enable scale-to-zero for this API.
 
 The container serves the static frontend and `/api` from port `3000`. Use a
 hosted PostgreSQL `DATABASE_URL`; the container does not include a database.
@@ -141,7 +206,7 @@ Send the JWT returned by login in the Authorization header.
 
 ## Roles
 
-- **admin** — create/maintain tournaments, stages, groups, catalog teams/players, participant entries, draw, follow approvals.
+- **admin** — create/maintain tournaments, stages, groups, tournament teams/players, participant entries, draw, follow approvals.
 - **referee** — start a match, update score, finish a match (league table is updated on finish).
 - **user** — register, follow tournaments, inspect as read-only. Private tournaments behave like Instagram private accounts: follow request must be accepted before details are visible.
 
@@ -150,8 +215,8 @@ Send the JWT returned by login in the Authorization header.
 - **Tournament** — name, slug, status, `public`/`private`, format (`stages`, `groups`, `division`, `league`, `knockout`, `custom`), number of teams, place.
 - **Stage** — `league` or `knockout`, `sequenceOrder` (World Cup: groups = 1, knockout = 2), JSON `settings` (`headToHeadMatches`, `extraTime`, `penalties`, `suspensionSystem`, points, teams advancing).
 - **Group** — instance of a stage (`Group A`, `Playoffs`, `Round of 16`).
-- **Team / Player** — global catalog (slug, name, colors, etc.).
-- **ParticipantTeam / ParticipantPlayer** — that catalog entity inside a tournament (seed, group, cards, shirt number, tournament stats).
+- **Team** — one tournament-scoped row containing profile fields, `creator_id`, seed/group/status, cards, and tournament statistics. A team cannot be reused across tournaments.
+- **ParticipantPlayer** — the tournament-team-scoped player identity, roster entry, profile, and statistics.
 
 ## Main endpoints
 
@@ -174,16 +239,20 @@ Send the JWT returned by login in the Authorization header.
 - `DELETE /api/groups/:id`
 
 ### Catalog
-- `GET|POST /api/teams`, `GET|PATCH|DELETE /api/teams/:id`
-- `GET|POST /api/players`, `GET|PATCH|DELETE /api/players/:id`
+- `GET /api/tournaments/:id/teams`
+- `POST|PATCH|DELETE /api/tournaments/:id/teams` — tournament-scoped team management
+- Player identity and roster data are created directly through each tournament team's player endpoint.
 
 ### Participants
-- `POST /api/tournaments/:id/participant-teams` `{ teamId, seed, nickname }`
+- `POST /api/tournaments/:id/participant-teams` `{ name, slug, seed, nickname, ...profileFields }`
 - `GET /api/tournaments/:id/participant-teams`
 - `PATCH|DELETE /api/participant-teams/:id`
-- `POST /api/participant-teams/:id/players` `{ playerId, shirtNumber, role }`
-- `GET /api/participant-teams/:id/players`
+- `POST /api/tournaments/:id/participant-teams/:teamId/players` `{ name, position, shirtNumber, role, ...profileFields }`
+- `GET /api/tournaments/:id/participant-teams/:teamId/players`
 - `PATCH|DELETE /api/participant-players/:id`
+
+Player rows are tournament-team-scoped in `participant_players`; there is no
+reusable global player catalog. Each unified player row records its creator.
 
 ### Draw and matches
 - `POST /api/draw` `{ tournamentId, stageId? }` (also `POST /api/tournaments/:id/draw`)
@@ -247,6 +316,8 @@ POST /api/tournaments
 }
 ```
 
-Then add catalog teams, attach them with `POST /api/tournaments/:id/participant-teams`, and run `POST /api/draw` with `{ "tournamentId": "..." }`.
+Then create tournament-scoped teams with `POST /api/tournaments/:id/teams` or
+`POST /api/tournaments/:id/participant-teams`, and run `POST /api/draw` with
+`{ "tournamentId": "..." }`.
 
 The draw shuffles participant teams into groups (league) or pairs them (knockout) and generates fixtures. Double round-robin uses `settings.headToHeadMatches: 2`.

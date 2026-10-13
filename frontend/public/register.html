@@ -21,10 +21,17 @@
 
   <div class="auth-shell">
     <div class="auth-card">
-      <h1>Create your account</h1>
-      <p>Takes a minute. You can start following or creating tournaments right after.</p>
+      <h1 id="register-title">Create your account</h1>
+      <p id="register-intro">Takes a minute. You can start following or creating tournaments right after.</p>
 
       <div id="banner" class="banner" hidden role="alert"></div>
+
+      <section id="verified-state" class="registration-verified" aria-live="polite" hidden>
+        <span class="registration-verified__icon" aria-hidden="true">✓</span>
+        <h2>Your account is ready</h2>
+        <p id="verified-state-message">Your account is ready. Sign in to continue.</p>
+        <a class="btn btn--primary" href="/login">Continue to sign in</a>
+      </section>
 
       <form id="register-form" novalidate>
         <div class="field">
@@ -41,6 +48,14 @@
           <span class="field__hint">At least 8 characters.</span>
         </div>
         <button type="submit" class="btn btn--primary" id="submit-btn" style="width:100%;">Create account</button>
+      </form>
+
+      <form id="resend-form" hidden>
+        <div class="field">
+          <label for="resend-email">Didn't receive your verification email?</label>
+          <input id="resend-email" name="email" type="email" required autocomplete="email" />
+        </div>
+        <button type="submit" class="btn btn--secondary" style="width:100%;">Resend verification email</button>
       </form>
 
       <p class="auth-card__switch">Already registered? <a href="/login">Sign in</a></p>

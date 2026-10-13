@@ -78,9 +78,9 @@ async function getForMatch(matchId, tournamentId) {
   if (!(await settingsFor(tournamentId)).suspensionSystem.enabled) return [];
   const players = await many(`SELECT pp.id FROM participant_players pp JOIN matches m ON m.home_participant_team_id=pp.participant_team_id OR m.away_participant_team_id=pp.participant_team_id WHERE m.id=$1`, [matchId]);
   for (const player of players) await syncPlayerForMatch(player.id, target);
-  const rows = await many(`SELECT pms.*,p.name AS player_name FROM player_match_suspensions pms
-    JOIN participant_players pp ON pp.id=pms.participant_player_id JOIN players p ON p.id=pp.player_id
-    WHERE pms.target_match_id=$1 ORDER BY p.name,pms.kind`, [matchId]);
+  const rows = await many(`SELECT pms.*,pp.name AS player_name FROM player_match_suspensions pms
+    JOIN participant_players pp ON pp.id=pms.participant_player_id
+    WHERE pms.target_match_id=$1 ORDER BY pp.name,pms.kind`, [matchId]);
   return rows.map((row) => ({ id: row.id, participantPlayerId: row.participant_player_id, playerName: row.player_name,
     sourceMatchId: row.source_match_id, sourceEventId: row.source_event_id, kind: row.kind, status: row.status,
     pendingDecision: row.kind === 'red_card' && row.status === 'pending' }));

@@ -70,11 +70,10 @@ async function deleteVote(voteId, tournamentId) {
 async function getNominee(voteId, nomineeId, tournamentId = null) {
   return one(
     `SELECT vn.vote_id, vn.nominee_id, vn.votes, pp.participant_team_id,
-            p.name AS player_name, p.position AS player_position
+            pp.name AS player_name, pp.position AS player_position
      FROM vote_nominees vn
      JOIN vote v ON v.id = vn.vote_id
      JOIN participant_players pp ON pp.id = vn.nominee_id
-     JOIN players p ON p.id = pp.player_id
      WHERE vn.vote_id = $1 AND vn.nominee_id = $2${tournamentId ? ' AND v.tournament_id = $3' : ''}`,
     tournamentId ? [voteId, nomineeId, tournamentId] : [voteId, nomineeId],
   );
@@ -83,16 +82,15 @@ async function getNominee(voteId, nomineeId, tournamentId = null) {
 async function listNominees(voteId, tournamentId, userId = null) {
   return many(
     `SELECT vn.vote_id, vn.nominee_id, vn.votes, pp.participant_team_id,
-            p.name AS player_name, p.position AS player_position,
+            pp.name AS player_name, pp.position AS player_position,
             CASE WHEN b.user_id IS NULL THEN 0 ELSE 1 END AS selected_by_viewer
      FROM vote_nominees vn
      JOIN vote v ON v.id = vn.vote_id AND v.tournament_id = $1
      JOIN participant_players pp ON pp.id = vn.nominee_id
-     JOIN players p ON p.id = pp.player_id
      LEFT JOIN vote_ballots b ON b.vote_id = vn.vote_id
        AND b.nominee_id = vn.nominee_id AND b.user_id = $2
      WHERE vn.vote_id = $3
-     ORDER BY vn.votes DESC, p.name COLLATE "C"`,
+     ORDER BY vn.votes DESC, pp.name COLLATE "C"`,
     [tournamentId, userId, voteId],
   );
 }

@@ -200,7 +200,7 @@ const moderateFollow = asyncHandler(async (req, res) => {
   const status = req.body?.status;
   if (!['accepted', 'rejected'].includes(status)) throw httpError(400, 'status must be accepted or rejected');
   const info = await query('UPDATE tournament_follows SET status=$1 WHERE tournament_id=$2 AND user_id=$3', [status, req.params.tournamentId, req.params.userId]);
-  if (!info.rowCount) throw httpError(404, 'Follow request not found');
+  if (!info) throw httpError(404, 'Follow request not found');
   const row = (await query('SELECT * FROM tournament_follows WHERE tournament_id=$1 AND user_id=$2', [req.params.tournamentId, req.params.userId])).rows[0];
   res.json({ follow: map.follow(row) });
 });

@@ -38,6 +38,14 @@
         <button type="submit" class="btn btn--primary" id="submit-btn" style="width:100%;">Sign in</button>
       </form>
 
+      <form id="resend-form" hidden>
+        <div class="field">
+          <label for="resend-email">Need a verification email?</label>
+          <input id="resend-email" name="email" type="email" required autocomplete="email" />
+        </div>
+        <button type="submit" class="btn btn--secondary" style="width:100%;">Resend verification email</button>
+      </form>
+
       <p class="auth-card__switch">New here? <a href="/register">Create an account</a></p>
     </div>
   </div>

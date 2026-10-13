@@ -27,34 +27,39 @@ Unless noted, all bodies are JSON. Fields marked *(optional)* fall back to the e
 ## Auth
 
 ### `POST /auth/register` — Public
-**Body**
-```json
-{ "email": "string (required)", "password": "string (required)", "name": "string (required)", "role": "'user' | 'referee' (optional, defaults to 'user')" }
-```
-**Response `201`**
-```json
-{ "user": { "id", "email", "name", "role", "createdAt" }, "token": "JWT (7d expiry)" }
-```
-**Errors**: `400` missing fields.
+**Body**: `{ "email": "valid email", "password": "at least 8 characters", "name": "1-120 characters" }`
+**Response `201`**: `{ "message": "Account created. Check your email for a verification link." }`
+No session is created until verification.
+**Errors**: `400` invalid or missing fields, `409` email already registered, `503` verification email delivery failed.
+
+### `POST /auth/verify-email` — Public
+**Body**: `{ "token": "one-time token from verification email" }`
+**Response `200`**: `{ "message": "Email verified. You can now sign in.", "email": "verified address" }`
+**Errors**: `400` invalid, expired, or already-used token; response advises requesting a new verification email.
+
+### `POST /auth/resend-verification` — Public
+**Body**: `{ "email": "string" }`
+**Response `202`**: generic troubleshooting guidance whether or not an unverified account exists, to avoid disclosing account state. Resends are limited to one per email address per minute.
+**Errors**: `400` invalid email, `503` delivery/configuration guidance when email sending fails.
 
 ### `POST /auth/login` — Public
 **Body**
 ```json
 { "email": "string (required)", "password": "string (required)" }
 ```
-**Response `200`**: same shape as register.
-**Errors**: `400` missing fields, `401` invalid credentials.
+**Response `200`**: `{ "user": { "id", "email", "name", "role", "emailVerified", "createdAt" }, "token": "JWT (7d expiry)" }`
+**Errors**: `400` missing fields, `401` invalid credentials, `403` email not verified.
 
 ### `GET /auth/me` — Auth
 **Response `200`**
 ```json
-{ "user": { "id", "email", "name", "role", "createdAt" } }
+{ "user": { "id", "email", "name", "role", "emailVerified", "createdAt" } }
 ```
 
 ### `GET /users` — Auth + admin
 **Response `200`**
 ```json
-{ "users": [ { "id", "email", "name", "role", "createdAt" } ] }
+{ "users": [ { "id", "email", "name", "role", "emailVerified", "createdAt" } ] }
 ```
 
 ### `PATCH /users/:id/role` — Auth + admin
@@ -222,57 +227,41 @@ Also nulls `group_id` on any matches referencing this round.
 
 ## Teams
 
-### `GET /teams` — Optional
-**Response `200`**: `{ "teams": [ { "id", "name", "slug", "shortName", "colors": {"primary","secondary"}, "city", "country", "foundedYear", "createdAt" } ] }`
+### `GET /tournaments/:tournamentId/teams` — Optional
+Returns teams belonging to the requested tournament only. Teams are not
+global catalog records and cannot be reused across tournaments.
+**Response `200`**: `{ "teams": [ { "id", "tournamentId", "creatorId", "name", "slug", "shortName", "colors": {"primary","secondary"}, "city", "country", "foundedYear", "status", "stats" } ] }`
 
-### `GET /teams/:id` — Optional
+### `GET /tournaments/:tournamentId/teams/:id` — Optional
 **Response `200`**: `{ "team": {...} }`
 **Errors**: `404`
 
-### `POST /teams` — Auth + admin
+### `POST /tournaments/:tournamentId/teams` — Auth + tournament moderator/admin
 **Body**
 ```json
 { "name": "string (required)", "slug": "string (optional)", "shortName", "primaryColor" | "colors.primary", "secondaryColor" | "colors.secondary", "city", "country", "foundedYear" }
 ```
 **Response `201`**: `{ "team": {...} }`
-**Errors**: `400` missing name.
+`creatorId` is set from the authenticated user.
+**Errors**: `400` missing name, `403` insufficient tournament access.
 
-### `PATCH /teams/:id` — Auth + admin
+### `PATCH /tournaments/:tournamentId/teams/:id` — Auth + tournament moderator/admin
 **Body** *(all optional, same fields as create)*
 **Response `200`**: `{ "team": {...} }`
 **Errors**: `404`
 
-### `DELETE /teams/:id` — Auth + admin
+### `DELETE /tournaments/:tournamentId/teams/:id` — Auth + tournament moderator/admin
 **Response `204`**
 **Errors**: `404`
 
 ---
 
-## Players
+## Tournament players
 
-### `GET /players` — Optional
-**Response `200`**: `{ "players": [ { "id", "name", "slug", "nickname", "dateOfBirth", "nationality", "position", "preferredFoot", "heightCm", "createdAt" } ] }`
-
-### `GET /players/:id` — Optional
-**Response `200`**: `{ "player": {...} }`
-**Errors**: `404`
-
-### `POST /players` — Auth + admin
-**Body**
-```json
-{ "name": "string (required)", "slug": "string (optional)", "nickname", "dateOfBirth", "nationality", "position", "preferredFoot", "heightCm" }
-```
-**Response `201`**: `{ "player": {...} }`
-**Errors**: `400` missing name.
-
-### `PATCH /players/:id` — Auth + admin
-**Body** *(all optional)*
-**Response `200`**: `{ "player": {...} }`
-**Errors**: `404`
-
-### `DELETE /players/:id` — Auth + admin
-**Response `204`**
-**Errors**: `404`
+Players are team-scoped rows in `participant_players`; there is no global
+player catalog or player-reuse endpoint. Each row contains identity/profile,
+roster, and statistic fields. Its `id` is the identity referenced by match
+events, suspensions, and voting. `creatorId` is the user who created the row.
 
 ---
 
@@ -305,22 +294,32 @@ Requires tournament to be inspectable (private tournaments enforce `requireTourn
 
 ---
 
-## Participant Players (a player's roster spot on a participant team)
+## Participant Players (a tournament-scoped player on a team)
 
 ### `GET /tournaments/:tournamentId/participant-teams/:id/players` — Optional
-**Response `200`**: `{ "participantPlayers": [ { "id", "participantTeamId", "playerId", "shirtNumber", "role", "status", "yellowCards", "redCards", "goals", "assists", "player": {"id","name","slug","position"} } ] }`
+**Response `200`**: `{ "participantPlayers": [ { "id", "participantTeamId", "creatorId", "name", "slug", "nickname", "dateOfBirth", "nationality", "position", "preferredFoot", "heightCm", "shirtNumber", "role", "status", "yellowCards", "redCards", "goals", "assists", "player": {"id","name","slug","position"} } ] }`
 **Errors**: `403` private tournament, `404` participant team not found.
 
-### `POST /tournaments/:tournamentId/participant-teams/:id/players` — Auth + tournament role `moderator`
+### `POST /tournaments/:tournamentId/participant-teams/:id/players` — Auth + tournament moderator/admin
 **Body**
 ```json
-{ "playerId": "string (required)", "shirtNumber": "number", "role": "'player'|'captain'|'goalkeeper' (default 'player')", "status": "'active'|'injured'|'suspended'|'ineligible' (default 'active')" }
+{ "name": "string (required)", "slug": "string (optional)", "nickname": "string", "dateOfBirth": "date", "nationality": "string", "position": "string", "preferredFoot": "string", "heightCm": "number", "shirtNumber": "number", "role": "'player'|'captain'|'goalkeeper' (default 'player')", "status": "'active'|'injured'|'suspended'|'ineligible' (default 'active')" }
 ```
+Creates a new player row for this team. The server sets `creatorId` from the
+authenticated user; slugs must be unique within this team.
+**Errors**: `400` missing name, `404` participant team not found, `409` duplicate team-local slug.
+
+### `POST /tournaments/:tournamentId/participant-teams/:id/players/auto` — Auth + admin
+**Body**: `{ "count": "number (required)" }`
+
+Creates enough team-scoped player rows to reach the requested roster size.
+New rows record the administrator as `creatorId`.
 
 ### Team leader workflow
 
-Tournament owners can assign the `team_leader` role. A team leader can create
-one new catalog-backed participant team in that tournament:
+Tournament owners can assign the `team_leader` role. A team leader uses the
+same Teams & players form as an administrator and can create one
+tournament-scoped team:
 
 ```http
 POST /tournaments/:tournamentId/team-leader/team
@@ -331,8 +330,8 @@ Content-Type: application/json
 ```
 
 The same role can retrieve its owned team and roster with
-`GET /tournaments/:tournamentId/team-leader/team`, then add catalog-backed
-roster players through:
+`GET /tournaments/:tournamentId/team-leader/team`, then add a player directly
+to that team's unified roster:
 
 ```http
 POST /tournaments/:tournamentId/team-leader/teams/:participantTeamId/players
@@ -343,14 +342,15 @@ Content-Type: application/json
 ```
 
 The backend permits only the owning team leader to use these endpoints and
-enforces one team per tournament and a maximum of 11 players.
+enforces one team per tournament and a maximum of 11 players. Players cannot
+be selected from another team or reused from another tournament.
 **Response `201`**: `{ "participantPlayer": {...} }`
-**Errors**: `400` missing playerId, `404` participant team / player not found.
+**Errors**: `400` missing name, `403` not the owning team leader, `404` team not found, `409` duplicate team-local slug or 11-player limit reached.
 
 ### `PATCH /tournaments/:tournamentId/participant-players/:id` — Auth + tournament role `moderator`
 **Body** *(all optional)*
 ```json
-{ "shirtNumber", "role", "status", "yellowCards", "redCards", "goals", "assists" }
+{ "name", "slug", "nickname", "dateOfBirth", "nationality", "position", "preferredFoot", "heightCm", "shirtNumber", "role", "status", "yellowCards", "redCards", "goals", "assists" }
 ```
 **Response `200`**: `{ "participantPlayer": {...} }`
 **Errors**: `404`

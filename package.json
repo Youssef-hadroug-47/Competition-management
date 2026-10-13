@@ -6,9 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "seed": "node scripts/seed.js",
-    "start:api": "npm start",
-    "start:ui": "cd frontend; npm start",
-    "dev": "concurrently -k -p \"[{name}]\" -n \"API,UI\" -c \"cyan,magenta\" \"npm run start:api\" \"npm run start:ui\""
+    "start:api": "npm start"
   },
   "engines": {
     "node": "22.x"
@@ -21,6 +19,7 @@
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
+    "nodemailer": "^10.1.0",
     "pg": "^8.23.1"
   },
   "devDependencies": {

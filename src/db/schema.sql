@@ -4,7 +4,18 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   name TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
+  email_verified BOOLEAN NOT NULL DEFAULT true,
   created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text)
+);
+
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT true;
+
+CREATE TABLE IF NOT EXISTS email_verification_tokens (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS tournaments (
@@ -62,36 +73,18 @@ CREATE TABLE IF NOT EXISTS groups (
     CHECK (advancing_teams + advancing_teams_to_ranking <= number_teams)
 );
 
-CREATE TABLE IF NOT EXISTS teams (
+CREATE TABLE IF NOT EXISTS participant_teams (
   id TEXT PRIMARY KEY,
+  tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+  creator_id TEXT NOT NULL REFERENCES users(id),
   name TEXT NOT NULL,
-  slug TEXT NOT NULL UNIQUE,
+  slug TEXT NOT NULL,
   short_name TEXT,
   primary_color TEXT,
   secondary_color TEXT,
   city TEXT,
   country TEXT,
   founded_year INTEGER,
-  created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text)
-);
-
-CREATE TABLE IF NOT EXISTS players (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  slug TEXT NOT NULL UNIQUE,
-  nickname TEXT,
-  date_of_birth TEXT,
-  nationality TEXT,
-  position TEXT,
-  preferred_foot TEXT,
-  height_cm INTEGER,
-  created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text)
-);
-
-CREATE TABLE IF NOT EXISTS participant_teams (
-  id TEXT PRIMARY KEY,
-  tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
-  team_id TEXT NOT NULL REFERENCES teams(id),
   group_id TEXT REFERENCES groups(id) ON DELETE SET NULL,
   seed INTEGER,
   nickname TEXT,
@@ -105,7 +98,7 @@ CREATE TABLE IF NOT EXISTS participant_teams (
   goals_for INTEGER NOT NULL DEFAULT 0,
   goals_against INTEGER NOT NULL DEFAULT 0,
   points INTEGER NOT NULL DEFAULT 0,
-  UNIQUE (tournament_id, team_id)
+  UNIQUE (tournament_id, slug)
 );
 
 CREATE TABLE IF NOT EXISTS tournament_team_leaders (
@@ -120,7 +113,15 @@ CREATE TABLE IF NOT EXISTS tournament_team_leaders (
 CREATE TABLE IF NOT EXISTS participant_players (
   id TEXT PRIMARY KEY,
   participant_team_id TEXT NOT NULL REFERENCES participant_teams(id) ON DELETE CASCADE,
-  player_id TEXT NOT NULL REFERENCES players(id),
+  creator_id TEXT NOT NULL REFERENCES users(id),
+  name TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  nickname TEXT,
+  date_of_birth TEXT,
+  nationality TEXT,
+  position TEXT,
+  preferred_foot TEXT,
+  height_cm INTEGER,
   shirt_number INTEGER,
   role TEXT DEFAULT 'player' CHECK (role IN ('player', 'captain', 'goalkeeper')),
   status TEXT NOT NULL DEFAULT 'active'
@@ -129,7 +130,8 @@ CREATE TABLE IF NOT EXISTS participant_players (
   red_cards INTEGER NOT NULL DEFAULT 0,
   goals INTEGER NOT NULL DEFAULT 0,
   assists INTEGER NOT NULL DEFAULT 0,
-  UNIQUE (participant_team_id, player_id)
+  created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text),
+  UNIQUE (participant_team_id, slug)
 );
 
 CREATE TABLE IF NOT EXISTS matches (
@@ -187,8 +189,8 @@ CREATE TABLE IF NOT EXISTS match_events (
   phase TEXT NOT NULL CHECK (phase IN ('regulation', 'extra_time', 'shootout')),
   goal_event_id TEXT REFERENCES match_events(id) ON DELETE CASCADE,
   team_id TEXT REFERENCES participant_teams(id),
-  player_id TEXT REFERENCES participant_players(id),
-  assister_id TEXT REFERENCES participant_players(id),
+  player_id TEXT REFERENCES participant_players(id) ON DELETE SET NULL,
+  assister_id TEXT REFERENCES participant_players(id) ON DELETE SET NULL,
   card TEXT CHECK (card IN ('yellow', 'red')),
   scored BOOLEAN,
   minute INTEGER,
@@ -270,12 +272,16 @@ CREATE TABLE IF NOT EXISTS vote_ballots (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   nominee_id TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text),
-  PRIMARY KEY (vote_id, user_id)
+  PRIMARY KEY (vote_id, user_id),
+  FOREIGN KEY (vote_id, nominee_id)
+    REFERENCES vote_nominees(vote_id, nominee_id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_stages_tournament ON stages(tournament_id);
 CREATE INDEX IF NOT EXISTS idx_groups_stage ON groups(stage_id);
 CREATE INDEX IF NOT EXISTS idx_pt_tournament ON participant_teams(tournament_id);
+CREATE INDEX IF NOT EXISTS idx_pt_creator ON participant_teams(creator_id);
+CREATE INDEX IF NOT EXISTS idx_pp_creator ON participant_players(creator_id);
 CREATE INDEX IF NOT EXISTS idx_matches_tournament ON matches(tournament_id);
 CREATE INDEX IF NOT EXISTS idx_matches_tournament_schedule
   ON matches(tournament_id, matchday, created_at);
