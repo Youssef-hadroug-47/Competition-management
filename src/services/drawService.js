@@ -563,13 +563,22 @@ async function finalizeLeagueStage(stage) {
   };
 }
 
-async function drawLeagueStage(tournament, stage, groups, participants) {
+async function drawLeagueStage(
+  tournament,
+  stage,
+  groups,
+  participants,
+  potDraw,
+  clearSavedPotAssignments,
+  replaceExistingMatches,
+) {
   if (!groups.length) throw httpError(400, 'Create groups for this league stage before drawing');
-  const shuffled = shuffle(participants);
-  const assignments = shuffled.map((pt, index) => ({
-    ...pt,
-    group_id: groups[index % groups.length].id,
-  }));
+  const assignments = potDraw
+    ? allocatePotParticipants(groups, participants, potDraw.assignmentByTeamId)
+    : shuffle(participants).map((pt, index) => ({
+      ...pt,
+      group_id: groups[index % groups.length].id,
+    }));
 
   const settings = parseJson(stage.settings, defaultStageSettings('league'));
   const legs = Math.max(1, Number(settings.headToHeadMatches) || 1);
@@ -582,6 +591,20 @@ async function drawLeagueStage(tournament, stage, groups, participants) {
 
   const created = [];
   await runInTransaction(async () => {
+    if (replaceExistingMatches) {
+      await run('DELETE FROM matches WHERE tournament_id = ? AND stage_id = ?', [tournament.id, stage.id]);
+    }
+    if (potDraw || clearSavedPotAssignments) {
+      await run('DELETE FROM stage_draw_pot_assignments WHERE stage_id = ?', [stage.id]);
+      for (const [participantTeamId, potNumber] of potDraw?.assignmentByTeamId || []) {
+        await run(
+          `INSERT INTO stage_draw_pot_assignments
+            (stage_id, participant_team_id, pot_number, pot_count, updated_at)
+           VALUES (?, ?, ?, ?, NOW())`,
+          [stage.id, participantTeamId, potNumber, potDraw.potCount],
+        );
+      }
+    }
     for (const pt of assignments) await run(`UPDATE participant_teams SET group_id = ?, status = 'drawn' WHERE id = ?`, [pt.group_id, pt.id]);
 
     for (const group of groups) {
@@ -602,7 +625,11 @@ async function drawLeagueStage(tournament, stage, groups, participants) {
     }
   });
 
-  return { assigned: assignments.length, matchesCreated: created.length };
+  return {
+    assigned: assignments.length,
+    matchesCreated: created.length,
+    ...(potDraw ? { potCount: potDraw.potCount } : {}),
+  };
 }
 
 // Draws only the FIRST round of a knockout stage. Every round group for the
@@ -661,7 +688,7 @@ async function drawKnockoutStage(tournament, stage, groups, participants) {
   return { assigned: participants.length, matchesCreated: created.length, firstRound: firstRound.name };
 }
 
-async function runDraw({ tournamentId, stageId }) {
+async function runDraw({ tournamentId, stageId, potDraw }) {
   const tournament = await one('SELECT * FROM tournaments WHERE id = ?', [tournamentId]);
   if (!tournament) throw httpError(404, 'Tournament not found');
 
@@ -681,40 +708,76 @@ async function runDraw({ tournamentId, stageId }) {
     throw httpError(409, 'This stage has started. Use Reset stage before creating a new draw.');
   }
 
-  // Stage linking: a stage only draws from teams that have already been
-  // promoted into it (see stage_promotions), not the whole tournament
-  // roster. Promotions are decided once, when a feeding stage finishes —
-  // see finalizeLeagueStage and advanceKnockoutStage — so by draw time this
-  // is just a lookup, not a computation.
-  let participants;
-  if (stage.sequence_order > 1) {
-    participants = await getIncomingParticipants(stage);
-    if (participants.length < 2) {
-      const feederSeqs = await getFeederStageSequenceOrders(stage);
-      const message = feederSeqs.length
-        ? `Only ${participants.length} team(s) have been promoted into stage #${stage.sequence_order} so far from stage(s) ${feederSeqs.join(', ')}. Make sure those stages have finished.`
-        : `No teams have been promoted into stage #${stage.sequence_order} yet. Finish the stage(s) whose promotion_rules target it first.`;
-      throw httpError(409, message);
-    }
-
-  } else {
-    participants = await many('SELECT * FROM participant_teams WHERE tournament_id = ?', [tournamentId]);
-    const number_of_teams = (await one('SELECT * from tournaments WHERE id = ?', [tournamentId])).number_of_teams;
-    if (participants.length != number_of_teams) {
-      throw httpError(400, `add ${number_of_teams - participants.length} teams to run draw`);
-    }
-  }
+  const participants = await getDrawParticipants(tournamentId, stage);
 
   const groups = await many(`SELECT * FROM ${stage.type === 'league' ? 'groups' : 'rounds'} WHERE stage_id = ? ORDER BY sequence_order ASC, name ASC`, [stage.id]);
 
-  if (existingMatches.length) {
+  let effectivePotDraw = null;
+  let clearSavedPotAssignments = potDraw === null;
+  if (stage.type === 'league') {
+    let configuration = potDraw;
+    if (configuration === undefined) {
+      const saved = await getSavedPotAssignments(stage.id);
+      if (saved.length) {
+        const supportedPotCounts = eligiblePotCounts(groups);
+        const expectedTeamCount = groups.length
+          ? groups.length * Number(groups[0].number_teams)
+          : 0;
+        const savedPotCount = Number(saved[0].pot_count);
+        if (
+          supportedPotCounts.includes(savedPotCount)
+          && participants.length === expectedTeamCount
+        ) {
+          configuration = {
+            potCount: savedPotCount,
+            mode: 'manual',
+            assignments: saved.map((row) => ({
+              participantTeamId: row.participant_team_id,
+              potNumber: Number(row.pot_number),
+            })),
+          };
+        } else {
+          clearSavedPotAssignments = true;
+        }
+      }
+    }
+    if (configuration && typeof configuration !== 'object') {
+      throw httpError(400, 'Pot draw settings are invalid.');
+    }
+    if (configuration) {
+      const potCount = Number(configuration.potCount);
+      if (!eligiblePotCounts(groups).includes(potCount)) {
+        throw httpError(400, 'Choose a valid pot count for these equally sized groups.');
+      }
+      let assignments = configuration.assignments;
+      if (configuration.mode === 'random') {
+        assignments = randomizedPotAssignments(participants, potCount);
+      } else if (configuration.mode !== 'manual') {
+        throw httpError(400, 'Choose manual or randomized pot assignments.');
+      }
+      const assignmentByTeamId = validatePotAssignments(groups, participants, potCount, assignments);
+      effectivePotDraw = { potCount, assignmentByTeamId };
+    }
+  } else if (potDraw !== undefined && potDraw !== null) {
+    throw httpError(400, 'Pot draws are available only for league stages.');
+  }
+
+  if (existingMatches.length && stage.type === 'knockout') {
     await run('DELETE FROM matches WHERE tournament_id = ? AND stage_id = ?', [tournamentId, stage.id]);
   }
 
   const result =
     stage.type === 'knockout'
       ? await drawKnockoutStage(tournament, stage, groups, participants)
-      : await drawLeagueStage(tournament, stage, groups, participants);
+      : await drawLeagueStage(
+        tournament,
+        stage,
+        groups,
+        participants,
+        effectivePotDraw,
+        clearSavedPotAssignments,
+        existingMatches.length > 0,
+      );
 
   await run(
     `UPDATE tournaments SET status = CASE
@@ -999,6 +1062,166 @@ async function stagePromotionSnapshot(stageId) {
   , [stageId]);
 }
 
+function eligiblePotCounts(groups) {
+  if (!groups.length) return [];
+  const groupSize = Number(groups[0].number_teams);
+  if (!Number.isInteger(groupSize) || groupSize < 2) return [];
+  if (groups.some((group) => Number(group.number_teams) !== groupSize)) return [];
+  const counts = [];
+  for (let count = 2; count <= groupSize; count *= 2) {
+    if (groupSize % count === 0) counts.push(count);
+  }
+  return counts;
+}
+
+function validatePotAssignments(groups, participants, potCount, assignments) {
+  const eligibleCounts = eligiblePotCounts(groups);
+  if (!eligibleCounts.includes(Number(potCount))) {
+    throw httpError(400, 'Choose a valid pot count for these equally sized groups.');
+  }
+  const groupSize = Number(groups[0].number_teams);
+  const expectedParticipantCount = groups.length * groupSize;
+  if (participants.length !== expectedParticipantCount) {
+    throw httpError(
+      409,
+      `Pot draws need exactly ${expectedParticipantCount} teams for these groups; ${participants.length} are available.`,
+    );
+  }
+  if (!Array.isArray(assignments) || assignments.length !== participants.length) {
+    throw httpError(400, 'Assign every team to exactly one pot.');
+  }
+  const participantsById = new Map(participants.map((participant) => [participant.id, participant]));
+  const assignmentByTeamId = new Map();
+  const potTotals = new Map(Array.from({ length: Number(potCount) }, (_, index) => [index + 1, 0]));
+  for (const assignment of assignments) {
+    const teamId = assignment?.participantTeamId;
+    const potNumber = Number(assignment?.potNumber);
+    if (!participantsById.has(teamId) || assignmentByTeamId.has(teamId)) {
+      throw httpError(400, 'Pot assignments must include each eligible team exactly once.');
+    }
+    if (!Number.isInteger(potNumber) || potNumber < 1 || potNumber > Number(potCount)) {
+      throw httpError(400, `Pot number must be between 1 and ${potCount}.`);
+    }
+    assignmentByTeamId.set(teamId, potNumber);
+    potTotals.set(potNumber, potTotals.get(potNumber) + 1);
+  }
+  const teamsPerPot = expectedParticipantCount / Number(potCount);
+  if ([...potTotals.values()].some((count) => count !== teamsPerPot)) {
+    throw httpError(400, `Each pot must contain exactly ${teamsPerPot} teams.`);
+  }
+  return assignmentByTeamId;
+}
+
+function allocatePotParticipants(groups, participants, assignmentByTeamId, shuffleItems = shuffle) {
+  const potCount = Math.max(...assignmentByTeamId.values());
+  const groupSize = Number(groups[0].number_teams);
+  const teamsPerGroupPerPot = groupSize / potCount;
+  const teamsByPot = new Map(Array.from({ length: potCount }, (_, index) => [index + 1, []]));
+  participants.forEach((participant) => {
+    teamsByPot.get(assignmentByTeamId.get(participant.id)).push(participant);
+  });
+  teamsByPot.forEach((teams, potNumber) => teamsByPot.set(potNumber, shuffleItems(teams)));
+
+  const assignments = [];
+  groups.forEach((group, groupIndex) => {
+    for (let potNumber = 1; potNumber <= potCount; potNumber += 1) {
+      const start = groupIndex * teamsPerGroupPerPot;
+      const selected = teamsByPot.get(potNumber).slice(start, start + teamsPerGroupPerPot);
+      selected.forEach((participant) => assignments.push({ ...participant, group_id: group.id }));
+    }
+  });
+  return assignments;
+}
+
+function randomizedPotAssignments(participants, potCount, shuffleItems = shuffle) {
+  const shuffled = shuffleItems(participants);
+  return shuffled.map((participant, index) => ({
+    participantTeamId: participant.id,
+    potNumber: (index % Number(potCount)) + 1,
+  }));
+}
+
+async function getDrawParticipants(tournamentId, stage) {
+  if (stage.sequence_order > 1) {
+    const participants = await getIncomingParticipants(stage);
+    if (participants.length < 2) {
+      const feederSeqs = await getFeederStageSequenceOrders(stage);
+      const message = feederSeqs.length
+        ? `Only ${participants.length} team(s) have been promoted into stage #${stage.sequence_order} so far from stage(s) ${feederSeqs.join(', ')}. Make sure those stages have finished.`
+        : `No teams have been promoted into stage #${stage.sequence_order} yet. Finish the stage(s) whose promotion_rules target it first.`;
+      throw httpError(409, message);
+    }
+    return participants;
+  }
+  const participants = await many(
+    'SELECT * FROM participant_teams WHERE tournament_id = ?',
+    [tournamentId],
+  );
+  const tournament = await one('SELECT number_of_teams FROM tournaments WHERE id = ?', [tournamentId]);
+  if (participants.length !== tournament.number_of_teams) {
+    throw httpError(400, `add ${tournament.number_of_teams - participants.length} teams to run draw`);
+  }
+  return participants;
+}
+
+async function getSavedPotAssignments(stageId) {
+  return many(
+    `SELECT participant_team_id, pot_number, pot_count
+     FROM stage_draw_pot_assignments
+     WHERE stage_id = ?
+     ORDER BY pot_number, participant_team_id`,
+    [stageId],
+  );
+}
+
+async function getDrawPotOptions(tournamentId, stageId) {
+  const stage = await one(
+    'SELECT * FROM stages WHERE id = ? AND tournament_id = ?',
+    [stageId, tournamentId],
+  );
+  if (!stage) throw httpError(404, 'Stage not found');
+  if (stage.type !== 'league') {
+    return { stageType: stage.type, eligible: false, potCounts: [], groups: [], teams: [], savedPotDraw: null };
+  }
+  const groups = await many(
+    'SELECT id, name, number_teams FROM groups WHERE stage_id = ? ORDER BY sequence_order, name',
+    [stage.id],
+  );
+  const participants = await getDrawParticipants(tournamentId, stage);
+  const saved = await getSavedPotAssignments(stage.id);
+  const savedPotDraw = saved.length
+    ? {
+      potCount: Number(saved[0].pot_count),
+      assignments: saved.map((assignment) => ({
+        participantTeamId: assignment.participant_team_id,
+        potNumber: Number(assignment.pot_number),
+      })),
+    }
+    : null;
+  const eligibleCounts = eligiblePotCounts(groups);
+  const expectedTeamCount = groups.length && eligibleCounts.length
+    ? groups.length * Number(groups[0].number_teams)
+    : null;
+  const eligible = eligibleCounts.length > 0 && participants.length === expectedTeamCount;
+  return {
+    stageType: stage.type,
+    eligible,
+    groupSize: eligible ? Number(groups[0].number_teams) : null,
+    expectedTeamCount,
+    potCounts: eligible ? eligibleCounts : [],
+    groups: groups.map(({ id: groupId, name, number_teams: numberOfTeams }) => ({
+      id: groupId,
+      name,
+      numberOfTeams: Number(numberOfTeams),
+    })),
+    teams: participants.map((participant) => ({
+      id: participant.id,
+      name: participant.name || participant.nickname || participant.slug,
+    })),
+    savedPotDraw,
+  };
+}
+
 async function downstreamImpact(stageId, beforePromotions, afterPromotions) {
   const before = JSON.stringify(beforePromotions);
   const after = JSON.stringify(afterPromotions);
@@ -1065,6 +1288,11 @@ async function reconcileStageOutputs(stageId) {
 
 module.exports = {
   runDraw,
+  getDrawPotOptions,
+  eligiblePotCounts,
+  validatePotAssignments,
+  allocatePotParticipants,
+  randomizedPotAssignments,
   resetStage,
   roundRobinPairs,
   advanceKnockoutStage,

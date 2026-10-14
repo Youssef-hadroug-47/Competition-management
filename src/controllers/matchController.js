@@ -3,7 +3,7 @@ const { asyncHandler } = require('../utils/asyncHandler');
 const { httpError } = require('../middleware/error');
 const map = require('../services/mappers');
 const access = require('../services/access');
-const { runDraw, resetStage } = require('../services/drawService');
+const { runDraw, resetStage, getDrawPotOptions } = require('../services/drawService');
 const {
   finishMatchRecord,
   correctFinishedMatchRecord,
@@ -42,8 +42,17 @@ const draw = asyncHandler(async (req, res) => {
   const tournamentId = req.body?.tournamentId || req.params.tournamentId;
   if (!tournamentId) throw httpError(400, 'tournamentId is required');
   await access.getTournamentOrThrow(tournamentId);
-  const result = await runDraw({ tournamentId, stageId: req.body?.stageId });
+  const result = await runDraw({
+    tournamentId,
+    stageId: req.body?.stageId,
+    ...(Object.hasOwn(req.body || {}, 'potDraw') ? { potDraw: req.body.potDraw } : {}),
+  });
   res.status(201).json({ draw: result });
+});
+
+const drawPotOptions = asyncHandler(async (req, res) => {
+  await access.getTournamentOrThrow(req.params.tournamentId);
+  res.json(await getDrawPotOptions(req.params.tournamentId, req.params.id));
 });
 
 const resetStageHandler = asyncHandler(async (req, res) => {
@@ -207,6 +216,7 @@ const moderateFollow = asyncHandler(async (req, res) => {
 
 module.exports = {
   draw,
+  drawPotOptions,
   resetStage: resetStageHandler,
   listMatches,
   getMatch,

@@ -1778,11 +1778,112 @@ footer.page__footer {
   line-height: 1.5;
 }
 
+.draw-pot-modal {
+  display: grid;
+  gap: 12px;
+  width: min(94vw, 720px);
+  max-width: 720px;
+  max-height: min(90vh, 900px);
+  overflow-y: auto;
+}
+
+.draw-pot-modal > h2,
+.draw-pot-modal > p {
+  margin: 0;
+}
+
+.draw-pot-modal__field {
+  margin: 2px 0 0;
+}
+
+.draw-pot-modal__select {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.draw-pot-modal__manual {
+  display: grid;
+  gap: 8px;
+}
+
+.draw-pot-modal__manual[hidden] {
+  display: none;
+}
+
+.draw-pot-modal__manual .field__hint {
+  margin: 0;
+}
+
+.draw-pot-modal__teams {
+  display: grid;
+  max-height: 250px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.draw-pot-modal__team {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(92px, .65fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text);
+  font-size: .82rem;
+}
+
+.draw-pot-modal__team > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draw-pot-modal__team-pot {
+  padding: 7px 8px;
+  font-size: .78rem;
+}
+
+.draw-pot-modal__balance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.draw-pot-modal__pot-count {
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: .73rem;
+  font-weight: 600;
+}
+
+.draw-pot-modal__pot-count--ready {
+  background: rgba(31, 122, 82, .1);
+  color: var(--accent-dark);
+}
+
+.draw-pot-modal .modal__actions {
+  position: sticky;
+  bottom: -24px;
+  padding: 12px 0 0;
+  background: var(--surface);
+}
+
 @media (max-width: 640px) {
   main { padding: 24px 16px 48px; }
   .auth-card { padding: 24px; }
   .verify-card { padding: 28px 22px; }
   .verify-card h1 { font-size: 2.15rem; }
+  .draw-pot-modal { padding: 18px; }
+  .draw-pot-modal__teams { grid-template-columns: 1fr; max-height: 220px; }
 }
 
 /* ---------------------------------------------------------------

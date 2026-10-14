@@ -79,6 +79,7 @@ router.post('/player-invite-codes/redeem', requireAuth, catalog.redeemPlayerInvi
 router.patch('/tournaments/:tournamentId/participant-players/:id', requireAuth, requireTournamentRole('moderator'), catalog.updateParticipantPlayer);
 router.delete('/tournaments/:tournamentId/participant-players/:id', requireAuth, requireTournamentModerator, catalog.removeParticipantPlayer);
 
+router.get('/tournaments/:tournamentId/stages/:id/draw-pots', requireAuth, requireTournamentRole('moderator'), matches.drawPotOptions);
 router.post('/tournaments/:tournamentId/draw', requireAuth, requireTournamentRole('moderator'), matches.draw);
 router.delete('/tournaments/:tournamentId/stages/:id/reset', requireAuth, requireTournamentRole('moderator'), matches.resetStage);
 

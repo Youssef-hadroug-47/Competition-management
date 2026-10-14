@@ -118,6 +118,18 @@ CREATE TABLE IF NOT EXISTS participant_teams (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_participant_teams_id_tournament
   ON participant_teams(id, tournament_id);
 
+CREATE TABLE IF NOT EXISTS stage_draw_pot_assignments (
+  stage_id TEXT NOT NULL REFERENCES stages(id) ON DELETE CASCADE,
+  participant_team_id TEXT NOT NULL REFERENCES participant_teams(id) ON DELETE CASCADE,
+  pot_number INTEGER NOT NULL CHECK (pot_number >= 1),
+  pot_count INTEGER NOT NULL CHECK (pot_count >= 2),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (stage_id, participant_team_id),
+  CHECK (pot_number <= pot_count)
+);
+CREATE INDEX IF NOT EXISTS idx_stage_draw_pots_stage_pot
+  ON stage_draw_pot_assignments(stage_id, pot_number);
+
 CREATE TABLE IF NOT EXISTS tournament_team_leaders (
   tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

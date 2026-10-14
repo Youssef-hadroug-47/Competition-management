@@ -317,6 +317,7 @@ reusable global player catalog. Each unified player row records its creator.
 
 ### Draw and matches
 - `POST /api/draw` `{ tournamentId, stageId? }` (also `POST /api/tournaments/:id/draw`)
+- `GET /api/tournaments/:id/stages/:stageId/draw-pots` — moderator pot setup data
 - `GET /api/tournaments/:id/matches`
 - `POST /api/matches/:id/start` (referee/admin)
 - `PATCH /api/matches/:id`
@@ -381,4 +382,10 @@ Then create tournament-scoped teams with `POST /api/tournaments/:id/teams` or
 `POST /api/tournaments/:id/participant-teams`, and run `POST /api/draw` with
 `{ "tournamentId": "..." }`.
 
-The draw shuffles participant teams into groups (league) or pairs them (knockout) and generates fixtures. Double round-robin uses `settings.headToHeadMatches: 2`.
+League-stage draws shuffle teams into groups by default. When every group has
+the same capacity, moderators can instead select a power-of-two pot count that
+divides that capacity and manually or randomly fill the pots. Each group then
+receives an exact, equal quota from every pot. These assignments are saved and
+reused on redraw unless the moderator replaces or clears them. Knockout draws
+continue pairing qualified teams as before. Double round-robin uses
+`settings.headToHeadMatches: 2`.

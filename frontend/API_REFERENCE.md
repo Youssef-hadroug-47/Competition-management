@@ -446,13 +446,60 @@ The existing roster count is checked against the tournament cap before update.
 ### `POST /tournaments/:tournamentId/draw` — Auth + tournament role `moderator`
 **Body**
 ```json
-{ "stageId": "string (optional — draws the tournament's current stage if omitted)" }
+{
+  "stageId": "string (optional — draws the tournament's current stage if omitted)",
+  "potDraw": {
+    "potCount": 4,
+    "mode": "manual",
+    "assignments": [
+      { "participantTeamId": "team-1", "potNumber": 1 },
+      { "participantTeamId": "team-2", "potNumber": 2 },
+      { "participantTeamId": "team-3", "potNumber": 3 },
+      { "participantTeamId": "team-4", "potNumber": 4 },
+      { "participantTeamId": "team-5", "potNumber": 1 },
+      { "participantTeamId": "team-6", "potNumber": 2 },
+      { "participantTeamId": "team-7", "potNumber": 3 },
+      { "participantTeamId": "team-8", "potNumber": 4 }
+    ]
+  }
+}
 ```
-**Response `201`**
+`potDraw` is optional and applies only to league stages. `{ "potCount": 4,
+"mode": "random" }` asks the server to fill balanced pots randomly. Manual
+assignments must include every drawn team exactly once and each pot must have
+the same number of teams. The selected pot count must be a power of two that
+divides the common configured group size; every destination group receives
+exactly `groupSize / potCount` teams from each pot. Send `"potDraw": null` to
+redraw without pots and clear saved assignments. If omitted, valid saved pot
+assignments are reused.
+**Response `201`**: `{ "draw": { ... } }`
+**Errors**: `400` invalid group/pot configuration, `404` tournament or stage
+not found, `409` wrong number of teams or started stage.
+
+### `GET /tournaments/:tournamentId/stages/:id/draw-pots` — Auth + tournament role `moderator`
+
+Returns the selected stage's configured group capacities, draw teams, eligible
+pot counts (only when all group sizes are equal and team capacity is met), and
+saved assignments for the moderator draw dialog.
+**Response `200`**
 ```json
-{ "draw": { /* result of runDraw() — shape defined in drawService.js (not provided) */ } }
+{
+  "stageType": "league",
+  "eligible": true,
+  "groupSize": 4,
+  "expectedTeamCount": 8,
+  "potCounts": [2, 4],
+  "groups": [
+    { "id": "group-1", "name": "Group 1", "numberOfTeams": 4 },
+    { "id": "group-2", "name": "Group 2", "numberOfTeams": 4 }
+  ],
+  "teams": [{ "id": "team-id", "name": "Team name" }],
+  "savedPotDraw": null
+}
 ```
-**Errors**: `400` missing tournamentId, `404` tournament not found.
+**Errors**: `400` registered team count does not match tournament setup,
+`404` tournament or stage not found, `409` draw participants are not available
+yet.
 
 ---
 

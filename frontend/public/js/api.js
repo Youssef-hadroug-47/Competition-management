@@ -261,6 +261,10 @@ const Api = {
   // ---- Draw / matches / simulation ----
   draw: {
     run: (tournamentId, stageId) => request('POST', `/tournaments/${enc(tournamentId)}/draw`, { body: { stageId } }),
+    potOptions: (tournamentId, stageId) =>
+      request('GET', `/tournaments/${enc(tournamentId)}/stages/${enc(stageId)}/draw-pots`),
+    runWithPots: (tournamentId, stageId, potDraw) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/draw`, { body: { stageId, potDraw } }),
     reset: (tournamentId, stageId) => request('DELETE', `/tournaments/${enc(tournamentId)}/stages/${enc(stageId)}/reset`),
   },
 

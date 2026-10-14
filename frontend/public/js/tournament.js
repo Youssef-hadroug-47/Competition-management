@@ -121,6 +121,181 @@
     return total > 1 ? `${stageKind(stage)} · Stage ${index + 1}` : stageKind(stage);
   }
 
+  function promptLeaguePotDraw(options, isRedraw) {
+    return new Promise((resolve) => {
+      const backdrop = el('div', { class: 'modal-backdrop app-confirm-backdrop draw-pot-backdrop' });
+      const splitMode = el('select', { name: 'splitMode', class: 'draw-pot-modal__select' }, [
+        el('option', { value: 'none', text: 'No pots — fully random group draw' }),
+        el('option', { value: 'pots', text: 'Use pots to balance every group' }),
+      ]);
+      const potCount = el('select', { name: 'potCount', class: 'draw-pot-modal__select' },
+        options.potCounts.map((count) => el('option', {
+          value: count,
+          text: `${count} pots · ${options.groupSize / count} team${options.groupSize / count === 1 ? '' : 's'} from each per group`,
+        })),
+      );
+      const assignmentMode = el('select', { name: 'assignmentMode', class: 'draw-pot-modal__select' }, [
+        el('option', { value: 'manual', text: 'Assign teams to pots manually' }),
+        el('option', { value: 'random', text: 'Randomize pot membership' }),
+      ]);
+      const savedAssignmentByTeam = new Map(
+        (options.savedPotDraw?.assignments || []).map((assignment) => [
+          assignment.participantTeamId,
+          assignment.potNumber,
+        ]),
+      );
+      const assignmentRows = options.teams.map((team) => {
+        const selector = el('select', {
+          class: 'draw-pot-modal__select draw-pot-modal__team-pot',
+          'aria-label': `Pot for ${team.name}`,
+        }, [
+          el('option', { value: '', text: 'Choose a pot' }),
+          ...Array.from({ length: Number(potCount.value || options.potCounts[0]) }, (_, index) =>
+            el('option', { value: index + 1, text: `Pot ${index + 1}` })),
+        ]);
+        const assigned = savedAssignmentByTeam.get(team.id);
+        if (assigned) selector.value = String(assigned);
+        return { team, selector };
+      });
+      const balance = el('div', { class: 'draw-pot-modal__balance', 'aria-live': 'polite' });
+      const manualSection = el('div', { class: 'draw-pot-modal__manual' });
+      const updatePotOptions = () => {
+        assignmentRows.forEach(({ selector }) => {
+          const current = selector.value;
+          clear(selector);
+          selector.append(
+            el('option', { value: '', text: 'Choose a pot' }),
+            ...Array.from({ length: Number(potCount.value) }, (_, index) =>
+              el('option', { value: index + 1, text: `Pot ${index + 1}` })),
+          );
+          selector.value = Number(current) <= Number(potCount.value) ? current : '';
+        });
+        updateBalance();
+      };
+      const list = el('div', { class: 'draw-pot-modal__teams' },
+        assignmentRows.map(({ team, selector }) => el('label', { class: 'draw-pot-modal__team' }, [
+          el('span', { text: team.name }),
+          selector,
+        ])),
+      );
+      manualSection.append(
+        el('p', { class: 'field__hint', text: 'Assign every team once. Each group will receive the same number from every pot.' }),
+        list,
+        balance,
+      );
+      const potOptions = el('div', { class: 'draw-pot-modal__options', hidden: true }, [
+        el('label', { class: 'field draw-pot-modal__field' }, [
+          el('span', { text: 'Number of pots' }),
+          potCount,
+        ]),
+        el('label', { class: 'field draw-pot-modal__field' }, [
+          el('span', { text: 'Fill pots' }),
+          assignmentMode,
+        ]),
+        manualSection,
+      ]);
+      const submitButton = el('button', { class: 'btn btn--primary', type: 'button', text: 'Run draw' });
+      const cancelButton = el('button', { class: 'btn btn--ghost', type: 'button', text: 'Cancel' });
+      const modal = el('section', {
+        class: 'modal app-confirm draw-pot-modal',
+        role: 'dialog',
+        'aria-modal': 'true',
+        'aria-labelledby': 'draw-pot-title',
+      }, [
+        el('p', { class: 'eyebrow', text: 'Group-stage draw' }),
+        el('h2', { id: 'draw-pot-title', text: isRedraw ? 'Redraw groups' : 'Set up the draw' }),
+        el('p', {
+          class: 'app-confirm__message',
+          text: `There are ${options.groups.length} groups of ${options.groupSize}. Pot quotas will be balanced exactly across every group.`,
+        }),
+        el('label', { class: 'field draw-pot-modal__field' }, [
+          el('span', { text: 'Draw format' }),
+          splitMode,
+        ]),
+        potOptions,
+        el('div', { class: 'modal__actions' }, [cancelButton, submitButton]),
+      ]);
+      backdrop.appendChild(modal);
+
+      function updateBalance() {
+        const count = Number(potCount.value);
+        const quota = options.groupSize / count;
+        const totals = Array.from({ length: count }, () => 0);
+        assignmentRows.forEach(({ selector }) => {
+          const selected = Number(selector.value);
+          if (selected >= 1 && selected <= count) totals[selected - 1] += 1;
+        });
+        clear(balance);
+        totals.forEach((total, index) => {
+          balance.appendChild(el('span', {
+            class: `draw-pot-modal__pot-count${total === quota * options.groups.length ? ' draw-pot-modal__pot-count--ready' : ''}`,
+            text: `Pot ${index + 1}: ${total}/${quota * options.groups.length} teams`,
+          }));
+        });
+        submitButton.disabled = splitMode.value === 'pots'
+          && assignmentMode.value === 'manual'
+          && totals.some((total) => total !== quota * options.groups.length);
+      }
+
+      function updateVisibility() {
+        potOptions.hidden = splitMode.value !== 'pots';
+        manualSection.hidden = assignmentMode.value !== 'manual';
+        updateBalance();
+      }
+
+      function finish(value) {
+        backdrop.remove();
+        document.removeEventListener('keydown', onKeyDown);
+        resolve(value);
+      }
+
+      function onKeyDown(event) {
+        if (event.key === 'Escape') finish(undefined);
+      }
+
+      const savedPotCount = Number(options.savedPotDraw?.potCount);
+      if (options.potCounts.includes(savedPotCount)) {
+        splitMode.value = 'pots';
+        potCount.value = String(savedPotCount);
+        updatePotOptions();
+        assignmentRows.forEach(({ team, selector }) => {
+          const assigned = savedAssignmentByTeam.get(team.id);
+          selector.value = assigned ? String(assigned) : '';
+        });
+      }
+      splitMode.addEventListener('change', updateVisibility);
+      potCount.addEventListener('change', updatePotOptions);
+      assignmentMode.addEventListener('change', updateVisibility);
+      assignmentRows.forEach(({ selector }) => selector.addEventListener('change', updateBalance));
+      cancelButton.addEventListener('click', () => finish(undefined));
+      submitButton.addEventListener('click', () => {
+        if (splitMode.value === 'none') {
+          finish(null);
+          return;
+        }
+        if (assignmentMode.value === 'random') {
+          finish({ potCount: Number(potCount.value), mode: 'random' });
+          return;
+        }
+        finish({
+          potCount: Number(potCount.value),
+          mode: 'manual',
+          assignments: assignmentRows.map(({ team, selector }) => ({
+            participantTeamId: team.id,
+            potNumber: Number(selector.value),
+          })),
+        });
+      });
+      backdrop.addEventListener('click', (event) => {
+        if (event.target === backdrop) finish(undefined);
+      });
+      document.addEventListener('keydown', onKeyDown);
+      document.body.appendChild(backdrop);
+      updateVisibility();
+      splitMode.focus();
+    });
+  }
+
   // ---------------------------------------------------------------
   // Boot
   // ---------------------------------------------------------------
@@ -332,23 +507,53 @@
         showBanner(banner, 'Create at least one stage before running a draw.');
         return;
       }
-      if (!await confirmAction(
+      const selectedStage = stages.find((stage) => stage.id === stageId);
+      drawButton.disabled = true;
+      let potDraw;
+      let includePotDraw = false;
+      if (selectedStage?.type === 'league') {
+        let potOptions;
+        try {
+          potOptions = await Api.draw.potOptions(tournamentId, stageId);
+        } catch (error) {
+          showBanner(banner, friendlyErrorMessage(error));
+          updateDrawState();
+          return;
+        }
+        if (potOptions.eligible && potOptions.potCounts.length) {
+          potDraw = await promptLeaguePotDraw(
+            potOptions,
+            matches.some((match) => match.stageId === stageId),
+          );
+          if (potDraw === undefined) {
+            updateDrawState();
+            return;
+          }
+          includePotDraw = true;
+        }
+      }
+      if (!includePotDraw && !await confirmAction(
         'Confirm draw',
         'Run or replace the scheduled draw for this stage? Redraw is unavailable after the stage starts.',
         'Run draw'
-      )) return;
+      )) {
+        updateDrawState();
+        return;
+      }
 
-      drawButton.disabled = true;
       if (stageSelect) stageSelect.disabled = true;
       drawButton.textContent = 'Drawing…';
       try {
-        await Api.draw.run(tournamentId, stageId);
+        if (includePotDraw) {
+          await Api.draw.runWithPots(tournamentId, stageId, potDraw);
+        } else {
+          await Api.draw.run(tournamentId, stageId);
+        }
         location.reload();
       } catch (err) {
         showBanner(banner, friendlyErrorMessage(err));
-        drawButton.disabled = false;
         if (stageSelect) stageSelect.disabled = false;
-        drawButton.textContent = 'Redraw';
+        updateDrawState();
       }
     });
     resetButton.addEventListener('click', async () => {
