@@ -240,6 +240,30 @@ function is not suitable for the required SSE connection. If the frontend and
 API use the same persistent host, keep `API_BASE_URL` as `/api` and do not use
 the Vercel API function.
 
+### Deploying the API on Vercel
+
+The repository root now has a Vercel configuration for deploying only the API
+as a Node.js function. Create a separate Vercel project for the API and set its
+**Root Directory** to the repository root (the directory containing this
+`package.json` and `vercel.json`). The existing `api/index.js` initializes the
+database once per warm function instance and forwards requests to the Express
+app; `vercel.json` routes `/api` requests to it.
+
+Configure the API project's environment variables in Vercel, including
+`DATABASE_URL`, `JWT_SECRET`, `DATABASE_SSL`, and any SMTP or Google OAuth
+settings you use. For a separate frontend Vercel project, set `FRONTEND_ORIGIN`,
+`PUBLIC_APP_URL`, and `CORS_ORIGINS` to the frontend's exact HTTPS origin. Set
+the frontend project's `API_BASE_URL` to the deployed API origin followed by
+`/api`, for example `https://your-api.vercel.app/api`. Never use
+`http://localhost:3000/api` as a production frontend URL.
+
+The API still requires an external PostgreSQL service; Vercel does not provide
+a persistent local database. This Vercel configuration is for API requests
+only, while the static frontend remains a separate project rooted at
+`frontend/`. This serverless deployment does not provide a persistent Node
+process, so long-lived connections such as the referee event stream may be
+limited by Vercel function execution constraints.
+
 
 ### Seed accounts
 

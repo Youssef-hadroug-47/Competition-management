@@ -5,7 +5,7 @@
   "routes": [
     {
       "src": "/join-team",
-      "dest": "joint-team"
+      "dest": "/join-team.html"
     },
     {
       "src": "/",

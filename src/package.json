@@ -1,0 +1,30 @@
+{
+  "name": "tournament-manager",
+  "version": "1.0.0",
+  "description": "REST API for creating and managing sports tournaments",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "seed": "node scripts/seed.js",
+    "start:api": "npm start",
+    "test": "node --test tests/*.test.js"
+  },
+  "engines": {
+    "node": "22.x"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-auth": "^1.7.7",
+    "concurrently": "^10.0.5",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "nodemailer": "^10.1.0",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "concurrency": "^0.1.4"
+  }
+}
