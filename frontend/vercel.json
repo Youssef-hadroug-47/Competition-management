@@ -4,6 +4,10 @@
   "outputDirectory": "public",
   "routes": [
     {
+      "src": "/verify-email",
+      "dest": "/verify-email.html"
+    },
+    {
       "src": "/join-team",
       "dest": "/join-team.html"
     },
