@@ -174,7 +174,7 @@ const startGoogleOAuth = asyncHandler(async (req, res) => {
   const next = validatedOAuthNext(req.body?.next);
   const callbackURL = new URL('/api/oauth/google/complete', config.betterAuthUrl);
   callbackURL.searchParams.set('next', next);
-  const errorCallbackURL = new URL('/oauth-callback.html', config.frontendOrigin);
+  const errorCallbackURL = new URL('/oauth-callback', config.frontendOrigin);
   errorCallbackURL.hash = new URLSearchParams({ error: 'google', next }).toString();
 
   const { auth } = await getBetterAuth();
@@ -208,7 +208,7 @@ const startGoogleOAuth = asyncHandler(async (req, res) => {
 });
 
 function redirectOAuthCallback(res, next, error) {
-  const callback = new URL('/oauth-callback.html', config.frontendOrigin);
+  const callback = new URL('/oauth-callback', config.frontendOrigin);
   callback.hash = new URLSearchParams({ error, next }).toString();
   res.set('Cache-Control', 'no-store');
   res.set('Referrer-Policy', 'no-referrer');
@@ -256,7 +256,7 @@ const completeGoogleOAuth = asyncHandler(async (req, res) => {
     throw error;
   }
 
-  const callback = new URL('/oauth-callback.html', config.frontendOrigin);
+  const callback = new URL('/oauth-callback', config.frontendOrigin);
   callback.hash = new URLSearchParams({ code: exchangeCode, next }).toString();
   res.set('Cache-Control', 'no-store');
   res.set('Referrer-Policy', 'no-referrer');
