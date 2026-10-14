@@ -38,7 +38,6 @@ function createApp({ staticDir } = {}) {
   app.use(express.urlencoded({ extended: false, limit: '1kb' }));
   app.use(express.json({ limit: '1mb' }));
   app.use('/api', routes);
-  if (staticDir) app.use(express.static(staticDir));
   app.use(notFound);
   app.use(errorHandler);
   return app;

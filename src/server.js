@@ -9,7 +9,7 @@ const app = createApp({
 
 async function start() {
   await initialize();
-  const server = app.listen(config.port, () => {
+  const server = app.listen(config.port, config.host, () => {
     console.log(`Tournament API listening on http://localhost:${config.port}`);
   });
 
