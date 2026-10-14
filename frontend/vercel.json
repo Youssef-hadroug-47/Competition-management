@@ -4,6 +4,10 @@
   "outputDirectory": "public",
   "routes": [
     {
+      "src": "/join-team",
+      "dest": "joint-team"
+    },
+    {
       "src": "/",
       "dest": "/index.html"
     },
