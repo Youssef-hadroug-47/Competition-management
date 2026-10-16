@@ -12,8 +12,11 @@ const adminOverride = (req) => isAdministrator(req.user);
 const detail = asyncHandler(async (req, res) => {
   const tournament = await access.getTournamentOrThrow(req.params.tournamentId);
   await access.requireTournamentInspect(tournament, req.user);
-  const data = await referee.snapshot(req.params.id, req.params.tournamentId);
-  const detailData = await getMatchDetail(req.params.id);
+  const match = await referee.getMatch(req.params.id, req.params.tournamentId);
+  const [data, detailData] = await Promise.all([
+    referee.snapshot(req.params.id, req.params.tournamentId, match),
+    getMatchDetail(req.params.id, match),
+  ]);
   res.json({
     ...detailData,
     match: map.match(data.match),
@@ -116,13 +119,17 @@ const applyImpact = asyncHandler(async (req, res) => {
   if (validNextStages.length !== stageIds.length) {
     throw httpError(400, 'Only directly affected next stages can be reset');
   }
-  const results = [];
-  for (const stageId of stageIds) {
-    const stageState = (await query(
+  const stageStates = await Promise.all(stageIds.map(async (stageId) => {
+    const result = await query(
       `SELECT COUNT(*) AS total,
               COUNT(*) FILTER (WHERE status NOT IN ('scheduled', 'postponed', 'cancelled')) AS started
        FROM matches WHERE tournament_id = $1 AND stage_id = $2`,
-      [req.params.tournamentId, stageId])).rows[0];
+      [req.params.tournamentId, stageId]);
+    return result.rows[0];
+  }));
+  const results = [];
+  for (const [index, stageId] of stageIds.entries()) {
+    const stageState = stageStates[index];
     if (Number(stageState.total || 0) === 0) {
       results.push({ stageId, action: 'none' });
     } else if (Number(stageState.started || 0) > 0) {

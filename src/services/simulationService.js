@@ -110,8 +110,10 @@ async function insertSimulatedEvent(match, {
 }
 
 async function applySimulatedEvents(match, home, away, homeGoals, awayGoals, phase = 'regulation') {
-  const homeRoster = await rosterForTeam(home?.id);
-  const awayRoster = await rosterForTeam(away?.id);
+  const [homeRoster, awayRoster] = await Promise.all([
+    rosterForTeam(home?.id),
+    rosterForTeam(away?.id),
+  ]);
   let generated = 0;
 
   const assignGoals = async (roster, count, teamId) => {
@@ -196,11 +198,15 @@ async function simulateMatch(matchId, { actorId } = {}) {
     return { match: map.match(row), advance: null, skipped: true };
   }
 
-  const stageResult = await query('SELECT * FROM stages WHERE id = $1', [row.stage_id]);
+  const [stageResult, homeResult, awayResult] = await Promise.all([
+    query('SELECT * FROM stages WHERE id = $1', [row.stage_id]),
+    getParticipant(row.home_participant_team_id),
+    getParticipant(row.away_participant_team_id),
+  ]);
   const stage = stageResult.rows[0];
   const settings = parseJson(stage?.settings, map.defaultStageSettings(stage?.type));
-  const home = await getParticipant(row.home_participant_team_id);
-  const away = await getParticipant(row.away_participant_team_id);
+  const home = homeResult;
+  const away = awayResult;
   const { homeScore, awayScore } = randomScoreline(home?.seed, away?.seed);
 
   let generatedEvents = await applySimulatedEvents(row, home, away, homeScore, awayScore);
@@ -290,11 +296,13 @@ async function simulateRound(roundId, { actorId } = {}) {
 // knockout stages this naturally cascades round by round, since finishing a
 // round's last match auto-generates the next round's fixtures.
 async function simulateStage(stageId, { actorId, maxRounds = 40 } = {}) {
-  const stageResult = await query('SELECT * FROM stages WHERE id = $1', [stageId]);
+  const [stageResult, existingResult] = await Promise.all([
+    query('SELECT * FROM stages WHERE id = $1', [stageId]),
+    query('SELECT COUNT(*) AS c FROM matches WHERE stage_id = $1', [stageId]),
+  ]);
   const stage = stageResult.rows[0];
   if (!stage) throw httpError(404, 'Stage not found');
 
-  const existingResult = await query('SELECT COUNT(*) AS c FROM matches WHERE stage_id = $1', [stage.id]);
   const existing = existingResult.rows[0];
   let drawResult = null;
   if (Number(existing.c) === 0) {
@@ -321,11 +329,12 @@ async function simulateStage(stageId, { actorId, maxRounds = 40 } = {}) {
 // and simulating each in turn so later stages always have their promoted
 // teams ready by the time they're drawn.
 async function simulateTournament(tournamentId, { actorId, maxStages = 20 } = {}) {
-  const tournamentResult = await query('SELECT * FROM tournaments WHERE id = $1', [tournamentId]);
+  const [tournamentResult, stagesResult] = await Promise.all([
+    query('SELECT * FROM tournaments WHERE id = $1', [tournamentId]),
+    query('SELECT * FROM stages WHERE tournament_id = $1 ORDER BY sequence_order ASC', [tournamentId]),
+  ]);
   const tournament = tournamentResult.rows[0];
   if (!tournament) throw httpError(404, 'Tournament not found');
-
-  const stagesResult = await query('SELECT * FROM stages WHERE tournament_id = $1 ORDER BY sequence_order ASC', [tournamentId]);
   const stages = stagesResult.rows;
   if (!stages.length) throw httpError(400, 'Create at least one stage before simulating');
 

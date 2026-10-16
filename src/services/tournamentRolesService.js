@@ -35,14 +35,11 @@ async function addRole(tournamentId, userId, role) {
 
 async function updateRole(tournamentId, userId, role) {
   if (!(tournamentId && userId && role)) return false;
-
-  if (!(await getRole(tournamentId, userId))) return false;
-
   const result = await query(
-    'UPDATE tournament_role SET role = $1 WHERE tournament_id = $2 AND user_id = $3',
+    'UPDATE tournament_role SET role = $1 WHERE tournament_id = $2 AND user_id = $3 RETURNING role',
     [role, tournamentId, userId],
   );
-  return result.rowCount > 0;
+  return result.rows.length > 0;
 }
 
 async function deleteRole(tournamentId, userId) {

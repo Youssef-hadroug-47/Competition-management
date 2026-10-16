@@ -689,28 +689,32 @@ async function drawKnockoutStage(tournament, stage, groups, participants) {
 }
 
 async function runDraw({ tournamentId, stageId, potDraw }) {
-  const tournament = await one('SELECT * FROM tournaments WHERE id = ?', [tournamentId]);
+  const [tournament, stageSelection] = await Promise.all([
+    one('SELECT * FROM tournaments WHERE id = ?', [tournamentId]),
+    stageId
+      ? one('SELECT * FROM stages WHERE id = ? AND tournament_id = ?', [stageId, tournamentId])
+      : many('SELECT * FROM stages WHERE tournament_id = ? ORDER BY sequence_order ASC', [tournamentId]),
+  ]);
   if (!tournament) throw httpError(404, 'Tournament not found');
 
-  let stage;
+  let stage = stageId ? stageSelection : null;
   if (stageId) {
-    stage = await one('SELECT * FROM stages WHERE id = ? AND tournament_id = ?', [stageId, tournamentId]);
     if (!stage) throw httpError(404, 'Stage not found');
   } else {
-    const stages = await many('SELECT * FROM stages WHERE tournament_id = ? ORDER BY sequence_order ASC', [tournamentId]);
+    const stages = stageSelection;
     if (!stages.length) throw httpError(400, 'Create at least one stage before drawing');
     stage = stages[0];
   }
 
-  const existingMatches = await many('SELECT id, status FROM matches WHERE tournament_id = ? AND stage_id = ?', [tournamentId, stage.id]);
+  const [existingMatches, participants, groups] = await Promise.all([
+    many('SELECT id, status FROM matches WHERE tournament_id = ? AND stage_id = ?', [tournamentId, stage.id]),
+    getDrawParticipants(tournamentId, stage),
+    many(`SELECT * FROM ${stage.type === 'league' ? 'groups' : 'rounds'} WHERE stage_id = ? ORDER BY sequence_order ASC, name ASC`, [stage.id]),
+  ]);
   const startedMatch = existingMatches.find((match) => !['scheduled', 'postponed', 'cancelled'].includes(match.status));
   if (startedMatch) {
     throw httpError(409, 'This stage has started. Use Reset stage before creating a new draw.');
   }
-
-  const participants = await getDrawParticipants(tournamentId, stage);
-
-  const groups = await many(`SELECT * FROM ${stage.type === 'league' ? 'groups' : 'rounds'} WHERE stage_id = ? ORDER BY sequence_order ASC, name ASC`, [stage.id]);
 
   let effectivePotDraw = null;
   let clearSavedPotAssignments = potDraw === null;
@@ -1153,11 +1157,13 @@ async function getDrawParticipants(tournamentId, stage) {
     }
     return participants;
   }
-  const participants = await many(
-    'SELECT * FROM participant_teams WHERE tournament_id = ?',
-    [tournamentId],
-  );
-  const tournament = await one('SELECT number_of_teams FROM tournaments WHERE id = ?', [tournamentId]);
+  const [participants, tournament] = await Promise.all([
+    many(
+      'SELECT * FROM participant_teams WHERE tournament_id = ?',
+      [tournamentId],
+    ),
+    one('SELECT number_of_teams FROM tournaments WHERE id = ?', [tournamentId]),
+  ]);
   if (participants.length !== tournament.number_of_teams) {
     throw httpError(400, `add ${tournament.number_of_teams - participants.length} teams to run draw`);
   }
@@ -1183,12 +1189,14 @@ async function getDrawPotOptions(tournamentId, stageId) {
   if (stage.type !== 'league') {
     return { stageType: stage.type, eligible: false, potCounts: [], groups: [], teams: [], savedPotDraw: null };
   }
-  const groups = await many(
-    'SELECT id, name, number_teams FROM groups WHERE stage_id = ? ORDER BY sequence_order, name',
-    [stage.id],
-  );
-  const participants = await getDrawParticipants(tournamentId, stage);
-  const saved = await getSavedPotAssignments(stage.id);
+  const [groups, participants, saved] = await Promise.all([
+    many(
+      'SELECT id, name, number_teams FROM groups WHERE stage_id = ? ORDER BY sequence_order, name',
+      [stage.id],
+    ),
+    getDrawParticipants(tournamentId, stage),
+    getSavedPotAssignments(stage.id),
+  ]);
   const savedPotDraw = saved.length
     ? {
       potCount: Number(saved[0].pot_count),
@@ -1226,35 +1234,36 @@ async function downstreamImpact(stageId, beforePromotions, afterPromotions) {
   const before = JSON.stringify(beforePromotions);
   const after = JSON.stringify(afterPromotions);
   const changed = before !== after;
-  const sourceStage = await one('SELECT sequence_order FROM stages WHERE id = ?', [stageId]);
   const candidateTargetIds = [...new Set([
     ...beforePromotions.map((row) => row.target_stage_id),
     ...afterPromotions.map((row) => row.target_stage_id),
   ])];
-  const targetIds = [];
-  for (const targetId of candidateTargetIds) {
-    const target = await one('SELECT sequence_order FROM stages WHERE id = ?', [targetId]);
-    if (target && Number(target.sequence_order) === Number(sourceStage?.sequence_order) + 1) targetIds.push(targetId);
-  }
-  const affected = [];
-  const pending = [...targetIds];
-  const seen = new Set();
-  while (pending.length) {
-    const currentId = pending.shift();
-    if (seen.has(currentId)) continue;
-    seen.add(currentId);
-    const stage = await one('SELECT id, type, sequence_order FROM stages WHERE id = ?', [currentId]);
-    if (!stage) continue;
-    const matches = await one(
-      'SELECT COUNT(*) AS total, SUM(CASE WHEN status = \'finished\' THEN 1 ELSE 0 END) AS finished FROM matches WHERE stage_id = ?'
-    , [currentId]);
-    const startedMatch = await one(
-      `SELECT 1 FROM matches
-       WHERE stage_id = ? AND status NOT IN ('scheduled', 'postponed', 'cancelled')
-       LIMIT 1`
-    , [currentId]);
+  const [sourceStage, targets] = await Promise.all([
+    one('SELECT sequence_order FROM stages WHERE id = ?', [stageId]),
+    candidateTargetIds.length
+      ? many(
+        'SELECT id, type, sequence_order FROM stages WHERE id = ANY($1::text[])',
+        [candidateTargetIds],
+      )
+      : Promise.resolve([]),
+  ]);
+  const targetStages = targets
+    .filter((target) => Number(target.sequence_order) === Number(sourceStage?.sequence_order) + 1)
+  const affected = await Promise.all(targetStages.map(async (stage) => {
+    const [matches, startedMatch] = await Promise.all([
+      one(
+        'SELECT COUNT(*) AS total, SUM(CASE WHEN status = \'finished\' THEN 1 ELSE 0 END) AS finished FROM matches WHERE stage_id = ?',
+        [stage.id],
+      ),
+      one(
+        `SELECT 1 FROM matches
+         WHERE stage_id = ? AND status NOT IN ('scheduled', 'postponed', 'cancelled')
+         LIMIT 1`,
+        [stage.id],
+      ),
+    ]);
     const hasDraw = Number(matches?.total || 0) > 0;
-    affected.push({
+    return {
       ...stage,
       matchCount: Number(matches?.total || 0),
       finishedMatchCount: Number(matches?.finished || 0),
@@ -1262,10 +1271,10 @@ async function downstreamImpact(stageId, beforePromotions, afterPromotions) {
       started: Boolean(startedMatch),
       action: !hasDraw ? 'none' : startedMatch ? 'reset' : 'redraw',
       incomingParticipants: afterPromotions
-        .filter((row) => row.target_stage_id === currentId)
+        .filter((row) => row.target_stage_id === stage.id)
         .map((row) => row.participant_team_id),
-    });
-  }
+    };
+  }));
   return {
     stageId,
     changed,

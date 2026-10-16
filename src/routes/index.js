@@ -74,6 +74,7 @@ router.delete('/tournaments/:tournamentId/team-leader/teams/:id/player-invite-co
 router.delete('/tournaments/:tournamentId/team-leader/teams/:id/players/:playerId', requireAuth, requireTournamentRole('team_leader'), catalog.removeTeamLeaderPlayer);
 router.post('/tournaments/:tournamentId/participant-teams/:id/players/auto', requireAuth, requireRole('admin'), catalog.autoAddParticipantPlayers);
 router.post('/player-invite-codes/validate', requireAuth, catalog.validatePlayerInviteCode);
+router.get('/player-invite-codes/availability', catalog.getPlayerInviteAvailability);
 router.get('/player-invite-codes/membership', requireAuth, catalog.getPlayerInviteMembership);
 router.post('/player-invite-codes/redeem', requireAuth, catalog.redeemPlayerInviteCode);
 router.patch('/tournaments/:tournamentId/participant-players/:id', requireAuth, requireTournamentRole('moderator'), catalog.updateParticipantPlayer);

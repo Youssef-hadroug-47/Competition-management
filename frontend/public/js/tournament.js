@@ -384,8 +384,10 @@
       activeTab: navigationState.get('activeTab', 'matches'),
       navigationState,
       leaders: { promise: null, data: null },
-      rosters: new Map(),
+      rosters: RequestCache.createRequestCache(),
       reservedInviteCodes: new Map(),
+      teamLeader: null,
+      teamLeaderRequest: null,
     };
     const savedStageId = navigationState.get('activeStageId');
     if (stages.some((stage) => stage.id === savedStageId)) state.activeStageId = savedStageId;
@@ -909,10 +911,10 @@
   }
 
   async function loadVoteCandidates(state) {
-    const rosters = await Promise.allSettled(
-      state.participantTeams.map((team) => Api.participantPlayers.list(state.tournamentId, team.id))
+    const rosters = await Promise.all(
+      state.participantTeams.map((team) => loadRoster(state, team.id))
     );
-    return rosters.flatMap((result) => result.status === 'fulfilled' ? result.value?.participantPlayers || [] : []);
+    return rosters.flatMap((roster) => roster.players);
   }
 
   function voteNomineeLabel(nominee) {
@@ -1066,7 +1068,6 @@
     try {
       const data = await Api.votes.list(state.tournamentId);
       const votes = data?.votes || [];
-      const candidates = isModerator ? await loadVoteCandidates(state) : [];
       clear(list);
       if (!votes.length) {
         list.appendChild(el('div', { class: 'votes-empty' }, [
@@ -1076,6 +1077,7 @@
         ]));
         return;
       }
+      const candidates = isModerator ? await loadVoteCandidates(state) : [];
       for (const vote of votes) {
         const nominees = await loadVoteNominees(state, vote);
         list.appendChild(renderVoteCard(state, vote, nominees, candidates, () => renderVotesView(container, state)));
@@ -1908,19 +1910,64 @@
   // View: tournament-scoped teams and rosters.
   // ---------------------------------------------------------------
   async function loadRoster(state, participantTeamId) {
-    if (state.rosters.has(participantTeamId)) return state.rosters.get(participantTeamId);
-    const promise = Api.participantPlayers
-      .list(state.tournamentId, participantTeamId)
-      .then((d) => {
-        state.reservedInviteCodes.set(
-          participantTeamId,
-          Number(d?.reservedInviteCodes) || 0,
-        );
-        return d?.participantPlayers || [];
-      })
-      .catch(() => []);
-    state.rosters.set(participantTeamId, promise);
-    return promise;
+    const request = state.rosters.getOrLoad(participantTeamId, async () => {
+      const data = await Api.participantPlayers.list(state.tournamentId, participantTeamId);
+      return {
+        players: data?.participantPlayers || [],
+        reservedInviteCodes: Number(data?.reservedInviteCodes) || 0,
+      };
+    });
+    const roster = await request;
+    if (state.rosters.isCurrent(participantTeamId, request)) {
+      state.reservedInviteCodes.set(participantTeamId, roster.reservedInviteCodes);
+    }
+    return roster;
+  }
+
+  function invalidateLeaders(state) {
+    state.leaders = { promise: null, data: null };
+  }
+
+  function invalidateRoster(state, participantTeamId) {
+    state.rosters.delete(participantTeamId);
+    state.reservedInviteCodes.delete(participantTeamId);
+    invalidateLeaders(state);
+  }
+
+  function invalidateAllRosters(state) {
+    state.rosters.clear();
+    state.reservedInviteCodes.clear();
+    invalidateLeaders(state);
+  }
+
+  async function loadTeamLeader(state) {
+    if (state.viewerRole !== 'team_leader') return null;
+    if (!state.teamLeaderRequest) {
+      state.teamLeaderRequest = Api.teamLeader.get(state.tournamentId)
+        .then((data) => {
+          state.teamLeader = data;
+          const participantTeam = data?.participantTeam;
+          if (participantTeam) {
+            state.participantTeams = [
+              ...state.participantTeams.filter((team) => team.id !== participantTeam.id),
+              participantTeam,
+            ];
+            state.rosters.set(participantTeam.id, {
+              players: data.participantPlayers || [],
+              reservedInviteCodes: 0,
+            });
+            if (!state.reservedInviteCodes.has(participantTeam.id)) {
+              state.reservedInviteCodes.set(participantTeam.id, 0);
+            }
+          }
+          return data;
+        })
+        .catch((error) => {
+          state.teamLeaderRequest = null;
+          throw error;
+        });
+    }
+    return state.teamLeaderRequest;
   }
 
   function catalogField(label, type, name, placeholder, required = false, extra = {}) {
@@ -1998,8 +2045,8 @@
           );
           codes = codes.filter((code) => code.id !== record.id);
           row.remove();
+          invalidateRoster(state, participantTeam.id);
           updateAvailable();
-          state.rosters.delete(participantTeam.id);
         } catch (error) {
           showBanner(banner, friendlyErrorMessage(error));
           revokeButton.disabled = false;
@@ -2029,6 +2076,7 @@
         const record = response.inviteCode;
         codes.push(record);
         addCodeRow(record);
+        invalidateRoster(state, participantTeam.id);
         clear(resultHost);
         const codeInput = el('input', {
           type: 'text',
@@ -2097,6 +2145,14 @@
         teamForm.reset();
         if (created?.team || created?.participantTeam) {
           state.participantTeams.push(created.team || created.participantTeam);
+          invalidateLeaders(state);
+          if (isTeamLeader && created.participantTeam) {
+            state.teamLeader = {
+              participantTeam: created.participantTeam,
+              participantPlayers: [],
+            };
+            state.teamLeaderRequest = Promise.resolve(state.teamLeader);
+          }
         }
         renderTeamsView(container, state);
       } catch (err) { showBanner(banner, friendlyErrorMessage(err)); }
@@ -2110,7 +2166,7 @@
         try {
           const data = await Api.participantTeams.autoAdd(state.tournamentId, {});
           state.participantTeams = data.participantTeams || [];
-          state.rosters.clear();
+          invalidateAllRosters(state);
           renderTeamsView(container, state);
         } catch (err) { showBanner(banner, friendlyErrorMessage(err)); }
       });
@@ -2152,7 +2208,11 @@
                 await Api.participantTeams.remove(state.tournamentId, participantTeam.id);
               }
               state.participantTeams = state.participantTeams.filter((team) => team.id !== participantTeam.id);
-              state.rosters.delete(participantTeam.id);
+              invalidateRoster(state, participantTeam.id);
+              if (isOwnedByTeamLeader) {
+                state.teamLeader = { participantTeam: null, participantPlayers: [] };
+                state.teamLeaderRequest = null;
+              }
               await renderTeamsView(container, state);
             } catch (err) { showBanner(banner, friendlyErrorMessage(err)); }
           },
@@ -2190,7 +2250,7 @@
               } else {
                 await Api.participantPlayers.remove(state.tournamentId, pp.id);
               }
-              state.rosters.delete(participantTeam.id);
+              invalidateRoster(state, participantTeam.id);
               await renderTeamsView(container, state);
             } catch (err) { showBanner(banner, friendlyErrorMessage(err)); }
           },
@@ -2218,7 +2278,7 @@
           } else {
             await Api.participantPlayers.add(state.tournamentId, participantTeam.id, data);
           }
-          state.rosters.delete(participantTeam.id);
+          invalidateRoster(state, participantTeam.id);
           await renderTeamsView(container, state);
         } catch (err) { showBanner(banner, friendlyErrorMessage(err)); }
       });
@@ -2251,7 +2311,7 @@
           await Api.participantPlayers.autoAdd(state.tournamentId, participantTeam.id, {
             count: Number(autoForm.elements.count.value),
           });
-          state.rosters.delete(participantTeam.id);
+          invalidateRoster(state, participantTeam.id);
           renderTeamsView(container, state);
         } catch (err) { showBanner(banner, friendlyErrorMessage(err)); }
       });
@@ -2265,29 +2325,19 @@
     clear(container);
     container.appendChild(el('p', { class: 'empty-state', text: 'Loading teams and players…' }));
     try {
-      state.teamLeader = state.viewerRole === 'team_leader'
-        ? await Api.teamLeader.get(state.tournamentId)
-        : null;
+      state.teamLeader = await loadTeamLeader(state);
     } catch (err) {
       clear(container);
       UI.flashMessage(friendlyErrorMessage(err));
       return;
     }
     clear(container);
-    if (state.teamLeader?.participantTeam) {
-      const ownedId = state.teamLeader.participantTeam.id;
-      state.participantTeams = [
-        ...state.participantTeams.filter((team) => team.id !== ownedId),
-        state.teamLeader.participantTeam,
-      ];
-    }
     adminCatalogForms(container, state);
     if (['invite_code', 'both'].includes(state.tournament.playerRegistrationMode)) {
       PlayerInvite.renderRedeemer(container, {
         onRedeemed: async (details) => {
           UI.flashMessage(`Player added to ${details.teamName}.`);
-          state.rosters.delete(details.participantTeamId);
-          state.reservedInviteCodes.delete(details.participantTeamId);
+          invalidateRoster(state, details.participantTeamId);
           await renderTeamsView(container, state);
         },
       });
@@ -2298,25 +2348,40 @@
     }
     const grid = el('div', { class: 'participant-teams-grid' });
     container.appendChild(grid);
-    const rosters = await Promise.all(
-      state.participantTeams.map(async (pt) => [pt, await loadRoster(state, pt.id)])
-    );
+    let rosters;
+    try {
+      rosters = await Promise.all(
+        state.participantTeams.map(async (pt) => [pt, await loadRoster(state, pt.id)])
+      );
+    } catch (error) {
+      clear(grid);
+      grid.append(
+        el('p', { class: 'empty-state', text: friendlyErrorMessage(error) }),
+        el('button', {
+          class: 'btn btn--secondary',
+          type: 'button',
+          text: 'Retry loading teams and players',
+          onclick: () => renderTeamsView(container, state),
+        }),
+      );
+      return;
+    }
     const inviteModeEnabled = ['invite_code', 'both'].includes(state.tournament.playerRegistrationMode);
-    const cardsWithCodes = await Promise.all(rosters.map(async ([pt, players]) => {
+    const cardsWithCodes = await Promise.all(rosters.map(async ([pt, roster]) => {
       const isOwnedByTeamLeader = state.viewerRole === 'team_leader'
         && state.teamLeader?.participantTeam?.id === pt.id;
       const canManageRoster = isAdmin() || state.viewerRole === 'moderator' || isOwnedByTeamLeader;
-      if (!inviteModeEnabled || !canManageRoster) return [pt, players, []];
+      if (!inviteModeEnabled || !canManageRoster) return [pt, roster.players, []];
       try {
         const result = await Api.playerInviteCodes.list(
           state.tournamentId,
           pt.id,
           state.viewerRole === 'team_leader' && !isAdmin(),
         );
-        return [pt, players, result.inviteCodes || []];
+        return [pt, roster.players, result.inviteCodes || []];
       } catch (error) {
         showBanner(banner, friendlyErrorMessage(error));
-        return [pt, players, []];
+        return [pt, roster.players, []];
       }
     }));
     const cards = cardsWithCodes.map(([pt, players, inviteCodes]) =>
@@ -2332,24 +2397,22 @@
   // There's no aggregate endpoint for this — participant_players'
   // goals/assists are only reachable per participant team
   // (GET /tournaments/:id/participant-teams/:teamId/players). Fetched
-  // lazily (only when this tab is first opened) and cached on `state`
-  // for the rest of the page's lifetime, since it's an N+1 fan-out
-  // across every team's roster.
+  // lazily and computed from the page's shared roster cache.
   // ---------------------------------------------------------------
   async function loadLeaders(state) {
-    if (state.leaders.data) return state.leaders.data;
-    if (state.leaders.promise) return state.leaders.promise;
+    const leaders = state.leaders;
+    if (leaders.data) return leaders.data;
+    if (leaders.promise) return leaders.promise;
 
-    state.leaders.promise = (async () => {
-      const results = await Promise.allSettled(
-        state.participantTeams.map((pt) => Api.participantPlayers.list(state.tournamentId, pt.id))
+    const promise = (async () => {
+      const rosters = await Promise.all(
+        state.participantTeams.map((pt) => loadRoster(state, pt.id))
       );
 
       const players = [];
-      results.forEach((result, i) => {
-        if (result.status !== 'fulfilled') return;
+      rosters.forEach((roster, i) => {
         const teamName = state.participantTeams[i].team?.name || state.participantTeams[i].nickname || 'Unknown team';
-        const list = result.value?.participantPlayers || [];
+        const list = roster.players;
         list.forEach((pp) => {
           players.push({
             name: pp.player?.name || 'Unknown player',
@@ -2370,11 +2433,15 @@
         redCards: players.filter((p) => p.redCards > 0)
           .sort((a, b) => b.redCards - a.redCards || b.yellowCards - a.yellowCards).slice(0, 10),
       };
-      state.leaders.data = data;
+      leaders.data = data;
       return data;
     })();
+    leaders.promise = promise.catch((error) => {
+      if (state.leaders === leaders) leaders.promise = null;
+      throw error;
+    });
 
-    return state.leaders.promise;
+    return leaders.promise;
   }
 
   function leaderboardList(items, valueKey) {

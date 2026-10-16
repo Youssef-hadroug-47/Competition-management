@@ -43,8 +43,14 @@ async function writeAudit(client, { matchBefore, matchAfter, userId, action, rea
 
 async function applyResultToTableInternal(client, match, homeScore, awayScore, pointsSettings) {
   const pts = pointsSettings || { win: 3, draw: 1, loss: 0 };
-  const home = await one(client, 'SELECT * FROM participant_teams WHERE id = $1', [match.home_participant_team_id]);
-  const away = await one(client, 'SELECT * FROM participant_teams WHERE id = $1', [match.away_participant_team_id]);
+  const teams = await many(
+    client,
+    'SELECT * FROM participant_teams WHERE id = ANY($1::text[])',
+    [[match.home_participant_team_id, match.away_participant_team_id]],
+  );
+  const teamsById = new Map(teams.map((team) => [team.id, team]));
+  const home = teamsById.get(match.home_participant_team_id);
+  const away = teamsById.get(match.away_participant_team_id);
   if (!home || !away) return;
   const homeWin = homeScore > awayScore;
   const draw = homeScore === awayScore;
@@ -85,8 +91,14 @@ async function finishMatchRecord({ matchRow, homeScore, awayScore, extraTimeHome
 
 async function reverseResultFromTable(client, match, homeScore, awayScore, pointsSettings) {
   const pts = pointsSettings || { win: 3, draw: 1, loss: 0 };
-  const home = await one(client, 'SELECT * FROM participant_teams WHERE id=$1', [match.home_participant_team_id]);
-  const away = await one(client, 'SELECT * FROM participant_teams WHERE id=$1', [match.away_participant_team_id]);
+  const teams = await many(
+    client,
+    'SELECT * FROM participant_teams WHERE id = ANY($1::text[])',
+    [[match.home_participant_team_id, match.away_participant_team_id]],
+  );
+  const teamsById = new Map(teams.map((team) => [team.id, team]));
+  const home = teamsById.get(match.home_participant_team_id);
+  const away = teamsById.get(match.away_participant_team_id);
   if (!home || !away) return;
   const homeWin = homeScore > awayScore; const draw = homeScore === awayScore;
   const reverse = (team, wins, draws, losses, gf, ga, points) => run(client,
@@ -181,19 +193,41 @@ async function squadFor(idValue) {
   if (!idValue) return [];
   return many(null, `SELECT pp.* FROM participant_players pp WHERE pp.participant_team_id=$1 ORDER BY pp.shirt_number`, [idValue]);
 }
-async function getMatchDetail(matchId) {
-  const row = await one(null, 'SELECT * FROM matches WHERE id=$1', [matchId]); if (!row) return null;
-  const stage = await one(null, 'SELECT * FROM stages WHERE id=$1', [row.stage_id]);
-  let group = null; let round = null;
-  if (row.group_id) {
-    const groupRow = await one(null, 'SELECT id,name FROM groups WHERE id=$1', [row.group_id]);
-    if (groupRow) group = { id: groupRow.id, name: groupRow.name };
-    else { const roundRow = await one(null, 'SELECT id,name FROM rounds WHERE id=$1', [row.group_id]); if (roundRow) round = { id: roundRow.id, name: roundRow.name }; }
-  }
-  const [homeTeam, awayTeam, homeSquad, awaySquad, suspensions] = await Promise.all([
-    participantTeamWithTeam(row.home_participant_team_id), participantTeamWithTeam(row.away_participant_team_id),
-    squadFor(row.home_participant_team_id), squadFor(row.away_participant_team_id), suspension.getForMatch(row.id, row.tournament_id),
+async function getMatchDetail(matchId, matchRow = null) {
+  const row = matchRow || await one(null, 'SELECT * FROM matches WHERE id=$1', [matchId]);
+  if (!row) return null;
+  const [
+    context,
+    homeTeam,
+    awayTeam,
+    homeSquad,
+    awaySquad,
+    suspensions,
+  ] = await Promise.all([
+    one(
+      null,
+      `SELECT s.*,
+              g.id AS detail_group_id, g.name AS detail_group_name,
+              r.id AS detail_round_id, r.name AS detail_round_name
+       FROM stages s
+       LEFT JOIN groups g ON g.id = $2 AND g.stage_id = s.id
+       LEFT JOIN rounds r ON r.id = $2 AND r.stage_id = s.id
+       WHERE s.id = $1`,
+      [row.stage_id, row.group_id],
+    ),
+    participantTeamWithTeam(row.home_participant_team_id),
+    participantTeamWithTeam(row.away_participant_team_id),
+    squadFor(row.home_participant_team_id),
+    squadFor(row.away_participant_team_id),
+    suspension.getForMatch(row.id, row.tournament_id),
   ]);
+  const stage = context;
+  const group = context?.detail_group_id
+    ? { id: context.detail_group_id, name: context.detail_group_name }
+    : null;
+  const round = !group && context?.detail_round_id
+    ? { id: context.detail_round_id, name: context.detail_round_name }
+    : null;
   const byPlayer = new Map(suspensions.map((entry) => [entry.participantPlayerId, entry]));
   const annotate = (squad) => squad.map((player) => ({ ...map.participantPlayer(player), suspension: byPlayer.get(player.id) || null }));
   return { match: map.match(row), stage: stage ? map.stage(stage) : null, group, round,

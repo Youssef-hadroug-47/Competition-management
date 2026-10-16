@@ -17,9 +17,18 @@ async function canInspectTournament(tournament, user) {
   if (!user) return false;
   if (user.role === 'admin') return true;
   if (user.id === tournament.created_by) return true;
-  if (['moderator', 'referee', 'team_leader'].includes(await getRole(tournament.id, user.id))) return true;
-  const follow = await getFollow(tournament.id, user.id);
-  return Boolean(follow && follow.status === 'accepted');
+  const result = await query(
+    `SELECT tr.role, tf.status AS follow_status
+     FROM (SELECT $1::text AS tournament_id, $2::text AS user_id) viewer
+     LEFT JOIN tournament_role tr
+       ON tr.tournament_id = viewer.tournament_id AND tr.user_id = viewer.user_id
+     LEFT JOIN tournament_follows tf
+       ON tf.tournament_id = viewer.tournament_id AND tf.user_id = viewer.user_id`,
+    [tournament.id, user.id],
+  );
+  const viewerAccess = result.rows[0];
+  return ['moderator', 'referee', 'team_leader'].includes(viewerAccess?.role)
+    || viewerAccess?.follow_status === 'accepted';
 }
 
 async function requireTournamentInspect(tournament, user) {

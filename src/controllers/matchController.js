@@ -91,7 +91,7 @@ const startMatch = asyncHandler(async (req, res) => {
     phase_started_at=$3,phase_elapsed_seconds=0,venue=COALESCE($4,venue) WHERE id=$5`,
   [req.user.id, now(), now(), req.body?.venue || null, row.id]);
   await query('UPDATE tournaments SET status=$1,updated_at=$2 WHERE id=$3', ['in_progress', now(), row.tournament_id]);
-  await suspension.consumeForStart(row.id, row.tournament_id);
+  await suspension.consumeForStart(row.id);
   res.json({ match: map.match((await query('SELECT * FROM matches WHERE id=$1', [row.id])).rows[0]) });
 });
 
@@ -182,8 +182,11 @@ const follow = asyncHandler(async (req, res) => {
 
   const status = tournament.visibility === 'public' ? 'accepted' : 'pending';
   const followId = require('../utils/ids').id();
-  await query('INSERT INTO tournament_follows (id,tournament_id,user_id,status) VALUES ($1,$2,$3,$4)', [followId, tournament.id, req.user.id, status]);
-  res.status(201).json({ follow: map.follow((await query('SELECT * FROM tournament_follows WHERE id=$1', [followId])).rows[0]) });
+  const inserted = await query(
+    'INSERT INTO tournament_follows (id,tournament_id,user_id,status) VALUES ($1,$2,$3,$4) RETURNING *',
+    [followId, tournament.id, req.user.id, status],
+  );
+  res.status(201).json({ follow: map.follow(inserted.rows[0]) });
 });
 
 const unfollow = asyncHandler(async (req, res) => {
@@ -208,9 +211,12 @@ const listFollowers = asyncHandler(async (req, res) => {
 const moderateFollow = asyncHandler(async (req, res) => {
   const status = req.body?.status;
   if (!['accepted', 'rejected'].includes(status)) throw httpError(400, 'status must be accepted or rejected');
-  const info = await query('UPDATE tournament_follows SET status=$1 WHERE tournament_id=$2 AND user_id=$3', [status, req.params.tournamentId, req.params.userId]);
-  if (!info) throw httpError(404, 'Follow request not found');
-  const row = (await query('SELECT * FROM tournament_follows WHERE tournament_id=$1 AND user_id=$2', [req.params.tournamentId, req.params.userId])).rows[0];
+  const result = await query(
+    'UPDATE tournament_follows SET status=$1 WHERE tournament_id=$2 AND user_id=$3 RETURNING *',
+    [status, req.params.tournamentId, req.params.userId],
+  );
+  const row = result.rows[0];
+  if (!row) throw httpError(404, 'Follow request not found');
   res.json({ follow: map.follow(row) });
 });
 

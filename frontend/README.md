@@ -44,7 +44,7 @@ the static server is still running — refresh the browser afterwards.
 |---|---|
 | `public/index.html` | Home — left wireframe (logged out: logo, login/register buttons, exact-name tournament search, "création des tournois" CTA, public tournaments) or right wireframe (logged in: logo, profile circle with a menu, "My tournaments", "les tournois favoris", exact-name tournament search, "création des tournois", public tournaments) depending on session state. Private tournaments are excluded from the normal list, but exact-name search can reveal a locked private result. |
 | `public/tournament.html` | One tournament — info, role-protected draw control (including optional balanced pots for equally sized league groups), match-information menus with moderator monitoring, voting, standings/bracket (stage-scoped toggle), top scorers/assisters, registered teams/rosters, private-tournament follower moderation, and creator-only staff management. Reachable from every tournament row/card on the site. |
-| `public/join-team.html` | Redeem a player invite code without opening a tournament page first, including for private tournaments. Sign-in is required; a successful redemption creates the player and consumes the code. |
+| `public/join-team.html` | Redeem a player invite code without opening a tournament page first, including for private tournaments. The invite section is omitted when all invite-enabled teams are full; sign-in is required to redeem, and a successful redemption creates the player and consumes the code. |
 | `public/create-tournament.html` | Authenticated two-phase tournament builder. Collects general information (including the roster cap and player-registration mode), then uses a stage navigator with balanced team-count presets, league points, responsive group cards, direct advancement defaults for ranks 1–2, optional best-ranking places and knockout rounds before submitting through the existing API helpers. |
 | `public/login.html` | Sign in with an email/password or Google OAuth. |
 | `public/register.html` | Create an email/password account or use Google OAuth; password signup waits for email verification and provides a resend action. |
@@ -76,6 +76,10 @@ the URL shape.
   tab, standings stage, and match grouping filter, so refreshes and
   simulation/actions return to the same browsing context without moving
   keyboard focus.
+- **Request activity blocker**: while an API request is in flight, a blocking
+  overlay prevents page interaction and indicates whether data is loading or
+  a request is being processed. Overlapping requests keep the page blocked
+  until all of them settle; failures also release the blocker.
 - **Simulation**: administrator simulation generates normal match events
   (goals, linked assists, cards, extra-time goals, and shootout attempts)
   rather than writing magical score or player-statistic values. Scores,
@@ -125,11 +129,15 @@ the URL shape.
   Knockout pairings with multiple legs are shown as one aggregate card with
   the combined regulation score and each leg listed beneath it. Extra time
   and penalties are treated as deciders from the final leg only.
+- **Tournament-page data cache**: participant teams are loaded at page startup;
+  per-team rosters load lazily and their in-flight requests/results are shared
+  by the Teams & players, moderator voting-candidate, and leaderboard views.
+  The cache lives only for the current page and invalidates affected rosters
+  and derived leaderboards after successful team/player/invite-code changes.
+  Failed roster requests are evicted so they can be retried.
 - **Top scorers / assisters**: there's no aggregate endpoint for this
-  either, so the page fetches every participant team's roster in
-  parallel (`Promise.allSettled`, so one team's failure doesn't blank the
-  whole list) and ranks client-side. Fine for normal tournament sizes;
-  would want a real backend aggregate if rosters get very large.
+  either, so the page ranks every participant team's cached roster client-side.
+  A real backend aggregate may be preferable if rosters get very large.
 - **Teams & players**: all viewers who can inspect a tournament can see its
   tournament-scoped teams and rosters. Teams contain their own competition
   profile and statistics and cannot be reused across tournaments. Moderators

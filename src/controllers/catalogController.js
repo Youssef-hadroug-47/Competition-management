@@ -40,34 +40,46 @@ function assertPlayerRegistrationStrategy(settings, strategy, isAdmin = false) {
   }
 }
 
-async function lockTeamRoster(client, tournamentId, participantTeamId) {
+async function lockTeamRoster(client, tournamentId, participantTeamId, teamLeaderUserId = null) {
+  const leaderClause = teamLeaderUserId
+    ? `AND EXISTS (
+         SELECT 1 FROM tournament_team_leaders ttl
+         WHERE ttl.tournament_id = pt.tournament_id
+           AND ttl.participant_team_id = pt.id
+           AND ttl.user_id = $3
+       )`
+    : '';
+  const values = teamLeaderUserId
+    ? [participantTeamId, tournamentId, teamLeaderUserId]
+    : [participantTeamId, tournamentId];
   const teamResult = await client.query(
     `SELECT pt.id
      FROM participant_teams pt
-     WHERE pt.id = $1 AND pt.tournament_id = $2
-     FOR UPDATE`,
-    [participantTeamId, tournamentId],
+     WHERE pt.id = $1 AND pt.tournament_id = $2 ${leaderClause}
+     FOR UPDATE OF pt`,
+    values,
   );
-  if (!teamResult.rows[0]) throw httpError(404, 'Participant team not found');
-  const tournamentResult = await client.query(
-    'SELECT settings FROM tournaments WHERE id = $1',
-    [tournamentId],
+  const team = teamResult.rows[0];
+  if (!team) {
+    throw httpError(teamLeaderUserId ? 403 : 404, teamLeaderUserId
+      ? 'You can manage only your own tournament team'
+      : 'Participant team not found');
+  }
+  const rosterResult = await client.query(
+    `SELECT t.settings,
+            (SELECT COUNT(*) FROM participant_players pp
+             WHERE pp.participant_team_id = $2) AS player_count,
+            (SELECT COUNT(*) FROM participant_player_invite_codes ic
+             WHERE ic.participant_team_id = $2 AND ic.expires_at > NOW()) AS invite_count
+     FROM tournaments t WHERE t.id = $1`,
+    [tournamentId, participantTeamId],
   );
-  if (!tournamentResult.rows[0]) throw httpError(404, 'Tournament not found');
-  const countResult = await client.query(
-    'SELECT COUNT(*) AS count FROM participant_players WHERE participant_team_id = $1',
-    [participantTeamId],
-  );
-  const settings = parseJson(tournamentResult.rows[0].settings, {});
-  const inviteCountResult = await client.query(
-    `SELECT COUNT(*) AS count FROM participant_player_invite_codes
-     WHERE participant_team_id = $1 AND expires_at > NOW()`,
-    [participantTeamId],
-  );
+  const roster = rosterResult.rows[0];
+  const settings = parseJson(roster.settings, {});
   return {
-    count: Number(countResult.rows[0].count),
+    count: Number(roster.player_count),
     maximum: tournamentPlayerCap(settings),
-    reservedInviteCodes: Number(inviteCountResult.rows[0].count),
+    reservedInviteCodes: Number(roster.invite_count),
     settings,
   };
 }
@@ -224,10 +236,16 @@ const addParticipantTeam = asyncHandler(async (req, res) => {
 });
 
 const createTeamLeaderTeam = asyncHandler(async (req, res) => {
-  const tournament = await access.getTournamentOrThrow(req.params.tournamentId);
   const userId = req.user.id;
-  await access.requireTeamLeader(tournament.id, req.user);
-  if (await one('SELECT 1 FROM tournament_team_leaders WHERE tournament_id = $1 AND user_id = $2', [tournament.id, userId])) {
+  const [tournament, , existing] = await Promise.all([
+    access.getTournamentOrThrow(req.params.tournamentId),
+    access.requireTeamLeader(req.params.tournamentId, req.user),
+    one(
+      'SELECT 1 FROM tournament_team_leaders WHERE tournament_id = $1 AND user_id = $2',
+      [req.params.tournamentId, userId],
+    ),
+  ]);
+  if (existing) {
     throw httpError(409, 'You already created a team for this tournament');
   }
   const body = req.body || {};
@@ -258,8 +276,11 @@ const createTeamLeaderTeam = asyncHandler(async (req, res) => {
 });
 
 const getTeamLeaderTeam = asyncHandler(async (req, res) => {
-  const tournament = await access.getTournamentOrThrow(req.params.tournamentId);
-  if (await getRole(tournament.id, req.user.id) !== 'team_leader') {
+  const [tournament, role] = await Promise.all([
+    access.getTournamentOrThrow(req.params.tournamentId),
+    getRole(req.params.tournamentId, req.user.id),
+  ]);
+  if (role !== 'team_leader') {
     throw httpError(403, 'Assigned tournament team leader access required');
   }
   const row = await one(
@@ -345,21 +366,38 @@ const removeTeamLeaderPlayer = asyncHandler(async (req, res) => {
 
 const autoAddParticipantTeams = asyncHandler(async (req, res) => {
   const tournament = await access.getTournamentOrThrow(req.params.tournamentId);
-  console.log(tournament);
   const target = Number(req.body?.count ?? tournament.number_of_teams);
   if (!Number.isInteger(target) || target < 0) throw httpError(400, 'count must be a non-negative integer');
 
   const registered = await many('SELECT id FROM participant_teams WHERE tournament_id = $1', [tournament.id]);
   const missing = Math.max(0, target - registered.length);
-  const creatorId = req.user.id;
-  for (let index = 0; index < missing; index += 1) {
-    const number = registered.length + index + 1;
+  if (missing) {
+    const generatedTeams = Array.from({ length: missing }, (_, index) => {
+      const number = registered.length + index + 1;
+      return {
+        id: id(),
+        name: `Team ${number}`,
+        slug: `auto-team-${tournament.id}-${number}`,
+        shortName: `T${number}`,
+        seed: number,
+      };
+    });
     await run(
       `INSERT INTO participant_teams
         (id, tournament_id, creator_id, name, slug, short_name, seed, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'registered')`,
-      [id(), tournament.id, creatorId, `Team ${number}`, `auto-team-${tournament.id}-${number}`,
-        `T${number}`, number],
+       SELECT generated.id, $1, $2, generated.name, generated.slug,
+              generated.short_name, generated.seed, 'registered'
+       FROM unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::integer[])
+         AS generated(id, name, slug, short_name, seed)`,
+      [
+        tournament.id,
+        req.user.id,
+        generatedTeams.map((team) => team.id),
+        generatedTeams.map((team) => team.name),
+        generatedTeams.map((team) => team.slug),
+        generatedTeams.map((team) => team.shortName),
+        generatedTeams.map((team) => team.seed),
+      ],
     );
   }
 
@@ -445,24 +483,46 @@ const autoAddParticipantPlayers = asyncHandler(async (req, res) => {
     assertRosterCapacity(roster, target);
     const currentTeamCount = roster.count;
     const missing = Math.max(0, target - currentTeamCount);
-    for (let index = 0; index < missing; index += 1) {
-      const number = currentTeamCount + index + 1;
-      let slug = `auto-player-${number}`;
-      let suffix = number;
-      while ((await client.query(
-        'SELECT 1 FROM participant_players WHERE participant_team_id = $1 AND slug = $2',
-        [req.params.id, slug],
-      )).rowCount) {
-        suffix += 1;
-        slug = `auto-player-${suffix}`;
+    if (missing) {
+      const existingSlugs = new Set((await client.query(
+        'SELECT slug FROM participant_players WHERE participant_team_id = $1',
+        [req.params.id],
+      )).rows.map((row) => row.slug));
+      const generatedPlayers = [];
+      for (let index = 0; index < missing; index += 1) {
+        const number = currentTeamCount + index + 1;
+        let suffix = number;
+        let slug = `auto-player-${suffix}`;
+        while (existingSlugs.has(slug)) {
+          suffix += 1;
+          slug = `auto-player-${suffix}`;
+        }
+        existingSlugs.add(slug);
+        generatedPlayers.push({
+          id: id(),
+          name: `Player ${suffix}`,
+          slug,
+          nickname: `P${suffix}`,
+          shirtNumber: number,
+        });
       }
       await client.query(
         `INSERT INTO participant_players
           (id, participant_team_id, creator_id, name, slug, nickname, position,
            shirt_number, role, status)
-         VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, 'player', 'active')`,
-        [id(), req.params.id, req.user.id, `Player ${suffix}`, slug,
-          `P${suffix}`, number],
+         SELECT generated.id, $1, $2, generated.name, generated.slug,
+                generated.nickname, NULL, generated.shirt_number, 'player', 'active'
+         FROM unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::integer[])
+           AS generated(id, name, slug, nickname, shirt_number)`,
+        [
+          req.params.id,
+          req.user.id,
+          generatedPlayers.map((player) => player.id),
+          generatedPlayers.map((player) => player.name),
+          generatedPlayers.map((player) => player.slug),
+          generatedPlayers.map((player) => player.nickname),
+          generatedPlayers.map((player) => player.shirtNumber),
+        ],
       );
     }
   });
@@ -477,12 +537,14 @@ const listParticipantPlayers = asyncHandler(async (req, res) => {
   if (pt.tournament_id !== req.params.tournamentId) throw httpError(404, 'Participant team not found');
   const tournament = await access.getTournamentOrThrow(pt.tournament_id);
   await access.requireTournamentInspect(tournament, req.user);
-  const rows = await many(`${playerJoinSql} WHERE pp.participant_team_id = $1 ORDER BY pp.shirt_number`, [pt.id]);
-  const reserved = await one(
-    `SELECT COUNT(*) AS count FROM participant_player_invite_codes
-     WHERE participant_team_id = $1 AND expires_at > NOW()`,
-    [pt.id],
-  );
+  const [rows, reserved] = await Promise.all([
+    many(`${playerJoinSql} WHERE pp.participant_team_id = $1 ORDER BY pp.shirt_number`, [pt.id]),
+    one(
+      `SELECT COUNT(*) AS count FROM participant_player_invite_codes
+       WHERE participant_team_id = $1 AND expires_at > NOW()`,
+      [pt.id],
+    ),
+  ]);
   res.json({
     participantPlayers: rows.map(map.participantPlayer),
     reservedInviteCodes: Number(reserved.count),
@@ -490,16 +552,7 @@ const listParticipantPlayers = asyncHandler(async (req, res) => {
 });
 
 async function lockTeamLeaderRoster(client, tournamentId, teamId, userId) {
-  const owned = await client.query(
-    `SELECT pt.id FROM tournament_team_leaders ttl
-     JOIN participant_teams pt ON pt.id = ttl.participant_team_id
-     WHERE ttl.tournament_id = $1 AND ttl.user_id = $2 AND pt.id = $3
-       AND pt.tournament_id = $1
-     FOR UPDATE OF pt`,
-    [tournamentId, userId, teamId],
-  );
-  if (!owned.rows[0]) throw httpError(403, 'You can manage only your own tournament team');
-  return lockTeamRoster(client, tournamentId, teamId);
+  return lockTeamRoster(client, tournamentId, teamId, userId);
 }
 
 async function getInviteRoster(req, client, isTeamLeader) {
@@ -635,6 +688,32 @@ const validatePlayerInviteCode = asyncHandler(async (req, res) => {
     };
   });
   res.json(details);
+});
+
+const getPlayerInviteAvailability = asyncHandler(async (_req, res) => {
+  const result = await query(
+    `SELECT EXISTS (
+       SELECT 1
+       FROM participant_teams pt
+       JOIN tournaments t ON t.id = pt.tournament_id
+       WHERE COALESCE(t.settings::jsonb ->> 'playerRegistrationMode', 'direct')
+               IN ('invite_code', 'both')
+         AND (
+           SELECT COUNT(*)
+           FROM participant_players pp
+           WHERE pp.participant_team_id = pt.id
+         ) < CASE
+           WHEN (t.settings::jsonb ->> 'maxPlayersPerTeam') ~ '^[0-9]{1,2}$'
+           THEN CASE
+             WHEN (t.settings::jsonb ->> 'maxPlayersPerTeam')::integer BETWEEN 1 AND 99
+             THEN (t.settings::jsonb ->> 'maxPlayersPerTeam')::integer
+             ELSE 11
+           END
+           ELSE 11
+         END
+     ) AS available`,
+  );
+  res.json({ available: result.rows[0].available });
 });
 
 const getPlayerInviteMembership = asyncHandler(async (req, res) => {
@@ -813,6 +892,7 @@ module.exports = {
   listTeamLeaderPlayerInviteCodes: listPlayerInviteCodes(true),
   revokeTeamLeaderPlayerInviteCode: revokePlayerInviteCode(true),
   validatePlayerInviteCode,
+  getPlayerInviteAvailability,
   getPlayerInviteMembership,
   redeemPlayerInviteCode,
   updateParticipantPlayer,

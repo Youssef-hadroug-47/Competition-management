@@ -98,26 +98,38 @@ async function loadFormat(tournamentId) {
       [tournamentId],
     )
   ).rows;
-  return Promise.all(
-    stages.map(async (s) => {
-      if (s.type === 'league') {
-        const groups = (
-          await query(
-            'SELECT * FROM groups WHERE stage_id = $1 ORDER BY sequence_order ASC, name ASC',
-            [s.id],
-          )
-        ).rows;
-        return { ...map.stage(s), groups: groups.map(map.group) };
-      }
-      const rounds = (
-        await query(
-          'SELECT * FROM rounds WHERE stage_id = $1 ORDER BY sequence_order ASC, name ASC',
-          [s.id],
-        )
-      ).rows;
-      return { ...map.stage(s), rounds: rounds.map(map.round) };
-    }),
-  );
+  if (!stages.length) return [];
+  const leagueIds = stages.filter((stage) => stage.type === 'league').map((stage) => stage.id);
+  const knockoutIds = stages.filter((stage) => stage.type === 'knockout').map((stage) => stage.id);
+  const [groupsResult, roundsResult] = await Promise.all([
+    leagueIds.length
+      ? query(
+        'SELECT * FROM groups WHERE stage_id = ANY($1::text[]) ORDER BY sequence_order ASC, name ASC',
+        [leagueIds],
+      )
+      : Promise.resolve({ rows: [] }),
+    knockoutIds.length
+      ? query(
+        'SELECT * FROM rounds WHERE stage_id = ANY($1::text[]) ORDER BY sequence_order ASC, name ASC',
+        [knockoutIds],
+      )
+      : Promise.resolve({ rows: [] }),
+  ]);
+  const groupsByStage = new Map();
+  groupsResult.rows.forEach((group) => {
+    const groups = groupsByStage.get(group.stage_id) || [];
+    groups.push(group);
+    groupsByStage.set(group.stage_id, groups);
+  });
+  const roundsByStage = new Map();
+  roundsResult.rows.forEach((round) => {
+    const rounds = roundsByStage.get(round.stage_id) || [];
+    rounds.push(round);
+    roundsByStage.set(round.stage_id, rounds);
+  });
+  return stages.map((stage) => stage.type === 'league'
+    ? { ...map.stage(stage), groups: (groupsByStage.get(stage.id) || []).map(map.group) }
+    : { ...map.stage(stage), rounds: (roundsByStage.get(stage.id) || []).map(map.round) });
 }
 
 function bucketSort(teams, key) {
@@ -131,35 +143,48 @@ function bucketSort(teams, key) {
 }
 
 async function rankGroupTeams(groupId, tiebreakers) {
-  const teams = (
-    await query(
-      `SELECT DISTINCT pt.*
-       FROM participant_teams pt
-       LEFT JOIN matches m
-         ON m.group_id = $1
-        AND (m.home_participant_team_id = pt.id OR m.away_participant_team_id = pt.id)
-       WHERE pt.tournament_id = (
-           SELECT s.tournament_id
-           FROM groups g
+  const [teamResult, matchesResult] = await Promise.all([
+    query(
+       `SELECT pt.*,
+            COALESCE(cards.yellows, 0) AS yellow_cards,
+            COALESCE(cards.reds, 0) AS red_cards
+        FROM participant_teams pt
+        LEFT JOIN LATERAL (
+       SELECT SUM(pp.yellow_cards) AS yellows, SUM(pp.red_cards) AS reds
+       FROM participant_players pp
+       WHERE pp.participant_team_id = pt.id
+        ) cards ON TRUE
+        WHERE pt.tournament_id = (
+         SELECT s.tournament_id
+         FROM groups g
            JOIN stages s ON s.id = g.stage_id
            WHERE g.id = $1
          )
-         AND (pt.group_id = $1 OR m.id IS NOT NULL)`,
+         AND (
+           pt.group_id = $1
+           OR EXISTS (
+             SELECT 1 FROM matches m
+             WHERE m.group_id = $1
+               AND (m.home_participant_team_id = pt.id OR m.away_participant_team_id = pt.id)
+           )
+         )`,
       [groupId],
-    )
-  ).rows;
+    ),
+    tiebreakers.some((tiebreaker) => tiebreaker.type === 'head_to_head')
+      ? query(
+        `SELECT home_participant_team_id AS home, away_participant_team_id AS away,
+                home_score, away_score
+         FROM matches WHERE group_id = $1 AND status = 'finished'`,
+        [groupId],
+      )
+      : Promise.resolve({ rows: [] }),
+  ]);
+  const teams = teamResult.rows;
   if (!teams.length) return teams;
-  const cards = (
-    await query(
-      `SELECT pp.participant_team_id, COALESCE(SUM(pp.yellow_cards), 0) AS yellows, COALESCE(SUM(pp.red_cards), 0) AS reds FROM participant_players pp WHERE pp.participant_team_id = ANY($1::text[]) GROUP BY pp.participant_team_id`,
-      [teams.map((t) => t.id)],
-    )
-  ).rows;
-  const cardMap = new Map(cards.map((c) => [c.participant_team_id, c]));
+  const finishedMatches = matchesResult.rows;
   teams.forEach((t) => {
-    const c = cardMap.get(t.id) || {};
-    t.yellow_cards = Number(c.yellows || 0);
-    t.red_cards = Number(c.reds || 0);
+    t.yellow_cards = Number(t.yellow_cards || 0);
+    t.red_cards = Number(t.red_cards || 0);
     t.goal_difference = (t.goals_for || 0) - (t.goals_against || 0);
   });
   const ordered = [...tiebreakers].sort((a, b) => a.priority - b.priority);
@@ -179,12 +204,10 @@ async function rankGroupTeams(groupId, tiebreakers) {
       return [...bucket].sort((a, b) => a.id.localeCompare(b.id));
     else if (tb.type === 'head_to_head') {
       const ids = bucket.map((t) => t.id);
-      const matches = (
-        await query(
-          `SELECT home_participant_team_id AS home, away_participant_team_id AS away, home_score, away_score FROM matches WHERE group_id = $1 AND status = 'finished' AND home_participant_team_id = ANY($2::text[]) AND away_participant_team_id = ANY($2::text[])`,
-          [groupId, ids],
-        )
-      ).rows;
+      const tiedTeamIds = new Set(ids);
+      const matches = finishedMatches.filter(
+        (match) => tiedTeamIds.has(match.home) && tiedTeamIds.has(match.away),
+      );
       const stats = new Map(ids.map((x) => [x, { pts: 0, gf: 0, ga: 0 }]));
       matches.forEach((m) => {
         const hs = m.home_score || 0;
@@ -274,12 +297,14 @@ const create = asyncHandler(async (req, res) => {
     ).entries())
       await insertStageWithGroups(tournamentId, stage, index, client);
   });
-  const row = (
-    await query('SELECT * FROM tournaments WHERE id = $1', [tournamentId])
-  ).rows[0];
+  const [tournamentResult, stages] = await Promise.all([
+    query('SELECT * FROM tournaments WHERE id = $1', [tournamentId]),
+    loadFormat(tournamentId),
+  ]);
+  const row = tournamentResult.rows[0];
   res.status(201).json({
     tournament: map.tournament(row),
-    stages: await loadFormat(tournamentId),
+    stages,
   });
 });
 
@@ -328,22 +353,24 @@ const findStaffUser = asyncHandler(async (req, res) => {
 
 const getStanding = asyncHandler(async (req, res) => {
   const stageId = req.params.id;
-  const groups = (
-    await query('SELECT id FROM groups WHERE stage_id = $1', [stageId])
-  ).rows;
-  const stage = (
-    await query('SELECT settings FROM stages WHERE id = $1', [stageId])
-  ).rows[0];
+  const [groupsResult, stageResult] = await Promise.all([
+    query('SELECT id FROM groups WHERE stage_id = $1', [stageId]),
+    query('SELECT settings FROM stages WHERE id = $1', [stageId]),
+  ]);
+  const stage = stageResult.rows[0];
+  const groups = groupsResult.rows;
   const tiebreakers = stage && parseJson(stage.settings).tiebreakers;
-  if (!tiebreakers || !groups.length)
+  if (!Array.isArray(tiebreakers) || !groups.length)
     throw httpError(404, 'stage is not found');
-  const rankedGroups = { stageId, groups: [] };
-  for (const group of groups)
-    rankedGroups.groups.push({
+  const rankedGroups = [];
+  for (let index = 0; index < groups.length; index += 3) {
+    const batch = await Promise.all(groups.slice(index, index + 3).map(async (group) => ({
       groupId: group.id,
       order: (await rankGroupTeams(group.id, tiebreakers)).map((t) => t.id),
-    });
-  res.json(rankedGroups);
+    })));
+    rankedGroups.push(...batch);
+  }
+  res.json({ stageId, groups: rankedGroups });
 });
 const getStage = asyncHandler(async (req, res) => {
   const row = (
@@ -354,13 +381,15 @@ const getStage = asyncHandler(async (req, res) => {
 const getOne = asyncHandler(async (req, res) => {
   const row = await access.getTournamentOrThrow(req.params.tournamentId);
   await access.requireTournamentInspect(row, req.user);
-  const viewerRole =
+  const [viewerRole, stages] = await Promise.all([
     req.user?.role === 'admin' || req.user?.id === row.created_by
-      ? 'moderator'
-      : await getRole(row.id, req.user?.id);
+      ? Promise.resolve('moderator')
+      : getRole(row.id, req.user?.id),
+    loadFormat(row.id),
+  ]);
   res.json({
     tournament: map.tournament(row),
-    stages: await loadFormat(row.id),
+    stages,
     viewerRole,
   });
 });
@@ -633,10 +662,11 @@ const addTournamentRole = asyncHandler(async (req, res) => {
   const role = req.body.role || null;
   if (!userId || !tournamentId || !role)
     throw httpError(400, 'userId, tournamentId and role are required');
-  const tournament = await access.getTournamentOrThrow(tournamentId);
-  const targetUser = (
-    await query('SELECT id FROM users WHERE id = $1', [userId])
-  ).rows[0];
+  const [tournament, userResult] = await Promise.all([
+    access.getTournamentOrThrow(tournamentId),
+    query('SELECT id FROM users WHERE id = $1', [userId]),
+  ]);
+  const targetUser = userResult.rows[0];
   if (!targetUser) throw httpError(404, 'User not found');
   if (userId === tournament.created_by && role !== 'moderator')
     throw httpError(400, 'The tournament creator must remain a moderator');

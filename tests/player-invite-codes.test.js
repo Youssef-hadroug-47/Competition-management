@@ -63,3 +63,39 @@ test('invite codes require 16 hex characters and are hashed before storage', () 
   assert.notEqual(hash, code.toLowerCase());
   assert.equal(inviteCodeHash(code.toLowerCase()), hash);
 });
+
+test('invite availability is public, boolean, and based on invite-enabled teams below their roster cap', async () => {
+  const database = require('../src/db');
+  const originalQuery = database.query;
+  const controllerPath = require.resolve('../src/controllers/catalogController');
+  const results = [true, false];
+  const calls = [];
+  database.query = async (text, values) => {
+    calls.push({ text, values });
+    return { rows: [{ available: results.shift() }] };
+  };
+  delete require.cache[controllerPath];
+
+  try {
+    const controller = require(controllerPath);
+    for (const expected of [true, false]) {
+      let response;
+      let caughtError;
+      await controller.getPlayerInviteAvailability(
+        {},
+        { json: (body) => { response = body; } },
+        (error) => { caughtError = error; },
+      );
+      assert.equal(caughtError, undefined);
+      assert.deepEqual(response, { available: expected });
+    }
+    assert.equal(calls.length, 2);
+    assert.match(calls[0].text, /playerRegistrationMode/);
+    assert.match(calls[0].text, /participant_players/);
+    assert.match(calls[0].text, /maxPlayersPerTeam/);
+    assert.equal(calls[0].values, undefined);
+  } finally {
+    database.query = originalQuery;
+    delete require.cache[controllerPath];
+  }
+});

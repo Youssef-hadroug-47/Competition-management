@@ -322,6 +322,7 @@ Send the JWT returned by login in the Authorization header.
 - `POST /api/tournaments/:id/participant-teams/:teamId/players` `{ name, position, shirtNumber, role, ...profileFields }`
 - `GET /api/tournaments/:id/participant-teams/:teamId/players`
 - `POST /api/tournaments/:id/participant-teams/:teamId/player-invite-codes` — moderator issues a one-time player invite code
+- `GET /api/player-invite-codes/availability` — public boolean indicating whether an invite-enabled team has roster capacity
 - `POST /api/player-invite-codes/validate` and `/api/player-invite-codes/redeem` — signed-in players validate and redeem codes
 - `PATCH|DELETE /api/participant-players/:id`
 

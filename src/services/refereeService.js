@@ -31,20 +31,23 @@ async function getStageSettings(match) {
   return { stage, settings: parseJson(stage?.settings, defaultStageSettings(stage?.type)) };
 }
 
-async function snapshot(matchId, tournamentId) {
-  const match = await getMatch(matchId, tournamentId);
-  const events = await many(
-    `SELECT e.*,
-            pt.name AS team_name,
-            pp.name AS player_name,
-            ap.name AS assister_name
-     FROM match_events e
-     LEFT JOIN participant_teams pt ON pt.id = e.team_id
-     LEFT JOIN participant_players pp ON pp.id = e.player_id
-     LEFT JOIN participant_players ap ON ap.id = e.assister_id
-     WHERE e.match_id = ?
-     ORDER BY e.created_at ASC, e.id ASC`
-  , [matchId]);
+async function snapshot(matchId, tournamentId, matchRow = null) {
+  const [match, events] = await Promise.all([
+    matchRow ? Promise.resolve(matchRow) : getMatch(matchId, tournamentId),
+    many(
+      `SELECT e.*,
+              pt.name AS team_name,
+              pp.name AS player_name,
+              ap.name AS assister_name
+       FROM match_events e
+       LEFT JOIN participant_teams pt ON pt.id = e.team_id
+       LEFT JOIN participant_players pp ON pp.id = e.player_id
+       LEFT JOIN participant_players ap ON ap.id = e.assister_id
+       WHERE e.match_id = ?
+       ORDER BY e.created_at ASC, e.id ASC`,
+      [matchId],
+    ),
+  ]);
   return {
     match,
     events: events.map((event) => ({
@@ -189,12 +192,29 @@ async function reconcileAutomaticSecondYellowCards({ matchId, tournamentId }) {
 }
 
 async function validateEventEligibility({ matchId, eventId = null, type, teamId, playerId, goalEventId, phase, card, scored }) {
-  if (!playerId || !['goal', 'assist', 'card', 'shootout_attempt'].includes(type)) return;
-  const participant = await one(
-    'SELECT id FROM participant_players WHERE id = ? AND participant_team_id = ?'
-  , [playerId, teamId]);
-  if (!participant) throw httpError(400, 'Player does not belong to the selected team');
-  const events = await eventRowsForEligibility(matchId, eventId);
+  if (!['goal', 'assist', 'card', 'shootout_attempt'].includes(type)) return;
+  const [participant, events, linkedGoal] = await Promise.all([
+    playerId
+      ? one(
+        'SELECT id FROM participant_players WHERE id = ? AND participant_team_id = ?',
+        [playerId, teamId],
+      )
+      : Promise.resolve(null),
+    playerId ? eventRowsForEligibility(matchId, eventId) : Promise.resolve([]),
+    type === 'assist' && goalEventId
+      ? one(
+        `SELECT id, player_id, type, phase, team_id
+         FROM match_events WHERE id = ? AND match_id = ?`,
+        [goalEventId, matchId],
+      )
+      : Promise.resolve(null),
+  ]);
+  if (playerId && !participant) throw httpError(400, 'Player does not belong to the selected team');
+  if (type === 'assist' && goalEventId
+      && (!linkedGoal || linkedGoal.type !== 'goal' || linkedGoal.phase !== phase || linkedGoal.team_id !== teamId)) {
+    throw httpError(400, 'Assist must reference a goal from the same team, phase, and match');
+  }
+  if (!playerId) return;
   const playerCards = events.filter((event) => event.player_id === playerId && event.type === 'card');
   const yellowCards = playerCards.filter((event) => event.card === 'yellow').length;
   const redCard = playerCards.some((event) => event.card === 'red');
@@ -202,10 +222,7 @@ async function validateEventEligibility({ matchId, eventId = null, type, teamId,
     throw httpError(409, 'This player is suspended for the remainder of the match.');
   }
   if (type === 'assist' && goalEventId) {
-    const goal = await one(
-      'SELECT player_id FROM match_events WHERE id = ? AND match_id = ? AND type = \'goal\''
-    , [goalEventId, matchId]);
-    if (goal?.player_id === playerId) {
+    if (linkedGoal?.player_id === playerId) {
       throw httpError(400, 'A player cannot assist the same goal they scored.');
     }
   }
@@ -227,17 +244,6 @@ async function validateEventEligibility({ matchId, eventId = null, type, teamId,
   if (teamId == null) throw httpError(400, 'Event team is required');
 }
 
-async function validateGoalLink({ matchId, teamId, phase, goalEventId }) {
-  if (!goalEventId) return;
-  const goal = await one(
-    `SELECT id, match_id, type, phase, team_id
-     FROM match_events WHERE id = ? AND match_id = ?`
-  , [goalEventId, matchId]);
-  if (!goal || goal.type !== 'goal' || goal.phase !== phase || goal.team_id !== teamId) {
-    throw httpError(400, 'Assist must reference a goal from the same team, phase, and match');
-  }
-}
-
 async function findLegacyAssistForGoal(goal) {
   const candidates = await many(
     `SELECT * FROM match_events
@@ -250,8 +256,10 @@ async function findLegacyAssistForGoal(goal) {
 }
 
 async function updateEvent({ matchId, tournamentId, eventId, refereeId, adminOverride = false, moderatorOverride = false, changes = {}, expectedRevision, reason }) {
-  const match = await getMatch(matchId, tournamentId);
-  const event = await one('SELECT * FROM match_events WHERE id = ? AND match_id = ?', [eventId, matchId]);
+  const [match, event] = await Promise.all([
+    getMatch(matchId, tournamentId),
+    one('SELECT * FROM match_events WHERE id = ? AND match_id = ?', [eventId, matchId]),
+  ]);
   if (!event) throw httpError(404, 'Event not found');
   if (isAutomaticSecondYellow(event)) throw httpError(400, 'Automatic second-yellow red cards cannot be edited; edit the yellow-card events instead.');
   eventPermission(match, refereeId, adminOverride, reason, moderatorOverride);
@@ -260,12 +268,6 @@ async function updateEvent({ matchId, tournamentId, eventId, refereeId, adminOve
   if (!Number.isFinite(minute) || minute < 0) throw httpError(400, 'minute must be a non-negative number');
   const payload = { ...parseJson(event.payload, {}), ...(changes.payload || {}) };
   const goalEventId = changes.goalEventId ?? event.goal_event_id;
-  if (event.type === 'assist') await validateGoalLink({
-    matchId,
-    teamId: changes.teamId ?? event.team_id,
-    phase: changes.phase ?? event.phase,
-    goalEventId,
-  });
   await validateEventEligibility({
     matchId,
     eventId,
@@ -305,8 +307,10 @@ async function updateEvent({ matchId, tournamentId, eventId, refereeId, adminOve
 }
 
 async function deleteEvent({ matchId, tournamentId, eventId, refereeId, adminOverride = false, moderatorOverride = false, expectedRevision, reason }) {
-  const match = await getMatch(matchId, tournamentId);
-  const event = await one('SELECT * FROM match_events WHERE id = ? AND match_id = ?', [eventId, matchId]);
+  const [match, event] = await Promise.all([
+    getMatch(matchId, tournamentId),
+    one('SELECT * FROM match_events WHERE id = ? AND match_id = ?', [eventId, matchId]),
+  ]);
   if (!event) throw httpError(404, 'Event not found');
   if (isAutomaticSecondYellow(event)) throw httpError(400, 'Automatic second-yellow red cards cannot be deleted; delete a yellow-card event instead.');
   eventPermission(match, refereeId, adminOverride, reason, moderatorOverride);
@@ -363,20 +367,6 @@ async function addEvent({ matchId, tournamentId, refereeId, adminOverride = fals
   }
   if (type === 'card' && !payload.playerId) throw httpError(400, 'A player is required for this event');
   if (type === 'assist' && phase === 'shootout') throw httpError(400, 'Shootouts do not have assists');
-  if (type === 'assist' && !skippedAssist) {
-    const assister = await one(
-      'SELECT id FROM participant_players WHERE id = ? AND participant_team_id = ?'
-    , [payload.playerId, payload.teamId]);
-    if (!assister) throw httpError(400, 'Assister does not belong to the selected team');
-  }
-  if (type === 'assist') {
-    await validateGoalLink({
-      matchId,
-      teamId: payload.teamId,
-      phase,
-      goalEventId: payload.goalEventId,
-    });
-  }
   await validateEventEligibility({
     matchId,
     type,
@@ -387,13 +377,6 @@ async function addEvent({ matchId, tournamentId, refereeId, adminOverride = fals
     card: payload.card,
     scored: payload.scored,
   });
-  if (type === 'goal' && payload.ownGoal) {
-    const offender = await one(
-      'SELECT id FROM participant_players WHERE id = ? AND participant_team_id = ?'
-    , [payload.playerId, payload.teamId]);
-    if (!offender) throw httpError(400, 'Own-goal player must belong to the selected team');
-  }
-
   const eventId = id();
   try {
     await run(
@@ -451,23 +434,27 @@ async function start({ matchId, tournamentId, refereeId, adminOverride = false, 
       phase_started_at = ?, phase_elapsed_seconds = 0, started_at = COALESCE(started_at, ?) WHERE id = ?`
   , [refereeId, Number(durationMinutes), timestamp, timestamp, matchId]);
   await recordPhase(matchId, tournamentId, 'regulation', 'start');
-  await suspension.consumeForStart(matchId, tournamentId);
+  await suspension.consumeForStart(matchId);
   return await snapshot(matchId, tournamentId);
 }
 
 async function continueFinished({ matchId, tournamentId, refereeId, adminOverride = false, moderatorOverride = false, expectedRevision }) {
-  const match = await getMatch(matchId, tournamentId);
+  const [match, previousPhaseEvent] = await Promise.all([
+    getMatch(matchId, tournamentId),
+    one(
+      `SELECT phase FROM match_events
+       WHERE match_id = ? AND type = 'phase'
+         AND (payload::jsonb ->> 'action') IN ('start', 'pause', 'resume', 'continue')
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [matchId],
+    ),
+  ]);
   assertRevision(match, expectedRevision);
   if (!adminOverride && !moderatorOverride) {
     throw httpError(403, 'Only a tournament moderator can continue a finished match');
   }
   if (match.status !== 'finished') throw httpError(409, 'Only finished matches can be continued');
-  const previousPhase = (await one(
-    `SELECT phase FROM match_events
-     WHERE match_id = ? AND type = 'phase'
-       AND (payload::jsonb ->> 'action') IN ('start', 'pause', 'resume', 'continue')
-     ORDER BY created_at DESC, id DESC LIMIT 1`
-  , [matchId]))?.phase || 'regulation';
+  const previousPhase = previousPhaseEvent?.phase || 'regulation';
   const timestamp = now();
   const result = await run(
     `UPDATE matches SET status = 'live', phase = ?, phase_started_at = ?,
@@ -575,6 +562,7 @@ module.exports = {
   deleteEvent,
   projectMatchScore,
   getProjectedScore,
+  getMatch,
   start,
   continueFinished,
   transition,

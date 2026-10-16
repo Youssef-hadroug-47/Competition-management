@@ -52,7 +52,14 @@ const requireTournamentModeratorOrReferee = asyncHandler(async (req, _, next) =>
   if (isAdministrator(req.user)) return next();
   const tournamentId = req.params.tournamentId || null;
   if (!tournamentId) return next(httpError(400, 'Bad Request'));
-  const result = await query('SELECT created_by FROM tournaments WHERE id = $1', [tournamentId]);
+  const result = await query(
+    `SELECT t.created_by, tr.role
+     FROM tournaments t
+     LEFT JOIN tournament_role tr
+       ON tr.tournament_id = t.id AND tr.user_id = $2
+     WHERE t.id = $1`,
+    [tournamentId, req.user.id],
+  );
   const tournament = result.rows[0];
   if (!tournament) return next(httpError(404, 'Tournament not found'));
   if (tournament.created_by === req.user.id) {
@@ -60,7 +67,7 @@ const requireTournamentModeratorOrReferee = asyncHandler(async (req, _, next) =>
     req.user.tournamentRoles[tournamentId] = 'moderator';
     return next();
   }
-  const role = await getRole(tournamentId, req.user.id);
+  const role = tournament.role;
   if (!['moderator', 'referee'].includes(role)) {
     return next(httpError(403, 'Tournament moderator or referee access required'));
   }

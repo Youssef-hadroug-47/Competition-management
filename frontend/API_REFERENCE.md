@@ -356,6 +356,14 @@ redemption are limited to 10 attempts per 15 minutes per account.
 **Errors**: `403` mode/ownership restriction, `404` team/code not found,
 `409` no unreserved roster capacity, `429` rate limit exceeded.
 
+### `GET /player-invite-codes/availability` — Public
+
+Returns only `{ "available": boolean }`. Availability is true when at least
+one team in a tournament that permits invite-code registration has room under
+its configured roster cap (default 11). The join page and Teams & players tab
+omit the invite-code section when no such team has capacity; no tournament,
+team, or invite-code details are exposed.
+
 ### `GET /player-invite-codes/membership` — Authenticated user
 
 Returns the account's invite-code registration or `{ "membership": null }`.

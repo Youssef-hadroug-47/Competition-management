@@ -58,24 +58,19 @@
       ]),
       el('div', { class: 'player-invite-redeemer__body' }),
     ]);
-    container.appendChild(section);
     const body = section.querySelector('.player-invite-redeemer__body');
-    if (!Session.isAuthenticated()) {
-      body.append(
-        el('p', { class: 'player-invite-redeemer__notice', text: 'Sign in to redeem a player invite code.' }),
-        el('a', {
-          class: 'btn btn--primary',
-          href: `/login?next=${encodeURIComponent(location.pathname + location.search)}`,
-          text: 'Sign in to continue',
-        }),
-      );
-      return;
-    }
-
-    body.appendChild(el('p', { class: 'player-invite-redeemer__loading', text: 'Checking your registration…' }));
     (async () => {
       try {
-        const { membership } = await Api.playerInviteCodes.membership();
+        body.appendChild(el('p', { class: 'player-invite-redeemer__loading', text: 'Checking team availability…' }));
+        const { available } = await Api.playerInviteCodes.availability();
+        if (typeof available !== 'boolean') throw new Error('Team availability could not be checked.');
+        if (available)
+          container.appendChild(section);
+        else return;
+        
+        const { membership } = Session.isAuthenticated()
+          ? await Api.playerInviteCodes.membership()
+          : { membership: null };
         clear(body);
         if (membership) {
           body.append(
@@ -84,6 +79,19 @@
               el('strong', { text: membership.teamName }),
               el('span', { text: `${membership.tournamentName} · ${membership.playerName}` }),
             ]),
+          );
+          return;
+        }
+
+
+        if (!Session.isAuthenticated()) {
+          body.append(
+            el('p', { class: 'player-invite-redeemer__notice', text: 'Sign in to redeem a player invite code.' }),
+            el('a', {
+              class: 'btn btn--primary',
+              href: `/login?next=${encodeURIComponent(location.pathname + location.search)}`,
+              text: 'Sign in to continue',
+            }),
           );
           return;
         }
@@ -174,7 +182,7 @@
         clear(body);
         showBanner(banner, friendlyErrorMessage(error));
         body.append(
-          el('p', { class: 'player-invite-redeemer__notice', text: 'Your registration status could not be checked.' }),
+          el('p', { class: 'player-invite-redeemer__notice', text: 'Team availability or your registration status could not be checked.' }),
           el('button', {
             class: 'btn btn--secondary',
             type: 'button',

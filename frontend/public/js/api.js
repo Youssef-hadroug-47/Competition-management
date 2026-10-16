@@ -51,7 +51,7 @@ function enc(value) {
   return encodeURIComponent(String(value));
 }
 
-async function request(method, path, { body, query, auth = true, credentials = 'omit' } = {}) {
+async function performRequest(method, path, { body, query, auth = true, credentials = 'omit' } = {}) {
   const traceEnabled = window.localStorage.getItem('apiDebug') === 'true';
   const startedAt = performance.now();
 
@@ -118,6 +118,12 @@ async function request(method, path, { body, query, auth = true, credentials = '
   }
 
   return data;
+}
+
+function request(method, path, options = {}) {
+  const activity = window.PageActivity;
+  if (!activity) return performRequest(method, path, options);
+  return activity.run(method, () => performRequest(method, path, options));
 }
 
 const Api = {
@@ -240,6 +246,7 @@ const Api = {
   },
 
   playerInviteCodes: {
+    availability: () => request('GET', '/player-invite-codes/availability', { auth: false }),
     list: (tournamentId, participantTeamId, teamLeader = false) =>
       request('GET', teamLeader
         ? `/tournaments/${enc(tournamentId)}/team-leader/teams/${enc(participantTeamId)}/player-invite-codes`

@@ -23,11 +23,12 @@ function assertOpen(vote) {
 
 async function createVote({ tournamentId, name, award }) {
   const voteId = id();
-  await query(
-    `INSERT INTO vote (id, tournament_id, name, award, status) VALUES ($1, $2, $3, $4, 'open')`,
+  const result = await query(
+    `INSERT INTO vote (id, tournament_id, name, award, status)
+     VALUES ($1, $2, $3, $4, 'open') RETURNING *`,
     [voteId, tournamentId, name.trim(), award.trim()],
   );
-  return getVoteById(voteId, tournamentId);
+  return result.rows[0];
 }
 
 async function listVotesByTournament(tournamentId, userId = null) {
@@ -43,23 +44,28 @@ async function listVotesByTournament(tournamentId, userId = null) {
 }
 
 async function updateVote(voteId, tournamentId, { name, award } = {}) {
-  const existing = await getVoteById(voteId, tournamentId);
-  assertOpen(existing);
-  await query(
-    'UPDATE vote SET name = $1, award = $2 WHERE id = $3 AND tournament_id = $4',
-    [name?.trim() || existing.name, award?.trim() || existing.award, voteId, tournamentId],
+  const result = await query(
+    `UPDATE vote
+     SET name = COALESCE($1, name), award = COALESCE($2, award)
+     WHERE id = $3 AND tournament_id = $4 AND status = 'open'
+     RETURNING *`,
+    [name?.trim() || null, award?.trim() || null, voteId, tournamentId],
   );
-  return getVoteById(voteId, tournamentId);
+  if (result.rows[0]) return result.rows[0];
+  assertOpen(await getVoteById(voteId, tournamentId));
+  throw httpError(409, 'This vote could not be updated.');
 }
 
 async function finishVote(voteId, tournamentId) {
-  const existing = await getVoteById(voteId, tournamentId);
-  assertOpen(existing);
-  await query(
-    `UPDATE vote SET status = 'finished', finished_at = NOW() WHERE id = $1 AND tournament_id = $2`,
+  const result = await query(
+    `UPDATE vote SET status = 'finished', finished_at = NOW()
+     WHERE id = $1 AND tournament_id = $2 AND status = 'open'
+     RETURNING *`,
     [voteId, tournamentId],
   );
-  return getVoteById(voteId, tournamentId);
+  if (result.rows[0]) return result.rows[0];
+  assertOpen(await getVoteById(voteId, tournamentId));
+  throw httpError(409, 'This vote could not be finished.');
 }
 
 async function deleteVote(voteId, tournamentId) {
@@ -96,19 +102,28 @@ async function listNominees(voteId, tournamentId, userId = null) {
 }
 
 async function addNominee({ voteId, tournamentId, nomineeId }) {
-  const vote = await getVoteById(voteId, tournamentId);
+  const [vote, player] = await Promise.all([
+    getVoteById(voteId, tournamentId),
+    one(
+      `SELECT pp.id FROM participant_players pp
+       JOIN participant_teams pt ON pt.id = pp.participant_team_id
+       WHERE pp.id = $1 AND pt.tournament_id = $2`,
+      [nomineeId, tournamentId],
+    ),
+  ]);
   assertOpen(vote);
-  const player = await one(
-    `SELECT pp.id FROM participant_players pp
-     JOIN participant_teams pt ON pt.id = pp.participant_team_id
-     WHERE pp.id = $1 AND pt.tournament_id = $2`,
-    [nomineeId, tournamentId],
-  );
   if (!player) throw httpError(404, 'Participant player not found');
-  if (await getNominee(voteId, nomineeId, tournamentId)) throw httpError(409, 'This nominee is already added.');
   try {
-    await query('INSERT INTO vote_nominees (vote_id, nominee_id, votes) VALUES ($1, $2, 0)', [voteId, nomineeId]);
+    const result = await query(
+      `INSERT INTO vote_nominees (vote_id, nominee_id, votes)
+       VALUES ($1, $2, 0)
+       ON CONFLICT (vote_id, nominee_id) DO NOTHING
+       RETURNING vote_id`,
+      [voteId, nomineeId],
+    );
+    if (!result.rowCount) throw httpError(409, 'This nominee is already added.');
   } catch (err) {
+    if (err.status === 409) throw err;
     if (err.code === '23505') throw httpError(409, 'This nominee is already added.');
     throw err;
   }
@@ -126,9 +141,12 @@ async function removeNominee(voteId, tournamentId, nomineeId) {
 }
 
 async function castVote({ voteId, tournamentId, nomineeId, userId }) {
-  const vote = await getVoteById(voteId, tournamentId);
+  const [vote, nominee] = await Promise.all([
+    getVoteById(voteId, tournamentId),
+    getNominee(voteId, nomineeId, tournamentId),
+  ]);
   assertOpen(vote);
-  if (!(await getNominee(voteId, nomineeId, tournamentId))) throw httpError(404, 'Nominee not found');
+  if (!nominee) throw httpError(404, 'Nominee not found');
   try {
     await withTransaction(async (client) => {
       await client.query(
