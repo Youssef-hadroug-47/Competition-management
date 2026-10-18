@@ -385,6 +385,7 @@
       navigationState,
       leaders: { promise: null, data: null },
       rosters: RequestCache.createRequestCache(),
+      allRostersRequest: null,
       reservedInviteCodes: new Map(),
       teamLeader: null,
       teamLeaderRequest: null,
@@ -911,6 +912,7 @@
   }
 
   async function loadVoteCandidates(state) {
+    await loadAllRosters(state);
     const rosters = await Promise.all(
       state.participantTeams.map((team) => loadRoster(state, team.id))
     );
@@ -1928,15 +1930,44 @@
     state.leaders = { promise: null, data: null };
   }
 
+  // Load every roster for the tournament in one request and seed the shared
+  // roster cache from it, so the teams, voting, and leaderboard views read
+  // from the cache instead of issuing one GET per participating team.
+  async function loadAllRosters(state) {
+    if (state.allRostersRequest) return state.allRostersRequest;
+    const request = Api.participantPlayers.listAll(state.tournamentId).then((data) => {
+      const playersByTeam = new Map();
+      for (const player of data?.participantPlayers || []) {
+        if (!playersByTeam.has(player.participantTeamId)) playersByTeam.set(player.participantTeamId, []);
+        playersByTeam.get(player.participantTeamId).push(player);
+      }
+      const reserved = data?.reservedInviteCodesByTeam || {};
+      state.participantTeams.forEach((pt) => {
+        state.rosters.set(pt.id, {
+          players: playersByTeam.get(pt.id) || [],
+          reservedInviteCodes: Number(reserved[pt.id]) || 0,
+        });
+      });
+      return data;
+    });
+    state.allRostersRequest = request;
+    request.catch(() => {
+      if (state.allRostersRequest === request) state.allRostersRequest = null;
+    });
+    return request;
+  }
+
   function invalidateRoster(state, participantTeamId) {
     state.rosters.delete(participantTeamId);
     state.reservedInviteCodes.delete(participantTeamId);
+    state.allRostersRequest = null;
     invalidateLeaders(state);
   }
 
   function invalidateAllRosters(state) {
     state.rosters.clear();
     state.reservedInviteCodes.clear();
+    state.allRostersRequest = null;
     invalidateLeaders(state);
   }
 
@@ -2350,6 +2381,7 @@
     container.appendChild(grid);
     let rosters;
     try {
+      await loadAllRosters(state);
       rosters = await Promise.all(
         state.participantTeams.map(async (pt) => [pt, await loadRoster(state, pt.id)])
       );
@@ -2405,6 +2437,7 @@
     if (leaders.promise) return leaders.promise;
 
     const promise = (async () => {
+      await loadAllRosters(state);
       const rosters = await Promise.all(
         state.participantTeams.map((pt) => loadRoster(state, pt.id))
       );

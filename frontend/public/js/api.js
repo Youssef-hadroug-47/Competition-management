@@ -230,6 +230,9 @@ const Api = {
   },
 
   participantPlayers: {
+    // Tournament-scoped batch: every roster in a single request, so the
+    // teams, voting, and leaderboard views don't fan out one request per team.
+    listAll: (tournamentId) => request('GET', `/tournaments/${enc(tournamentId)}/participant-players`),
     list: (tournamentId, participantTeamId) =>
       request('GET', `/tournaments/${enc(tournamentId)}/participant-teams/${enc(participantTeamId)}/players`),
     add: (tournamentId, participantTeamId, payload) =>
