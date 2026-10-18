@@ -763,3 +763,56 @@ test('referee event eligibility validates player, match events, and linked goal 
     else delete require.cache[drawServicePath];
   }
 });
+
+test('tournament roster batch loads every team roster in a constant number of queries', async () => {
+  const database = require('../src/db');
+  const originalQuery = database.query;
+  const accessPath = require.resolve('../src/services/access');
+  const originalAccessModule = require.cache[accessPath];
+  const calls = [];
+  database.query = async (text, values = []) => {
+    calls.push({ text, values });
+    if (text.includes('JOIN participant_teams pt')) {
+      return {
+        rows: [
+          { id: 'player-1', participant_team_id: 'team-1', name: 'Alice', shirt_number: 10 },
+          { id: 'player-2', participant_team_id: 'team-2', name: 'Bob', shirt_number: 7 },
+        ],
+      };
+    }
+    if (text.includes('participant_player_invite_codes') && text.includes('GROUP BY participant_team_id')) {
+      return { rows: [{ participant_team_id: 'team-1', count: '2' }] };
+    }
+    throw new Error(`Unexpected query: ${text}`);
+  };
+  require.cache[accessPath] = {
+    id: accessPath,
+    filename: accessPath,
+    loaded: true,
+    exports: {
+      getTournamentOrThrow: async () => ({ id: 'tournament-1' }),
+      requireTournamentInspect: async () => {},
+    },
+  };
+  const controllerPath = require.resolve('../src/controllers/catalogController');
+  delete require.cache[controllerPath];
+  try {
+    const controller = require(controllerPath);
+    let response;
+    let caughtError;
+    await controller.listTournamentParticipantPlayers(
+      { params: { tournamentId: 'tournament-1' }, user: { id: 'user-1' } },
+      { json: (body) => { response = body; } },
+      (error) => { caughtError = error; },
+    );
+    assert.equal(caughtError, undefined);
+    assert.equal(calls.length, 2, 'rosters and reserved counts must not fan out per team');
+    assert.equal(response.participantPlayers.length, 2);
+    assert.deepEqual(response.reservedInviteCodesByTeam, { 'team-1': 2 });
+  } finally {
+    database.query = originalQuery;
+    delete require.cache[controllerPath];
+    if (originalAccessModule) require.cache[accessPath] = originalAccessModule;
+    else delete require.cache[accessPath];
+  }
+});

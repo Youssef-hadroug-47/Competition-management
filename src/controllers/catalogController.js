@@ -444,6 +444,45 @@ const playerJoinSql = `
   FROM participant_players pp
 `;
 
+// Tournament-scoped roster batch. Returns every participant player for the
+// tournament in one query (grouped client-side by participantTeamId) plus the
+// per-team count of live invite codes. This replaces the O(teams) per-team
+// GET /participant-teams/:id/players fan-out made by the teams, voting, and
+// leaderboard views with a single request that costs a constant number of
+// queries regardless of the number of teams.
+const listTournamentParticipantPlayers = asyncHandler(async (req, res) => {
+  const tournament = await access.getTournamentOrThrow(req.params.tournamentId);
+  await access.requireTournamentInspect(tournament, req.user);
+
+  const [players, reserved] = await Promise.all([
+    many(
+      `SELECT pp.*
+       FROM participant_players pp
+       JOIN participant_teams pt ON pt.id = pp.participant_team_id
+       WHERE pt.tournament_id = $1
+       ORDER BY pp.participant_team_id, pp.shirt_number, pp.name`,
+      [tournament.id],
+    ),
+    many(
+      `SELECT participant_team_id, COUNT(*) AS count
+       FROM participant_player_invite_codes
+       WHERE tournament_id = $1 AND expires_at > NOW()
+       GROUP BY participant_team_id`,
+      [tournament.id],
+    ),
+  ]);
+
+  const reservedInviteCodesByTeam = {};
+  for (const row of reserved) {
+    reservedInviteCodesByTeam[row.participant_team_id] = Number(row.count);
+  }
+
+  res.json({
+    participantPlayers: players.map(map.participantPlayer),
+    reservedInviteCodesByTeam,
+  });
+});
+
 const addParticipantPlayer = asyncHandler(async (req, res) => {
   const body = req.body || {};
   if (!String(body.name || '').trim()) throw httpError(400, 'name is required');
@@ -885,6 +924,7 @@ module.exports = {
   addParticipantPlayer,
   autoAddParticipantPlayers,
   listParticipantPlayers,
+  listTournamentParticipantPlayers,
   issuePlayerInviteCode: issuePlayerInviteCode(false),
   listPlayerInviteCodes: listPlayerInviteCodes(false),
   revokePlayerInviteCode: revokePlayerInviteCode(false),
