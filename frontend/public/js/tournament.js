@@ -906,11 +906,6 @@
     container.appendChild(list);
   }
 
-  async function loadVoteNominees(state, vote) {
-    const data = await Api.nominees.list(state.tournamentId, vote.id);
-    return data?.nominees || [];
-  }
-
   async function loadVoteCandidates(state) {
     await loadAllRosters(state);
     const rosters = await Promise.all(
@@ -1080,10 +1075,10 @@
         return;
       }
       const candidates = isModerator ? await loadVoteCandidates(state) : [];
-      for (const vote of votes) {
-        const nominees = await loadVoteNominees(state, vote);
+      votes.forEach((vote) => {
+        const nominees = vote.nominees || [];
         list.appendChild(renderVoteCard(state, vote, nominees, candidates, () => renderVotesView(container, state)));
-      }
+      });
     } catch (err) {
       clear(list);
       UI.flashMessage(friendlyErrorMessage(err));
@@ -2399,17 +2394,27 @@
       return;
     }
     const inviteModeEnabled = ['invite_code', 'both'].includes(state.tournament.playerRegistrationMode);
+    // Moderators/admins can manage every roster, so load all teams' invite
+    // codes in a single batch request. Team leaders only ever manage their own
+    // team and still use the scoped per-team endpoint.
+    const moderatorView = isAdmin() || state.viewerRole === 'moderator';
+    let inviteCodesByTeam = new Map();
+    if (inviteModeEnabled && moderatorView) {
+      try {
+        const result = await Api.playerInviteCodes.listAll(state.tournamentId);
+        inviteCodesByTeam = new Map(Object.entries(result?.inviteCodesByTeam || {}));
+      } catch (error) {
+        showBanner(banner, friendlyErrorMessage(error));
+      }
+    }
     const cardsWithCodes = await Promise.all(rosters.map(async ([pt, roster]) => {
       const isOwnedByTeamLeader = state.viewerRole === 'team_leader'
         && state.teamLeader?.participantTeam?.id === pt.id;
       const canManageRoster = isAdmin() || state.viewerRole === 'moderator' || isOwnedByTeamLeader;
       if (!inviteModeEnabled || !canManageRoster) return [pt, roster.players, []];
+      if (moderatorView) return [pt, roster.players, inviteCodesByTeam.get(pt.id) || []];
       try {
-        const result = await Api.playerInviteCodes.list(
-          state.tournamentId,
-          pt.id,
-          state.viewerRole === 'team_leader' && !isAdmin(),
-        );
+        const result = await Api.playerInviteCodes.list(state.tournamentId, pt.id, true);
         return [pt, roster.players, result.inviteCodes || []];
       } catch (error) {
         showBanner(banner, friendlyErrorMessage(error));

@@ -510,26 +510,44 @@
           },
         },
       });
-      const tournamentId = base.tournament.id; const ids = [];
-      for (let i = 0; i < stages.length; i += 1) {
-        const response = await Api.stages.add(tournamentId, { type: stages[i].type, sequenceOrder: i + 1, settings: stages[i].settings });
+      const tournamentId = base.tournament.id;
+      // Phase 1: create every stage concurrently. Each response echoes the full
+      // format, so stage ids are resolved afterwards by sequenceOrder.
+      const stageResponses = await Promise.all(stages.map((stage, i) =>
+        Api.stages.add(tournamentId, { type: stage.type, sequenceOrder: i + 1, settings: stage.settings })
+      ));
+      const ids = stageResponses.map((response, i) => {
         const found = (response?.stages || []).find((s) => s.sequenceOrder === i + 1);
         if (!found?.id) throw new Error(`Stage ${i + 1} could not be created.`);
-        ids.push(found.id);
-      }
-      for (let i = 0; i < stages.length; i += 1) {
-        const stage = stages[i];
-        if (stage.type === 'knockout') { for (let r = 0; r < stage.rounds.length; r += 1) await Api.rounds.add(tournamentId, ids[i], { name: stage.rounds[r].name, sequenceOrder: r + 1 }); continue; }
-        for (let g = 0; g < stage.groups.length; g += 1) {
-          const group = stage.groups[g];
-          const response = await Api.groups.add(tournamentId, ids[i], { name: group.name, sequenceOrder: g + 1, number_teams: group.numberTeams, advancing_teams: 0, promotion_rules: '[]' });
+        return found.id;
+      });
+
+      // Phase 2: create rounds and groups concurrently. Promotion rules are
+      // resolved up front (every target stage id is now known) and sent with
+      // each group, so no follow-up update request is needed.
+      const creations = [];
+      stages.forEach((stage, i) => {
+        if (stage.type === 'knockout') {
+          stage.rounds.forEach((round, r) => {
+            creations.push(Api.rounds.add(tournamentId, ids[i], { name: round.name, sequenceOrder: r + 1 }));
+          });
+          return;
+        }
+        stage.groups.forEach((group, g) => {
           const rules = group.rules.filter((r) => r.target !== null).map((r) => ({ from: r.from, to: r.to, stage: ids[r.target] }));
           if (group.bestRankingEnabled && group.bestTarget !== null) {
             rules.push({ from: group.bestFrom, to: group.bestTo, stage: ids[group.bestTarget], rank: true });
           }
-          if (rules.length) await Api.groups.update(tournamentId, response.group.id, { promotion_rules: JSON.stringify(rules) });
-        }
-      }
+          creations.push(Api.groups.add(tournamentId, ids[i], {
+            name: group.name,
+            sequenceOrder: g + 1,
+            number_teams: group.numberTeams,
+            advancing_teams: 0,
+            promotion_rules: JSON.stringify(rules),
+          }));
+        });
+      });
+      await Promise.all(creations);
       location.href = `/tournament?id=${encodeURIComponent(tournamentId)}`;
     } catch (err) { showBanner(banner, friendlyErrorMessage(err)); next.disabled = false; next.textContent = 'Create tournament'; }
   }

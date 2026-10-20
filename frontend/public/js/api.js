@@ -250,6 +250,9 @@ const Api = {
 
   playerInviteCodes: {
     availability: () => request('GET', '/player-invite-codes/availability', { auth: false }),
+    // Moderator/admin batch: every team's live invite codes in one request.
+    listAll: (tournamentId) =>
+      request('GET', `/tournaments/${enc(tournamentId)}/player-invite-codes`),
     list: (tournamentId, participantTeamId, teamLeader = false) =>
       request('GET', teamLeader
         ? `/tournaments/${enc(tournamentId)}/team-leader/teams/${enc(participantTeamId)}/player-invite-codes`
