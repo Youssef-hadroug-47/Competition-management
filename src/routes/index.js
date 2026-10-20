@@ -65,6 +65,7 @@ router.delete('/tournaments/:tournamentId/participant-teams/:id', requireAuth, r
 router.get('/tournaments/:tournamentId/participant-players', authOptional, catalog.listTournamentParticipantPlayers);
 router.get('/tournaments/:tournamentId/participant-teams/:id/players', authOptional, catalog.listParticipantPlayers);
 router.post('/tournaments/:tournamentId/participant-teams/:id/players', requireAuth, requireTournamentModerator, catalog.addParticipantPlayer);
+router.get('/tournaments/:tournamentId/player-invite-codes', requireAuth, requireTournamentModerator, catalog.listTournamentPlayerInviteCodes);
 router.get('/tournaments/:tournamentId/participant-teams/:id/player-invite-codes', requireAuth, requireTournamentModerator, catalog.listPlayerInviteCodes);
 router.post('/tournaments/:tournamentId/participant-teams/:id/player-invite-codes', requireAuth, requireTournamentModerator, catalog.issuePlayerInviteCode);
 router.delete('/tournaments/:tournamentId/participant-teams/:id/player-invite-codes/:codeId', requireAuth, requireTournamentModerator, catalog.revokePlayerInviteCode);

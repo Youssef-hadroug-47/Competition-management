@@ -15,8 +15,24 @@ async function tournament(req) {
 const listVotes = asyncHandler(async (req, res) => {
   const row = await tournament(req);
   await access.requireTournamentInspect(row, req.user);
-  const votes = await voteService.listVotesByTournament(row.id, req.user?.id || null);
-  res.json({ votes: votes.map(mappers.vote) });
+  const userId = req.user?.id || null;
+  // Votes and their nominees are fetched together so the voting view does not
+  // need one nominees request per vote.
+  const [votes, nominees] = await Promise.all([
+    voteService.listVotesByTournament(row.id, userId),
+    voteService.listNomineesByTournament(row.id, userId),
+  ]);
+  const nomineesByVote = new Map();
+  for (const nominee of nominees) {
+    if (!nomineesByVote.has(nominee.vote_id)) nomineesByVote.set(nominee.vote_id, []);
+    nomineesByVote.get(nominee.vote_id).push(mappers.voteNominee(nominee));
+  }
+  res.json({
+    votes: votes.map((vote) => ({
+      ...mappers.vote(vote),
+      nominees: nomineesByVote.get(vote.id) || [],
+    })),
+  });
 });
 
 const getVote = asyncHandler(async (req, res) => {

@@ -1,4 +1,4 @@
-const { query, now, parseJson, withTransaction } = require('../db');
+const { query, now, parseJson } = require('../db');
 const { id } = require('../utils/ids');
 const { httpError } = require('../middleware/error');
 const { defaultTournamentSettings } = require('./mappers');
@@ -22,58 +22,133 @@ function isBefore(source, target) {
   if (source.finished_at && target.status !== 'finished') return true;
   return String(source.finished_at || source.started_at || source.created_at) < String(target.started_at || target.scheduled_at || target.created_at);
 }
-async function priorMatchesForPlayer(playerId, target) {
-  const rows = await many(`SELECT m.*,s.sequence_order FROM matches m JOIN stages s ON s.id=m.stage_id
-    JOIN participant_players pp
-      ON pp.participant_team_id = m.home_participant_team_id
-      OR pp.participant_team_id = m.away_participant_team_id
-    WHERE pp.id=$1 AND m.tournament_id=$2 AND m.status='finished'
-    ORDER BY s.sequence_order,m.matchday,COALESCE(m.finished_at,m.created_at),m.id`,
-  [playerId, target.tournament_id]);
-  return rows.filter((match) => isBefore(match, target));
-}
-async function ensureDecision({ tournamentId, targetMatchId, playerId, kind, sourceMatchId, sourceEventId }, client) {
-  const inserted = await (client || { query }).query(`INSERT INTO player_match_suspensions
-    (id,tournament_id,participant_player_id,target_match_id,source_match_id,source_event_id,kind)
-    VALUES ($1,$2,$3,$4,$5,$6,$7)
-    ON CONFLICT (participant_player_id,target_match_id,kind) DO NOTHING
-    RETURNING *`, [id(), tournamentId, playerId, targetMatchId, sourceMatchId, sourceEventId, kind]);
-  if (inserted.rows[0]) return inserted.rows[0];
-  return one(`SELECT * FROM player_match_suspensions WHERE participant_player_id=$1 AND target_match_id=$2 AND kind=$3`,
-    [playerId, targetMatchId, kind], client);
-}
-async function syncPlayerForMatch(playerId, target, system) {
-  if (!system.enabled) return [];
-  const prior = await priorMatchesForPlayer(playerId, target);
-  const priorById = new Map(prior.map((match) => [match.id, match]));
-  const cardEvents = prior.length
-    ? (await many(
+async function syncPlayersForMatch(players, target, system) {
+  if (!system.enabled || !players.length) return;
+  const playerIds = players.map((player) => player.id);
+
+  // Every finished match that involves any of this match's players, in the
+  // same order used to derive suspensions.
+  const matchRows = await many(
+    `SELECT pp.id AS player_id,m.*,s.sequence_order
+     FROM participant_players pp
+     JOIN matches m
+       ON m.home_participant_team_id = pp.participant_team_id
+       OR m.away_participant_team_id = pp.participant_team_id
+     JOIN stages s ON s.id = m.stage_id
+     WHERE pp.id = ANY($1::text[]) AND m.tournament_id=$2 AND m.status='finished'
+     ORDER BY pp.id,s.sequence_order,m.matchday,COALESCE(m.finished_at,m.created_at),m.id`,
+    [playerIds, target.tournament_id],
+  );
+  const priorMatchesByPlayer = new Map();
+  const priorMatchIds = new Set();
+  for (const row of matchRows) {
+    const { player_id: playerId, ...match } = row;
+    if (!isBefore(match, target)) continue;
+    if (!priorMatchesByPlayer.has(playerId)) priorMatchesByPlayer.set(playerId, []);
+    priorMatchesByPlayer.get(playerId).push(match);
+    priorMatchIds.add(match.id);
+  }
+  const priorIdsByPlayer = new Map();
+  for (const [playerId, matches] of priorMatchesByPlayer) {
+    priorIdsByPlayer.set(playerId, new Set(matches.map((match) => match.id)));
+  }
+
+  // Card events for every prior match at once, grouped per player in memory.
+  const cardRows = priorMatchIds.size
+    ? await many(
       `SELECT * FROM match_events
-       WHERE match_id = ANY($1::text[]) AND player_id = $2 AND type = 'card'
-       ORDER BY created_at, id`,
-      [prior.map((match) => match.id), playerId],
-    )).map((event) => ({ ...event, sourceMatchId: priorById.get(event.match_id)?.id }))
+       WHERE match_id = ANY($1::text[]) AND player_id = ANY($2::text[]) AND type='card'
+       ORDER BY player_id,created_at,id`,
+      [[...priorMatchIds], playerIds],
+    )
     : [];
-  const results = [];
-  const redEvents = cardEvents.filter((event) => event.card === 'red');
-  if (redEvents.length) {
-    const source = redEvents[redEvents.length - 1];
-    const included = await one(`SELECT 1 FROM player_match_suspensions WHERE participant_player_id=$1 AND kind='red_card' AND source_event_id=$2 AND status='included' LIMIT 1`, [playerId, source.id]);
-    if (!included) results.push(await ensureDecision({ tournamentId: target.tournament_id, targetMatchId: target.id, playerId, kind: 'red_card', sourceMatchId: source.sourceMatchId, sourceEventId: source.id }));
+  const cardsByPlayer = new Map();
+  for (const event of cardRows) {
+    if (!priorIdsByPlayer.get(event.player_id)?.has(event.match_id)) continue;
+    if (!cardsByPlayer.has(event.player_id)) cardsByPlayer.set(event.player_id, []);
+    cardsByPlayer.get(event.player_id).push(event);
   }
-  const priorYellow = await one(`SELECT * FROM player_match_suspensions WHERE participant_player_id=$1 AND tournament_id=$2 AND kind='yellow_threshold' AND target_match_id<>$3 ORDER BY created_at DESC LIMIT 1`, [playerId, target.tournament_id, target.id]);
-  let yellowEvents = cardEvents.filter((event) => event.card === 'yellow');
-  if (priorYellow) {
-    const source = await one('SELECT created_at FROM match_events WHERE id=$1', [priorYellow.source_event_id]);
-    yellowEvents = yellowEvents.filter((event) => String(event.created_at) > String(source?.created_at));
-  }
+
+  // Existing red-card decisions that already count as included.
+  const includedRedRows = await many(
+    `SELECT participant_player_id,source_event_id FROM player_match_suspensions
+     WHERE participant_player_id = ANY($1::text[]) AND kind='red_card' AND status='included'`,
+    [playerIds],
+  );
+  const includedReds = new Set(includedRedRows.map((row) => `${row.participant_player_id}\u0000${row.source_event_id}`));
+
+  // Latest yellow-threshold decision per player that targets a different match.
+  const priorYellowRows = await many(
+    `SELECT DISTINCT ON (pms.participant_player_id)
+            pms.participant_player_id,pms.source_event_id,me.created_at AS source_created_at
+     FROM player_match_suspensions pms
+     LEFT JOIN match_events me ON me.id = pms.source_event_id
+     WHERE pms.participant_player_id = ANY($1::text[])
+       AND pms.tournament_id=$2 AND pms.kind='yellow_threshold' AND pms.target_match_id<>$3
+     ORDER BY pms.participant_player_id,pms.created_at DESC`,
+    [playerIds, target.tournament_id, target.id],
+  );
+  const priorYellowByPlayer = new Map(priorYellowRows.map((row) => [row.participant_player_id, row]));
+
   const threshold = Math.max(1, Number(system.yellowCardsForSuspension) || 2);
-  const redFromSecondYellow = redEvents.some((event) => parseJson(event.payload, {}).automaticSecondYellow === true);
-  if (!redFromSecondYellow && yellowEvents.length >= threshold) {
-    const source = yellowEvents[threshold - 1];
-    results.push(await ensureDecision({ tournamentId: target.tournament_id, targetMatchId: target.id, playerId, kind: 'yellow_threshold', sourceMatchId: source.sourceMatchId, sourceEventId: source.id }));
+  const decisions = [];
+  for (const player of players) {
+    const playerId = player.id;
+    const cardEvents = cardsByPlayer.get(playerId) || [];
+    const redEvents = cardEvents.filter((event) => event.card === 'red');
+    if (redEvents.length) {
+      const source = redEvents[redEvents.length - 1];
+      if (!includedReds.has(`${playerId}\u0000${source.id}`)) {
+        decisions.push({
+          tournamentId: target.tournament_id,
+          playerId,
+          targetMatchId: target.id,
+          sourceMatchId: source.match_id,
+          sourceEventId: source.id,
+          kind: 'red_card',
+        });
+      }
+    }
+    const priorYellow = priorYellowByPlayer.get(playerId);
+    let yellowEvents = cardEvents.filter((event) => event.card === 'yellow');
+    if (priorYellow) {
+      yellowEvents = yellowEvents.filter(
+        (event) => String(event.created_at) > String(priorYellow.source_created_at),
+      );
+    }
+    const redFromSecondYellow = redEvents.some(
+      (event) => parseJson(event.payload, {}).automaticSecondYellow === true,
+    );
+    if (!redFromSecondYellow && yellowEvents.length >= threshold) {
+      const source = yellowEvents[threshold - 1];
+      decisions.push({
+        tournamentId: target.tournament_id,
+        playerId,
+        targetMatchId: target.id,
+        sourceMatchId: source.match_id,
+        sourceEventId: source.id,
+        kind: 'yellow_threshold',
+      });
+    }
   }
-  return results;
+  if (!decisions.length) return;
+  await query(
+    `INSERT INTO player_match_suspensions
+       (id,tournament_id,participant_player_id,target_match_id,source_match_id,source_event_id,kind)
+     SELECT v.id,v.tournament_id,v.player_id,v.target_match_id,v.source_match_id,v.source_event_id,v.kind
+     FROM unnest($1::text[],$2::text[],$3::text[],$4::text[],$5::text[],$6::text[],$7::text[])
+       AS v(id,tournament_id,player_id,target_match_id,source_match_id,source_event_id,kind)
+     ON CONFLICT (participant_player_id,target_match_id,kind) DO NOTHING`,
+    [
+      decisions.map(() => id()),
+      decisions.map((decision) => decision.tournamentId),
+      decisions.map((decision) => decision.playerId),
+      decisions.map((decision) => decision.targetMatchId),
+      decisions.map((decision) => decision.sourceMatchId),
+      decisions.map((decision) => decision.sourceEventId),
+      decisions.map((decision) => decision.kind),
+    ],
+  );
 }
 async function getForMatch(matchId, tournamentId) {
   const [target, settings] = await Promise.all([
@@ -84,11 +159,7 @@ async function getForMatch(matchId, tournamentId) {
   const system = settings.suspensionSystem;
   if (!system.enabled) return [];
   const players = await many(`SELECT pp.id FROM participant_players pp JOIN matches m ON m.home_participant_team_id=pp.participant_team_id OR m.away_participant_team_id=pp.participant_team_id WHERE m.id=$1`, [matchId]);
-  for (let index = 0; index < players.length; index += 8) {
-    await Promise.all(players.slice(index, index + 8).map((player) => (
-      syncPlayerForMatch(player.id, target, system)
-    )));
-  }
+  await syncPlayersForMatch(players, target, system);
   const rows = await many(`SELECT pms.*,pp.name AS player_name FROM player_match_suspensions pms
     JOIN participant_players pp ON pp.id=pms.participant_player_id
     WHERE pms.target_match_id=$1 ORDER BY pp.name,pms.kind`, [matchId]);

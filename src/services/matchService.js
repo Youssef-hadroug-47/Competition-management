@@ -131,33 +131,131 @@ async function correctFinishedMatchRecord({ matchRow, homeScore, awayScore, extr
 
 async function rebuildTournamentProjections(tournamentId) {
   return withTransaction(async (client) => {
-    const teams = await many(client, 'SELECT id FROM participant_teams WHERE tournament_id=$1', [tournamentId]);
-    const players = await many(client, `SELECT pp.id FROM participant_players pp JOIN participant_teams pt ON pt.id=pp.participant_team_id WHERE pt.tournament_id=$1`, [tournamentId]);
-    for (const t of teams) await run(client, `UPDATE participant_teams SET played=0,won=0,drawn=0,lost=0,goals_for=0,goals_against=0,points=0,winner=false WHERE id=$1`, [t.id]);
-    for (const p of players) await run(client, `UPDATE participant_players SET yellow_cards=0,red_cards=0,goals=0,assists=0 WHERE id=$1`, [p.id]);
-    const matches = await many(client, `SELECT m.*,s.type,s.settings FROM matches m JOIN stages s ON s.id=m.stage_id WHERE m.tournament_id=$1 AND m.status='finished'`, [tournamentId]);
+    // Set-based rebuild. Team and player projections are reset with one UPDATE
+    // each, every finished match's events are read in a single query, and the
+    // resulting score/stat/table changes are written back with bulk unnest
+    // updates. Total query count is constant instead of scaling with the number
+    // of teams, players, matches, and events.
+    await run(client, `UPDATE participant_teams pt
+      SET played=0,won=0,drawn=0,lost=0,goals_for=0,goals_against=0,points=0,winner=false
+      FROM tournaments t
+      WHERE t.id=$1 AND pt.tournament_id=t.id`, [tournamentId]);
+    await run(client, `UPDATE participant_players pp
+      SET yellow_cards=0,red_cards=0,goals=0,assists=0
+      FROM participant_teams pt
+      WHERE pt.tournament_id=$1 AND pp.participant_team_id=pt.id`, [tournamentId]);
+
+    const matches = await many(client, `SELECT m.id,m.stage_id,m.home_participant_team_id,m.away_participant_team_id,s.type,s.settings
+      FROM matches m JOIN stages s ON s.id=m.stage_id
+      WHERE m.tournament_id=$1 AND m.status='finished'`, [tournamentId]);
+    if (!matches.length) return;
+
+    const events = await many(client, `SELECT me.*
+      FROM match_events me JOIN matches m ON m.id=me.match_id
+      WHERE m.tournament_id=$1 AND m.status='finished'`, [tournamentId]);
+    const eventsByMatch = new Map();
+    for (const event of events) {
+      if (!eventsByMatch.has(event.match_id)) eventsByMatch.set(event.match_id, []);
+      eventsByMatch.get(event.match_id).push(event);
+    }
+
+    const scoreIds = [];
+    const scores = { home: [], away: [], extraHome: [], extraAway: [], penaltiesHome: [], penaltiesAway: [] };
+    const playerGoals = new Map();
+    const playerAssists = new Map();
+    const playerYellow = new Map();
+    const playerRed = new Map();
+    const teamAgg = new Map();
+    const bump = (map, key) => map.set(key, (map.get(key) || 0) + 1);
+    const teamEntry = (teamId) => {
+      if (!teamAgg.has(teamId)) {
+        teamAgg.set(teamId, { played: 0, won: 0, drawn: 0, lost: 0, gf: 0, ga: 0, points: 0 });
+      }
+      return teamAgg.get(teamId);
+    };
+
     for (const match of matches) {
-      const events = await many(client, 'SELECT * FROM match_events WHERE match_id=$1', [match.id]);
       const stats = { home: 0, away: 0, extraHome: 0, extraAway: 0, penaltiesHome: 0, penaltiesAway: 0 };
-      for (const event of events) {
+      for (const event of eventsByMatch.get(match.id) || []) {
         const payload = parseJson(event.payload, {});
         if (event.type === 'goal') {
           const home = payload.ownGoal ? event.team_id !== match.home_participant_team_id : event.team_id === match.home_participant_team_id;
           if (event.phase === 'extra_time') stats[home ? 'extraHome' : 'extraAway'] += 1;
           else if (event.phase !== 'shootout') stats[home ? 'home' : 'away'] += 1;
-        } else if (event.type === 'shootout_attempt' && payload.scored) stats[event.team_id === match.home_participant_team_id ? 'penaltiesHome' : 'penaltiesAway'] += 1;
+        } else if (event.type === 'shootout_attempt' && payload.scored) {
+          stats[event.team_id === match.home_participant_team_id ? 'penaltiesHome' : 'penaltiesAway'] += 1;
+        }
         if (event.player_id) {
-          if (event.type === 'goal' && !payload.ownGoal) await run(client, 'UPDATE participant_players SET goals=goals+1 WHERE id=$1', [event.player_id]);
-          if (event.type === 'assist' && !payload.skipped) await run(client, 'UPDATE participant_players SET assists=assists+1 WHERE id=$1', [event.player_id]);
-          if (event.type === 'card') await run(client, `UPDATE participant_players SET ${event.card === 'red' ? 'red_cards' : 'yellow_cards'}=${event.card === 'red' ? 'red_cards' : 'yellow_cards'}+1 WHERE id=$1`, [event.player_id]);
+          if (event.type === 'goal' && !payload.ownGoal) bump(playerGoals, event.player_id);
+          if (event.type === 'assist' && !payload.skipped) bump(playerAssists, event.player_id);
+          if (event.type === 'card') (event.card === 'red' ? bump(playerRed, event.player_id) : bump(playerYellow, event.player_id));
         }
       }
-      await run(client, `UPDATE matches SET home_score=$1,away_score=$2,extra_time_home=$3,extra_time_away=$4,penalties_home=$5,penalties_away=$6 WHERE id=$7`,
-        [stats.home, stats.away, stats.extraHome, stats.extraAway, stats.penaltiesHome, stats.penaltiesAway, match.id]);
+
+      scoreIds.push(match.id);
+      scores.home.push(stats.home);
+      scores.away.push(stats.away);
+      scores.extraHome.push(stats.extraHome);
+      scores.extraAway.push(stats.extraAway);
+      scores.penaltiesHome.push(stats.penaltiesHome);
+      scores.penaltiesAway.push(stats.penaltiesAway);
+
       if (match.type === 'league') {
         const settings = parseJson(match.settings, map.defaultStageSettings('league'));
-        await applyResultToTableInternal(client, match, stats.home, stats.away, settings.points);
+        const pts = settings.points || { win: 3, draw: 1, loss: 0 };
+        const homeWin = stats.home > stats.away;
+        const draw = stats.home === stats.away;
+        const home = teamEntry(match.home_participant_team_id);
+        home.played += 1;
+        home.won += homeWin ? 1 : 0;
+        home.drawn += draw ? 1 : 0;
+        home.lost += homeWin || draw ? 0 : 1;
+        home.gf += stats.home;
+        home.ga += stats.away;
+        home.points += homeWin ? pts.win : draw ? pts.draw : pts.loss;
+        const away = teamEntry(match.away_participant_team_id);
+        away.played += 1;
+        away.won += !homeWin && !draw ? 1 : 0;
+        away.drawn += draw ? 1 : 0;
+        away.lost += homeWin ? 1 : 0;
+        away.gf += stats.away;
+        away.ga += stats.home;
+        away.points += homeWin ? pts.loss : draw ? pts.draw : pts.win;
       }
+    }
+
+    await run(client, `UPDATE matches m SET home_score=v.home,away_score=v.away,
+      extra_time_home=v.extra_home,extra_time_away=v.extra_away,
+      penalties_home=v.pen_home,penalties_away=v.pen_away
+      FROM unnest($1::text[],$2::int[],$3::int[],$4::int[],$5::int[],$6::int[],$7::int[])
+        AS v(id,home,away,extra_home,extra_away,pen_home,pen_away)
+      WHERE m.id=v.id`,
+    [scoreIds, scores.home, scores.away, scores.extraHome, scores.extraAway, scores.penaltiesHome, scores.penaltiesAway]);
+
+    if (playerGoals.size || playerAssists.size || playerYellow.size || playerRed.size) {
+      const ids = [...new Set([...playerGoals.keys(), ...playerAssists.keys(), ...playerYellow.keys(), ...playerRed.keys()])];
+      await run(client, `UPDATE participant_players pp
+        SET goals=pp.goals+v.goals,assists=pp.assists+v.assists,
+            yellow_cards=pp.yellow_cards+v.yellow,red_cards=pp.red_cards+v.red
+        FROM unnest($1::text[],$2::int[],$3::int[],$4::int[],$5::int[])
+          AS v(id,goals,assists,yellow,red)
+        WHERE pp.id=v.id`,
+      [ids, ids.map((id) => playerGoals.get(id) || 0), ids.map((id) => playerAssists.get(id) || 0),
+        ids.map((id) => playerYellow.get(id) || 0), ids.map((id) => playerRed.get(id) || 0)]);
+    }
+
+    if (teamAgg.size) {
+      const ids = [...teamAgg.keys()];
+      const agg = ids.map((id) => teamAgg.get(id));
+      await run(client, `UPDATE participant_teams pt
+        SET played=pt.played+v.played,won=pt.won+v.won,drawn=pt.drawn+v.drawn,lost=pt.lost+v.lost,
+            goals_for=pt.goals_for+v.gf,goals_against=pt.goals_against+v.ga,points=pt.points+v.points,
+            status='active'
+        FROM unnest($1::text[],$2::int[],$3::int[],$4::int[],$5::int[],$6::int[],$7::int[],$8::int[])
+          AS v(id,played,won,drawn,lost,gf,ga,points)
+        WHERE pt.id=v.id`,
+      [ids, agg.map((x) => x.played), agg.map((x) => x.won), agg.map((x) => x.drawn), agg.map((x) => x.lost),
+        agg.map((x) => x.gf), agg.map((x) => x.ga), agg.map((x) => x.points)]);
     }
   });
 }

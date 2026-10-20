@@ -668,6 +668,39 @@ const listPlayerInviteCodes = (isTeamLeader) => asyncHandler(async (req, res) =>
   });
 });
 
+// Tournament-scoped invite-code batch for moderators/admins. Expired codes are
+// purged for the whole tournament and every live code is returned in one query,
+// grouped by participant team, so the teams view no longer issues one
+// GET .../player-invite-codes request per team.
+const listTournamentPlayerInviteCodes = asyncHandler(async (req, res) => {
+  const tournament = await access.getTournamentOrThrow(req.params.tournamentId);
+  const codes = await withTransaction(async (client) => {
+    await client.query(
+      `DELETE FROM participant_player_invite_codes
+       WHERE tournament_id = $1 AND expires_at <= NOW()`,
+      [tournament.id],
+    );
+    const result = await client.query(
+      `SELECT id, participant_team_id, created_at, expires_at
+       FROM participant_player_invite_codes
+       WHERE tournament_id = $1 AND expires_at > NOW()
+       ORDER BY created_at`,
+      [tournament.id],
+    );
+    return result.rows;
+  });
+
+  const inviteCodesByTeam = {};
+  for (const code of codes) {
+    (inviteCodesByTeam[code.participant_team_id] ||= []).push({
+      id: code.id,
+      createdAt: code.created_at,
+      expiresAt: code.expires_at,
+    });
+  }
+  res.json({ inviteCodesByTeam });
+});
+
 const revokePlayerInviteCode = (isTeamLeader) => asyncHandler(async (req, res) => {
   const result = await withTransaction(async (client) => {
     await getInviteRoster(req, client, isTeamLeader);
@@ -927,6 +960,7 @@ module.exports = {
   listTournamentParticipantPlayers,
   issuePlayerInviteCode: issuePlayerInviteCode(false),
   listPlayerInviteCodes: listPlayerInviteCodes(false),
+  listTournamentPlayerInviteCodes,
   revokePlayerInviteCode: revokePlayerInviteCode(false),
   issueTeamLeaderPlayerInviteCode: issuePlayerInviteCode(true),
   listTeamLeaderPlayerInviteCodes: listPlayerInviteCodes(true),

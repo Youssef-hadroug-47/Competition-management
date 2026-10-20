@@ -119,17 +119,18 @@ const applyImpact = asyncHandler(async (req, res) => {
   if (validNextStages.length !== stageIds.length) {
     throw httpError(400, 'Only directly affected next stages can be reset');
   }
-  const stageStates = await Promise.all(stageIds.map(async (stageId) => {
-    const result = await query(
-      `SELECT COUNT(*) AS total,
-              COUNT(*) FILTER (WHERE status NOT IN ('scheduled', 'postponed', 'cancelled')) AS started
-       FROM matches WHERE tournament_id = $1 AND stage_id = $2`,
-      [req.params.tournamentId, stageId]);
-    return result.rows[0];
-  }));
+  const stageStateRows = (await query(
+    `SELECT stage_id,
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE status NOT IN ('scheduled', 'postponed', 'cancelled')) AS started
+     FROM matches
+     WHERE tournament_id = $1 AND stage_id = ANY($2::text[])
+     GROUP BY stage_id`,
+    [req.params.tournamentId, stageIds])).rows;
+  const stageStateById = new Map(stageStateRows.map((row) => [row.stage_id, row]));
   const results = [];
-  for (const [index, stageId] of stageIds.entries()) {
-    const stageState = stageStates[index];
+  for (const stageId of stageIds) {
+    const stageState = stageStateById.get(stageId) || { total: 0, started: 0 };
     if (Number(stageState.total || 0) === 0) {
       results.push({ stageId, action: 'none' });
     } else if (Number(stageState.started || 0) > 0) {

@@ -38,7 +38,15 @@ test('standing query loads stages and groups concurrently and ranks all groups',
       { id: 'team-2-b', points: 1, goals_for: 0, goals_against: 2 },
     ],
   };
-  const fake = delayedQuery((text, values) => {
+  const teamRows = Object.entries(groupTeams).flatMap(([groupId, teams]) => teams.map((team) => ({ ...team, ranking_group_id: groupId })));
+  const matchRows = Object.entries(groupTeams).map(([groupId, teams]) => ({
+    group_id: groupId,
+    home: teams[0].id,
+    away: teams[1].id,
+    home_score: 2,
+    away_score: 0,
+  }));
+  const fake = delayedQuery((text) => {
     if (text.includes('SELECT id FROM groups')) {
       return { rows: [{ id: 'group-1' }, { id: 'group-2' }] };
     }
@@ -54,21 +62,12 @@ test('standing query loads stages and groups concurrently and ranks all groups',
         }],
       };
     }
-    if (text.includes('SELECT pt.*')) {
-      return { rows: groupTeams[values[0]] };
+    if (text.includes('AS ranking_group_id')) {
+      return { rows: teamRows };
     }
-    if (text.includes('SELECT home_participant_team_id AS home')) {
-      const [first, second] = groupTeams[values[0]].map((team) => team.id);
-      return {
-        rows: [{
-          home: first,
-          away: second,
-          home_score: 2,
-          away_score: 0,
-        }],
-      };
+    if (text.includes('SELECT m.group_id')) {
+      return { rows: matchRows };
     }
-    if (text.includes('FROM participant_players pp')) return { rows: [] };
     throw new Error(`Unexpected query: ${text}`);
   });
 
@@ -93,14 +92,19 @@ test('standing query loads stages and groups concurrently and ranks all groups',
     ]);
     assert.ok(fake.maximumActive >= 2, 'independent stage/group and group-ranking reads should overlap');
     assert.equal(
-      fake.calls.filter((call) => call.text.includes('SELECT home_participant_team_id AS home')).length,
-      2,
-      'head-to-head matches should be fetched once per group, not once per tie bucket',
+      fake.calls.filter((call) => call.text.includes('AS ranking_group_id')).length,
+      1,
+      'every group roster should be loaded in a single query, not one query per group',
+    );
+    assert.equal(
+      fake.calls.filter((call) => call.text.includes('SELECT m.group_id')).length,
+      1,
+      'head-to-head matches should be fetched once for the stage, not once per group',
     );
     assert.equal(
       fake.calls.filter((call) => call.text.includes('LEFT JOIN LATERAL')).length,
-      2,
-      'card totals should be aggregated into each group team query rather than fetched in a follow-up query',
+      1,
+      'card totals should be aggregated in the batched team query rather than fetched per group',
     );
   } finally {
     database.query = originalQuery;
@@ -539,7 +543,7 @@ test('draw pot options load groups, participants, and saved assignments concurre
   }
 });
 
-test('suspension decision reads are concurrent and player sync is bounded', async () => {
+test('suspension decision reads are concurrent and player sync uses batched queries', async () => {
   const database = require('../src/db');
   const originalQuery = database.query;
   const fake = delayedQuery((text, values) => {
@@ -572,10 +576,11 @@ test('suspension decision reads are concurrent and player sync is bounded', asyn
     if (text.includes('SELECT pp.id FROM participant_players')) {
       return { rows: Array.from({ length: 10 }, (_, index) => ({ id: `player-${index}` })) };
     }
-    if (text.includes('JOIN participant_players pp')) return { rows: [] };
-    if (text.includes('FROM player_match_suspensions WHERE participant_player_id=')) {
+    if (text.includes('pp.id AS player_id')) return { rows: [] };
+    if (text.includes('SELECT participant_player_id,source_event_id FROM player_match_suspensions')) {
       return { rows: [] };
     }
+    if (text.includes('SELECT DISTINCT ON (pms.participant_player_id)')) return { rows: [] };
     if (text.includes('FROM player_match_suspensions pms')) return { rows: [] };
     throw new Error(`Unexpected query: ${text}`);
   });
@@ -593,11 +598,112 @@ test('suspension decision reads are concurrent and player sync is bounded', asyn
     });
     assert.deepEqual(suspensions, []);
     assert.ok(fake.maximumActive >= 2, 'suspension and match state reads should overlap');
-    assert.ok(fake.maximumActive <= 8, 'suspension derivation should cap concurrent player work');
-    assert.equal(fake.maximumActive, 8, 'independent player synchronization should fill one bounded batch');
+    fake.calls.length = 0;
     await suspension.getForMatch('match-1', 'tournament-1');
-    assert.ok(fake.maximumActive >= 2, 'suspension derivation should process independent players concurrently');
-    assert.ok(fake.maximumActive <= 8, 'suspension derivation should cap concurrent player work');
+    assert.equal(
+      fake.calls.filter((call) => call.text.includes('pp.id AS player_id')).length,
+      1,
+      'prior matches for every player must load in one query, not one query per player',
+    );
+    assert.equal(
+      fake.calls.filter((call) => call.text.includes('SELECT DISTINCT ON (pms.participant_player_id)')).length,
+      1,
+      'prior yellow decisions for every player must load in one query',
+    );
+    assert.equal(
+      fake.calls.filter((call) => call.text.includes('participant_player_id = ANY') && call.text.includes("kind='red_card'")).length,
+      1,
+      'included red decisions for every player must load in one query',
+    );
+    assert.equal(
+      fake.calls.filter((call) => call.text.includes('WHERE participant_player_id=$1')).length,
+      0,
+      'player synchronization must not issue per-player queries',
+    );
+  } finally {
+    database.query = originalQuery;
+    delete require.cache[servicePath];
+  }
+});
+
+test('suspension sync derives every player decision from batched reads and one bulk insert', async () => {
+  const database = require('../src/db');
+  const originalQuery = database.query;
+  const calls = [];
+  const target = {
+    id: 'match-2', tournament_id: 'tournament-1', sequence_order: 2, status: 'scheduled',
+    matchday: null, created_at: '2026-01-02T00:00:00', finished_at: null,
+    started_at: null, scheduled_at: '2026-01-03T00:00:00',
+  };
+  const priorMatch = (playerId, id) => ({
+    player_id: playerId, id, tournament_id: 'tournament-1', status: 'finished',
+    sequence_order: 1, matchday: 1, created_at: '2026-01-01T00:00:00',
+    finished_at: '2026-01-01T12:00:00', started_at: '2026-01-01T10:00:00',
+    scheduled_at: '2026-01-01T10:00:00',
+  });
+  const card = (id, playerId, matchId, color, createdAt, payload = '{}') => ({
+    id, match_id: matchId, player_id: playerId, type: 'card', card: color, created_at: createdAt, payload,
+  });
+  const matchRows = [
+    priorMatch('p1', 'match-1'),
+    priorMatch('p2', 'match-0'),
+    priorMatch('p2', 'match-1'),
+    priorMatch('p3', 'match-1'),
+    priorMatch('p4', 'match-1'),
+  ];
+  const cardRows = [
+    card('red-1', 'p1', 'match-1', 'red', '2026-01-01T09:00:00'),
+    card('y-1', 'p2', 'match-0', 'yellow', '2026-01-01T09:00:00'),
+    card('y-2', 'p2', 'match-1', 'yellow', '2026-01-01T10:00:00'),
+    card('y-3', 'p2', 'match-1', 'yellow', '2026-01-01T11:00:00'),
+    card('red-2', 'p3', 'match-1', 'red', '2026-01-01T09:30:00', JSON.stringify({ automaticSecondYellow: true })),
+    card('y-4', 'p3', 'match-1', 'yellow', '2026-01-01T10:00:00'),
+    card('y-5', 'p3', 'match-1', 'yellow', '2026-01-01T11:00:00'),
+    card('y-6', 'p4', 'match-1', 'yellow', '2026-01-01T10:00:00'),
+  ];
+  let insertValues;
+  database.query = async (text, values = []) => {
+    calls.push({ text, values });
+    if (text.includes('SELECT m.id,m.tournament_id')) return { rows: [target] };
+    if (text.includes('SELECT settings FROM tournaments')) {
+      return { rows: [{ settings: JSON.stringify({ suspensionSystem: { enabled: true, yellowCardsForSuspension: 2 } }) }] };
+    }
+    if (text.includes('SELECT pp.id FROM participant_players')) {
+      return { rows: [{ id: 'p1' }, { id: 'p2' }, { id: 'p3' }, { id: 'p4' }] };
+    }
+    if (text.includes('pp.id AS player_id')) return { rows: matchRows };
+    if (text.includes('FROM match_events')) return { rows: cardRows };
+    if (text.includes('SELECT participant_player_id,source_event_id FROM player_match_suspensions')) {
+      return { rows: [{ participant_player_id: 'p1', source_event_id: 'red-1' }] };
+    }
+    if (text.includes('SELECT DISTINCT ON (pms.participant_player_id)')) {
+      return { rows: [{ participant_player_id: 'p2', source_event_id: 'y-1', source_created_at: '2026-01-01T09:00:00' }] };
+    }
+    if (text.includes('INSERT INTO player_match_suspensions')) {
+      insertValues = values;
+      return { rows: [], rowCount: values[2].length };
+    }
+    if (text.includes('FROM player_match_suspensions pms')) return { rows: [] };
+    throw new Error(`Unexpected query: ${text}`);
+  };
+  const servicePath = require.resolve('../src/services/suspensionService');
+  delete require.cache[servicePath];
+  try {
+    const suspension = require(servicePath);
+    await suspension.getForMatch('match-2', 'tournament-1');
+
+    assert.ok(insertValues, 'derived decisions must be written');
+    assert.deepEqual(insertValues[2], ['p2', 'p3'], 'included red cards and sub-threshold yellows produce no decision');
+    assert.deepEqual(insertValues[4], ['match-1', 'match-1'], 'sources resolve to prior matches');
+    assert.deepEqual(insertValues[5], ['y-3', 'red-2'], 'yellow threshold counts only cards after the prior decision; second-yellow reds suppress yellow suspensions');
+    assert.deepEqual(insertValues[6], ['yellow_threshold', 'red_card']);
+    assert.deepEqual(insertValues[3], ['match-2', 'match-2']);
+    assert.deepEqual(insertValues[1], ['tournament-1', 'tournament-1']);
+
+    assert.equal(calls.filter((call) => call.text.includes('pp.id AS player_id')).length, 1);
+    assert.equal(calls.filter((call) => call.text.includes('FROM match_events')).length, 1);
+    assert.equal(calls.filter((call) => call.text.includes('SELECT DISTINCT ON (pms.participant_player_id)')).length, 1);
+    assert.equal(calls.filter((call) => call.text.includes('INSERT INTO player_match_suspensions')).length, 1, 'all decisions must be inserted in one statement');
   } finally {
     database.query = originalQuery;
     delete require.cache[servicePath];
@@ -811,6 +917,373 @@ test('tournament roster batch loads every team roster in a constant number of qu
     assert.deepEqual(response.reservedInviteCodesByTeam, { 'team-1': 2 });
   } finally {
     database.query = originalQuery;
+    delete require.cache[controllerPath];
+    if (originalAccessModule) require.cache[accessPath] = originalAccessModule;
+    else delete require.cache[accessPath];
+  }
+});
+
+test('tournament invite-code batch purges and loads every team in a constant number of queries', async () => {
+  const database = require('../src/db');
+  const originalWithTransaction = database.withTransaction;
+  const accessPath = require.resolve('../src/services/access');
+  const originalAccessModule = require.cache[accessPath];
+  const calls = [];
+  database.withTransaction = async (callback) => callback({
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes('DELETE FROM participant_player_invite_codes')) {
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.includes('SELECT id, participant_team_id, created_at, expires_at')) {
+        return {
+          rows: [
+            { id: 'code-1', participant_team_id: 'team-1', created_at: '2026-01-01', expires_at: '2026-01-08' },
+            { id: 'code-2', participant_team_id: 'team-1', created_at: '2026-01-02', expires_at: '2026-01-09' },
+            { id: 'code-3', participant_team_id: 'team-2', created_at: '2026-01-03', expires_at: '2026-01-10' },
+          ],
+        };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    },
+  });
+  require.cache[accessPath] = {
+    id: accessPath,
+    filename: accessPath,
+    loaded: true,
+    exports: { getTournamentOrThrow: async () => ({ id: 'tournament-1' }) },
+  };
+  const controllerPath = require.resolve('../src/controllers/catalogController');
+  delete require.cache[controllerPath];
+  try {
+    const controller = require(controllerPath);
+    let response;
+    let caughtError;
+    await controller.listTournamentPlayerInviteCodes(
+      { params: { tournamentId: 'tournament-1' }, user: { id: 'admin-1', role: 'admin' } },
+      { json: (body) => { response = body; } },
+      (error) => { caughtError = error; },
+    );
+    assert.equal(caughtError, undefined);
+    assert.equal(calls.length, 2, 'purge and live-code select must run once for the whole tournament');
+    assert.deepEqual(Object.keys(response.inviteCodesByTeam).sort(), ['team-1', 'team-2']);
+    assert.equal(response.inviteCodesByTeam['team-1'].length, 2);
+    assert.deepEqual(response.inviteCodesByTeam['team-2'][0], {
+      id: 'code-3',
+      createdAt: '2026-01-03',
+      expiresAt: '2026-01-10',
+    });
+  } finally {
+    database.withTransaction = originalWithTransaction;
+    delete require.cache[controllerPath];
+    if (originalAccessModule) require.cache[accessPath] = originalAccessModule;
+    else delete require.cache[accessPath];
+  }
+});
+
+test('votes list embeds every vote\'s nominees from a single batch query', async () => {
+  const database = require('../src/db');
+  const originalQuery = database.query;
+  const accessPath = require.resolve('../src/services/access');
+  const servicePath = require.resolve('../src/services/voteService');
+  const originalAccessModule = require.cache[accessPath];
+  const calls = [];
+  database.query = async (text, values = []) => {
+    calls.push({ text, values });
+    if (text.includes('SELECT * FROM tournaments')) return { rows: [{ id: 'tournament-1' }] };
+    if (text.includes('FROM vote v')) {
+      return {
+        rows: [
+          { id: 'vote-1', tournament_id: 'tournament-1', name: 'MVP', award: 'A', status: 'open' },
+          { id: 'vote-2', tournament_id: 'tournament-1', name: 'Best', award: 'B', status: 'open' },
+        ],
+      };
+    }
+    if (text.includes('FROM vote_nominees vn')) {
+      return {
+        rows: [
+          { vote_id: 'vote-1', nominee_id: 'player-1', votes: '3', player_name: 'Alice', selected_by_viewer: 1 },
+          { vote_id: 'vote-2', nominee_id: 'player-2', votes: '0', player_name: 'Bob', selected_by_viewer: 0 },
+        ],
+      };
+    }
+    throw new Error(`Unexpected query: ${text}`);
+  };
+  require.cache[accessPath] = {
+    id: accessPath,
+    filename: accessPath,
+    loaded: true,
+    exports: { requireTournamentInspect: async () => {} },
+  };
+  const controllerPath = require.resolve('../src/controllers/voteController');
+  delete require.cache[servicePath];
+  delete require.cache[controllerPath];
+  try {
+    const controller = require(controllerPath);
+    let response;
+    let caughtError;
+    await controller.listVotes(
+      { params: { tournamentId: 'tournament-1' }, user: { id: 'user-1' } },
+      { json: (body) => { response = body; } },
+      (error) => { caughtError = error; },
+    );
+    assert.equal(caughtError, undefined);
+    assert.equal(response.votes.length, 2);
+    assert.equal(response.votes[0].nominees[0].player.name, 'Alice');
+    assert.equal(response.votes[0].nominees[0].selectedByViewer, true);
+    assert.equal(response.votes[1].nominees[0].player.name, 'Bob');
+    assert.equal(
+      calls.filter((call) => call.text.includes('FROM vote_nominees vn')).length,
+      1,
+      'all nominees must be loaded in one query, not one per vote',
+    );
+  } finally {
+    database.query = originalQuery;
+    delete require.cache[servicePath];
+    delete require.cache[controllerPath];
+    if (originalAccessModule) require.cache[accessPath] = originalAccessModule;
+    else delete require.cache[accessPath];
+  }
+});
+
+test('tournament projection rebuild aggregates every projection with a constant number of queries', async () => {
+  const database = require('../src/db');
+  const originalWithTransaction = database.withTransaction;
+  const servicePath = require.resolve('../src/services/matchService');
+  const calls = [];
+  const matches = [
+    { id: 'match-1', stage_id: 'stage-1', home_participant_team_id: 'team-1', away_participant_team_id: 'team-2', type: 'league', settings: '{}' },
+    { id: 'match-2', stage_id: 'stage-1', home_participant_team_id: 'team-1', away_participant_team_id: 'team-3', type: 'league', settings: '{}' },
+  ];
+  const events = [
+    { match_id: 'match-1', type: 'goal', phase: 'regulation', team_id: 'team-1', player_id: 'p1', payload: '{}' },
+    { match_id: 'match-1', type: 'goal', phase: 'regulation', team_id: 'team-2', player_id: 'p2', payload: '{}' },
+    { match_id: 'match-1', type: 'card', phase: 'regulation', team_id: 'team-1', player_id: 'p1', card: 'yellow', payload: '{}' },
+    { match_id: 'match-2', type: 'goal', phase: 'regulation', team_id: 'team-1', player_id: 'p1', payload: '{}' },
+    { match_id: 'match-2', type: 'goal', phase: 'regulation', team_id: 'team-1', player_id: 'p1', payload: '{}' },
+    { match_id: 'match-2', type: 'card', phase: 'regulation', team_id: 'team-3', player_id: 'p3', card: 'red', payload: '{}' },
+  ];
+  const client = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes('FROM match_events me')) return { rows: events };
+      if (text.includes('FROM matches m JOIN stages s')) return { rows: matches };
+      return { rows: [], rowCount: 0 };
+    },
+  };
+  database.withTransaction = (callback) => callback(client);
+  delete require.cache[servicePath];
+  try {
+    const service = require(servicePath);
+    await service.rebuildTournamentProjections('tournament-1');
+
+    const bulkMatch = calls.find((call) => call.text.includes('UPDATE matches m') && call.text.includes('unnest'));
+    const bulkPlayers = calls.find((call) => call.text.includes('UPDATE participant_players pp') && call.text.includes('unnest'));
+    const bulkTeams = calls.find((call) => call.text.includes('UPDATE participant_teams pt') && call.text.includes('unnest'));
+
+    assert.deepEqual(bulkMatch.values[0], ['match-1', 'match-2']);
+    assert.deepEqual(bulkMatch.values[1], [1, 2], 'home goals per match');
+    assert.deepEqual(bulkMatch.values[2], [1, 0], 'away goals per match');
+
+    const playerIndex = Object.fromEntries(bulkPlayers.values[0].map((id, i) => [id, i]));
+    assert.equal(bulkPlayers.values[1][playerIndex.p1], 3, 'player goals aggregate across matches');
+    assert.equal(bulkPlayers.values[1][playerIndex.p2], 1);
+    assert.equal(bulkPlayers.values[3][playerIndex.p1], 1, 'yellow cards aggregate');
+    assert.equal(bulkPlayers.values[4][playerIndex.p3], 1, 'red cards aggregate');
+
+    const teamIndex = Object.fromEntries(bulkTeams.values[0].map((id, i) => [id, i]));
+    const at = (row, id) => bulkTeams.values[row][teamIndex[id]];
+    assert.equal(at(1, 'team-1'), 2, 'played');
+    assert.equal(at(2, 'team-1'), 1, 'won');
+    assert.equal(at(3, 'team-1'), 1, 'drawn');
+    assert.equal(at(4, 'team-1'), 0, 'lost');
+    assert.equal(at(5, 'team-1'), 3, 'goals for');
+    assert.equal(at(6, 'team-1'), 1, 'goals against');
+    assert.equal(at(7, 'team-1'), 4, 'points');
+    assert.equal(at(7, 'team-2'), 1, 'draw points');
+    assert.equal(at(7, 'team-3'), 0, 'loss points');
+    assert.equal(at(4, 'team-3'), 1, 'losses');
+
+    assert.equal(calls.filter((call) => call.text.includes('unnest')).length, 3, 'one bulk update each for matches, players, and teams');
+    assert.equal(calls.filter((call) => call.text.includes('match_events')).length, 1, 'all events load in one query');
+    assert.equal(calls.length, 7, 'total query count is constant regardless of matches, teams, players, or events');
+  } finally {
+    database.withTransaction = originalWithTransaction;
+    delete require.cache[servicePath];
+  }
+});
+
+test('impact confirmation counts every selected stage with a single grouped query', async () => {
+  const database = require('../src/db');
+  const originalQuery = database.query;
+  const accessPath = require.resolve('../src/services/access');
+  const originalAccessModule = require.cache[accessPath];
+  const calls = [];
+  database.query = async (text, values = []) => {
+    calls.push({ text, values });
+    if (text.includes('SELECT m.stage_id, m.revision')) return { rows: [{ stage_id: 'stage-1', revision: 1, sequence_order: 0 }] };
+    if (text.includes('SELECT id FROM stages')) return { rows: [{ id: 'stage-2' }, { id: 'stage-3' }] };
+    if (text.includes('COUNT(*) AS total')) {
+      return { rows: [{ stage_id: 'stage-2', total: '0', started: '0' }, { stage_id: 'stage-3', total: '0', started: '0' }] };
+    }
+    throw new Error(`Unexpected query: ${text}`);
+  };
+  require.cache[accessPath] = {
+    id: accessPath,
+    filename: accessPath,
+    loaded: true,
+    exports: { getTournamentOrThrow: async () => ({ id: 'tournament-1' }) },
+  };
+  const controllerPath = require.resolve('../src/controllers/refereeController');
+  delete require.cache[controllerPath];
+  try {
+    const controller = require(controllerPath);
+    let response;
+    let caughtError;
+    await controller.applyImpact(
+      {
+        params: { id: 'match-1', tournamentId: 'tournament-1' },
+        body: { revision: 1, stageIds: ['stage-2', 'stage-3'] },
+        user: { id: 'ref-1' },
+      },
+      { json: (body) => { response = body; } },
+      (error) => { caughtError = error; },
+    );
+    assert.equal(caughtError, undefined);
+    assert.deepEqual(response.results, [
+      { stageId: 'stage-2', action: 'none' },
+      { stageId: 'stage-3', action: 'none' },
+    ]);
+    assert.equal(
+      calls.filter((call) => call.text.includes('COUNT(*) AS total')).length,
+      1,
+      'selected stage states must be counted in one grouped query, not one per stage',
+    );
+    const countCall = calls.find((call) => call.text.includes('COUNT(*) AS total'));
+    assert.deepEqual(countCall.values[1], ['stage-2', 'stage-3']);
+  } finally {
+    database.query = originalQuery;
+    delete require.cache[controllerPath];
+    if (originalAccessModule) require.cache[accessPath] = originalAccessModule;
+    else delete require.cache[accessPath];
+  }
+});
+
+test('tournament update skips invite-code cleanup when registration settings are unchanged', async () => {
+  const database = require('../src/db');
+  const originalQuery = database.query;
+  const originalWithTransaction = database.withTransaction;
+  const accessPath = require.resolve('../src/services/access');
+  const originalAccessModule = require.cache[accessPath];
+  const calls = [];
+  const row = {
+    id: 'tournament-1', name: 'T', slug: 't', status: 'draft', visibility: 'public',
+    number_of_teams: 3, place: null, settings: '{}', revision: 0, created_by: 'admin-1',
+  };
+  const respond = async (text, values = []) => {
+    calls.push({ text, values });
+    if (text.startsWith('UPDATE tournaments')) return { rows: [], rowCount: 1 };
+    if (text === 'SELECT * FROM tournaments WHERE id = $1') return { rows: [row] };
+    throw new Error(`Unexpected query: ${text}`);
+  };
+  database.query = respond;
+  database.withTransaction = (callback) => callback({ query: respond });
+  require.cache[accessPath] = {
+    id: accessPath,
+    filename: accessPath,
+    loaded: true,
+    exports: {
+      getTournamentOrThrow: async () => row,
+      requireTournamentPermission: async () => {},
+    },
+  };
+  const controllerPath = require.resolve('../src/controllers/tournamentController');
+  delete require.cache[controllerPath];
+  try {
+    const controller = require(controllerPath);
+    let caughtError;
+    await controller.update(
+      { params: { tournamentId: 'tournament-1' }, body: { name: 'T2' }, user: { id: 'admin-1' } },
+      { json: () => {} },
+      (error) => { caughtError = error; },
+    );
+    assert.equal(caughtError, undefined);
+    assert.equal(
+      calls.filter((call) => call.text.includes('participant_player_invite_codes')).length,
+      0,
+      'an unrelated update must not touch invite codes',
+    );
+    assert.equal(calls.filter((call) => call.text.includes('FOR UPDATE')).length, 0, 'teams should not be locked when registration settings are unchanged');
+  } finally {
+    database.query = originalQuery;
+    database.withTransaction = originalWithTransaction;
+    delete require.cache[controllerPath];
+    if (originalAccessModule) require.cache[accessPath] = originalAccessModule;
+    else delete require.cache[accessPath];
+  }
+});
+
+test('tournament update reconciles invite codes with set-based queries when registration settings change', async () => {
+  const database = require('../src/db');
+  const originalQuery = database.query;
+  const originalWithTransaction = database.withTransaction;
+  const accessPath = require.resolve('../src/services/access');
+  const originalAccessModule = require.cache[accessPath];
+  const calls = [];
+  const row = {
+    id: 'tournament-1', name: 'T', slug: 't', status: 'draft', visibility: 'public',
+    number_of_teams: 3, place: null, settings: '{}', revision: 0, created_by: 'admin-1',
+  };
+  const respond = async (text, values = []) => {
+    calls.push({ text, values });
+    if (text.startsWith('UPDATE tournaments')) return { rows: [], rowCount: 1 };
+    if (text === 'SELECT * FROM tournaments WHERE id = $1') return { rows: [row] };
+    if (text.includes('SELECT id FROM participant_teams') && text.includes('FOR UPDATE')) {
+      return { rows: [{ id: 'team-1' }, { id: 'team-2' }] };
+    }
+    if (text.startsWith('DELETE FROM participant_player_invite_codes')) return { rows: [], rowCount: 0 };
+    if (text.startsWith('WITH team_slots')) return { rows: [], rowCount: 0 };
+    throw new Error(`Unexpected query: ${text}`);
+  };
+  database.query = respond;
+  database.withTransaction = (callback) => callback({ query: respond });
+  require.cache[accessPath] = {
+    id: accessPath,
+    filename: accessPath,
+    loaded: true,
+    exports: {
+      getTournamentOrThrow: async () => row,
+      requireTournamentPermission: async () => {},
+    },
+  };
+  const controllerPath = require.resolve('../src/controllers/tournamentController');
+  delete require.cache[controllerPath];
+  try {
+    const controller = require(controllerPath);
+    let caughtError;
+    await controller.update(
+      {
+        params: { tournamentId: 'tournament-1' },
+        body: { settings: { playerRegistrationMode: 'invite_code' } },
+        user: { id: 'admin-1' },
+      },
+      { json: () => {} },
+      (error) => { caughtError = error; },
+    );
+    assert.equal(caughtError, undefined);
+    assert.equal(
+      calls.filter((call) => call.text.includes('participant_team_id = $1')).length,
+      0,
+      'cleanup must not run one query per team',
+    );
+    assert.equal(
+      calls.filter((call) => call.text.startsWith('WITH team_slots')).length,
+      1,
+      'excess invite codes must be pruned with a single set-based delete',
+    );
+  } finally {
+    database.query = originalQuery;
+    database.withTransaction = originalWithTransaction;
     delete require.cache[controllerPath];
     if (originalAccessModule) require.cache[accessPath] = originalAccessModule;
     else delete require.cache[accessPath];

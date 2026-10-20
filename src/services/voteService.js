@@ -101,6 +101,24 @@ async function listNominees(voteId, tournamentId, userId = null) {
   );
 }
 
+// Every nominee for every vote in the tournament, in one query. Returned rows
+// keep vote_id so callers can group them, which lets the votes list include all
+// ballots without issuing one nominees request per vote.
+async function listNomineesByTournament(tournamentId, userId = null) {
+  return many(
+    `SELECT vn.vote_id, vn.nominee_id, vn.votes, pp.participant_team_id,
+            pp.name AS player_name, pp.position AS player_position,
+            CASE WHEN b.user_id IS NULL THEN 0 ELSE 1 END AS selected_by_viewer
+     FROM vote_nominees vn
+     JOIN vote v ON v.id = vn.vote_id AND v.tournament_id = $1
+     JOIN participant_players pp ON pp.id = vn.nominee_id
+     LEFT JOIN vote_ballots b ON b.vote_id = vn.vote_id
+       AND b.nominee_id = vn.nominee_id AND b.user_id = $2
+     ORDER BY vn.vote_id, vn.votes DESC, pp.name COLLATE "C"`,
+    [tournamentId, userId],
+  );
+}
+
 async function addNominee({ voteId, tournamentId, nomineeId }) {
   const [vote, player] = await Promise.all([
     getVoteById(voteId, tournamentId),
@@ -167,5 +185,5 @@ async function castVote({ voteId, tournamentId, nomineeId, userId }) {
 
 module.exports = {
   getVoteById, listVotesByTournament, createVote, updateVote, finishVote, deleteVote,
-  listNominees, addNominee, removeNominee, castVote,
+  listNominees, listNomineesByTournament, addNominee, removeNominee, castVote,
 };

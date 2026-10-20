@@ -142,53 +142,15 @@ function bucketSort(teams, key) {
   });
 }
 
-async function rankGroupTeams(groupId, tiebreakers) {
-  const [teamResult, matchesResult] = await Promise.all([
-    query(
-       `SELECT pt.*,
-            COALESCE(cards.yellows, 0) AS yellow_cards,
-            COALESCE(cards.reds, 0) AS red_cards
-        FROM participant_teams pt
-        LEFT JOIN LATERAL (
-       SELECT SUM(pp.yellow_cards) AS yellows, SUM(pp.red_cards) AS reds
-       FROM participant_players pp
-       WHERE pp.participant_team_id = pt.id
-        ) cards ON TRUE
-        WHERE pt.tournament_id = (
-         SELECT s.tournament_id
-         FROM groups g
-           JOIN stages s ON s.id = g.stage_id
-           WHERE g.id = $1
-         )
-         AND (
-           pt.group_id = $1
-           OR EXISTS (
-             SELECT 1 FROM matches m
-             WHERE m.group_id = $1
-               AND (m.home_participant_team_id = pt.id OR m.away_participant_team_id = pt.id)
-           )
-         )`,
-      [groupId],
-    ),
-    tiebreakers.some((tiebreaker) => tiebreaker.type === 'head_to_head')
-      ? query(
-        `SELECT home_participant_team_id AS home, away_participant_team_id AS away,
-                home_score, away_score
-         FROM matches WHERE group_id = $1 AND status = 'finished'`,
-        [groupId],
-      )
-      : Promise.resolve({ rows: [] }),
-  ]);
-  const teams = teamResult.rows;
+function rankTeams(teams, finishedMatches, tiebreakers) {
   if (!teams.length) return teams;
-  const finishedMatches = matchesResult.rows;
   teams.forEach((t) => {
     t.yellow_cards = Number(t.yellow_cards || 0);
     t.red_cards = Number(t.red_cards || 0);
     t.goal_difference = (t.goals_for || 0) - (t.goals_against || 0);
   });
   const ordered = [...tiebreakers].sort((a, b) => a.priority - b.priority);
-  async function resolve(bucket, index) {
+  function resolve(bucket, index) {
     if (bucket.length <= 1) return bucket;
     if (index >= ordered.length)
       return [...bucket].sort((a, b) => a.id.localeCompare(b.id));
@@ -247,7 +209,7 @@ async function rankGroupTeams(groupId, tiebreakers) {
     if (current.length) groups.push(current);
     const result = [];
     for (const group of groups)
-      result.push(...(await resolve(group, index + 1)));
+      result.push(...resolve(group, index + 1));
     return result;
   }
   return resolve(teams, 0);
@@ -362,14 +324,59 @@ const getStanding = asyncHandler(async (req, res) => {
   const tiebreakers = stage && parseJson(stage.settings).tiebreakers;
   if (!Array.isArray(tiebreakers) || !groups.length)
     throw httpError(404, 'stage is not found');
-  const rankedGroups = [];
-  for (let index = 0; index < groups.length; index += 3) {
-    const batch = await Promise.all(groups.slice(index, index + 3).map(async (group) => ({
-      groupId: group.id,
-      order: (await rankGroupTeams(group.id, tiebreakers)).map((t) => t.id),
-    })));
-    rankedGroups.push(...batch);
+  const wantsHeadToHead = tiebreakers.some((tiebreaker) => tiebreaker.type === 'head_to_head');
+  const [teamsResult, matchesResult] = await Promise.all([
+    query(
+      `SELECT g.id AS ranking_group_id, pt.*,
+            COALESCE(cards.yellows, 0) AS yellow_cards,
+            COALESCE(cards.reds, 0) AS red_cards
+        FROM groups g
+        JOIN stages s ON s.id = g.stage_id
+        JOIN participant_teams pt ON pt.tournament_id = s.tournament_id
+          AND (
+            pt.group_id = g.id
+            OR EXISTS (
+              SELECT 1 FROM matches m
+              WHERE m.group_id = g.id
+                AND (m.home_participant_team_id = pt.id OR m.away_participant_team_id = pt.id)
+            )
+          )
+        LEFT JOIN LATERAL (
+       SELECT SUM(pp.yellow_cards) AS yellows, SUM(pp.red_cards) AS reds
+       FROM participant_players pp
+       WHERE pp.participant_team_id = pt.id
+        ) cards ON TRUE
+        WHERE g.stage_id = $1`,
+      [stageId],
+    ),
+    wantsHeadToHead
+      ? query(
+        `SELECT m.group_id, m.home_participant_team_id AS home, m.away_participant_team_id AS away,
+                m.home_score, m.away_score
+         FROM matches m JOIN groups g ON g.id = m.group_id
+         WHERE g.stage_id = $1 AND m.status = 'finished'`,
+        [stageId],
+      )
+      : Promise.resolve({ rows: [] }),
+  ]);
+  const teamsByGroup = new Map();
+  for (const row of teamsResult.rows) {
+    if (!teamsByGroup.has(row.ranking_group_id)) teamsByGroup.set(row.ranking_group_id, []);
+    teamsByGroup.get(row.ranking_group_id).push(row);
   }
+  const matchesByGroup = new Map();
+  for (const match of matchesResult.rows) {
+    if (!matchesByGroup.has(match.group_id)) matchesByGroup.set(match.group_id, []);
+    matchesByGroup.get(match.group_id).push(match);
+  }
+  const rankedGroups = groups.map((group) => ({
+    groupId: group.id,
+    order: rankTeams(
+      teamsByGroup.get(group.id) || [],
+      matchesByGroup.get(group.id) || [],
+      tiebreakers,
+    ).map((t) => t.id),
+  }));
   res.json({ stageId, groups: rankedGroups });
 });
 const getStage = asyncHandler(async (req, res) => {
@@ -425,12 +432,11 @@ const update = asyncHandler(async (req, res) => {
     number_of_teams: body.numberOfTeams ?? row.number_of_teams,
     place: body.place === undefined ? row.place : body.place,
   };
+  const registrationChanged =
+    settings.playerRegistrationMode !== currentSettings.playerRegistrationMode ||
+    settings.maxPlayersPerTeam !== currentSettings.maxPlayersPerTeam;
   await withTransaction(async (client) => {
-    const teams = await client.query(
-      'SELECT id FROM participant_teams WHERE tournament_id = $1 ORDER BY id FOR UPDATE',
-      [row.id],
-    );
-    await client.query(
+    const saveTournament = () => client.query(
       'UPDATE tournaments SET name=$1,status=$2,visibility=$3,number_of_teams=$4,place=$5,settings=$6,updated_at=$7 WHERE id=$8',
       [
         next.name,
@@ -443,41 +449,58 @@ const update = asyncHandler(async (req, res) => {
         row.id,
       ],
     );
-    for (const team of teams.rows) {
+    // Invite-code reconciliation only depends on registration settings. Lock
+    // the teams and reconcile codes only when those settings changed; otherwise
+    // skip the per-team cleanup fan-out entirely.
+    if (!registrationChanged) {
+      await saveTournament();
+      return;
+    }
+    await client.query(
+      'SELECT id FROM participant_teams WHERE tournament_id = $1 ORDER BY id FOR UPDATE',
+      [row.id],
+    );
+    await saveTournament();
+    await client.query(
+      `DELETE FROM participant_player_invite_codes
+       WHERE expires_at <= NOW()
+         AND participant_team_id IN (SELECT id FROM participant_teams WHERE tournament_id = $1)`,
+      [row.id],
+    );
+    if (settings.playerRegistrationMode === 'direct') {
       await client.query(
         `DELETE FROM participant_player_invite_codes
-         WHERE participant_team_id = $1 AND expires_at <= NOW()`,
-        [team.id],
+         WHERE participant_team_id IN (SELECT id FROM participant_teams WHERE tournament_id = $1)`,
+        [row.id],
       );
-      if (settings.playerRegistrationMode === 'direct') {
-        await client.query(
-          'DELETE FROM participant_player_invite_codes WHERE participant_team_id = $1',
-          [team.id],
-        );
-        continue;
-      }
-      const roster = await client.query(
-        'SELECT COUNT(*) AS count FROM participant_players WHERE participant_team_id = $1',
-        [team.id],
-      );
-      const activeCodes = await client.query(
-        `SELECT id FROM participant_player_invite_codes
-         WHERE participant_team_id = $1 AND expires_at > NOW()
-         ORDER BY created_at DESC`,
-        [team.id],
-      );
-      const remainingSlots = Math.max(
-        0,
-        validatedPlayerCap(settings.maxPlayersPerTeam) - Number(roster.rows[0].count),
-      );
-      const excessCodeIds = activeCodes.rows.slice(remainingSlots).map((code) => code.id);
-      if (excessCodeIds.length) {
-        await client.query(
-          'DELETE FROM participant_player_invite_codes WHERE id = ANY($1::text[])',
-          [excessCodeIds],
-        );
-      }
+      return;
     }
+    // Keep at most (capacity - current roster size) active codes per team,
+    // newest first, in a single set-based delete.
+    await client.query(
+      `WITH team_slots AS (
+         SELECT pt.id AS team_id,
+                GREATEST(0, $2 - COALESCE(pc.cnt, 0)) AS remaining
+         FROM participant_teams pt
+         LEFT JOIN (
+           SELECT participant_team_id, COUNT(*) AS cnt
+           FROM participant_players
+           GROUP BY participant_team_id
+         ) pc ON pc.participant_team_id = pt.id
+         WHERE pt.tournament_id = $1
+       ),
+       ranked AS (
+         SELECT ic.id,
+                ROW_NUMBER() OVER (PARTITION BY ic.participant_team_id ORDER BY ic.created_at DESC) AS rn,
+                ts.remaining
+         FROM participant_player_invite_codes ic
+         JOIN team_slots ts ON ts.team_id = ic.participant_team_id
+         WHERE ic.expires_at > NOW()
+       )
+       DELETE FROM participant_player_invite_codes
+       WHERE id IN (SELECT id FROM ranked WHERE rn > remaining)`,
+      [row.id, validatedPlayerCap(settings.maxPlayersPerTeam)],
+    );
   });
   const updated = (
     await query('SELECT * FROM tournaments WHERE id = $1', [row.id])
