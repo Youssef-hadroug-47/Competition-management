@@ -4,3 +4,4 @@ data/
 *.zip
 .DS_Store
 addings.md
+mail-test.sh

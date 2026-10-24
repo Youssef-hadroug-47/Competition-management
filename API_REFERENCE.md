@@ -24,6 +24,19 @@ Unless noted, all bodies are JSON. Fields marked *(optional)* fall back to the e
 
 ---
 
+## Mail
+
+### `POST /mail/test` — Auth + admin
+Sends a test message through the configured SMTP service.
+**Body**
+```json
+{ "to": "recipient@example.com (optional, defaults to the signed-in admin's email)" }
+```
+**Response `200`**: `{ "ok": true, "to": "recipient@example.com", "messageId": "..." }`
+**Errors**: `400` invalid recipient, `502` mail service rejected or unreachable, `503` email delivery is not configured.
+
+---
+
 ## Auth
 
 ### `POST /auth/register` — Public

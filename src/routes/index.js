@@ -7,6 +7,7 @@ const matches = require('../controllers/matchController');
 const simulation = require('../controllers/simulationController');
 const votes = require('../controllers/voteController');
 const referee = require('../controllers/refereeController');
+const mail = require('../controllers/mailController');
 
 const router = express.Router();
 
@@ -23,6 +24,7 @@ router.post('/oauth/google/exchange', auth.exchangeGoogleCode);
 router.get('/auth/me', requireAuth, auth.me);
 router.get('/users', requireAuth, requireRole('admin'), auth.listUsers);
 router.patch('/users/:id/role', requireAuth, requireRole('admin'), auth.updateRole);
+router.post('/mail/test', requireAuth, requireRole('admin'), mail.sendTestEmail);
 
 router.get('/tournaments/followed', requireAuth, matches.listFollowedTournaments);
 router.get('/tournaments/mine', requireAuth, tournaments.listMine);

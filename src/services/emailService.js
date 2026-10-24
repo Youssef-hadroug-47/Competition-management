@@ -47,4 +47,15 @@ async function sendVerificationEmail(user, token) {
   });
 }
 
-module.exports = { sendVerificationEmail };
+async function sendTestEmail(to) {
+  const sentAt = new Date().toISOString();
+  return getTransporter().sendMail({
+    from: config.smtpFrom,
+    to,
+    subject: 'Tournly mail service test',
+    text: `This is a test email from the Tournly API sent at ${sentAt}.\n\nIf you received it, the mail service is configured correctly.`,
+    html: `<p>This is a test email from the Tournly API sent at ${escapeHtml(sentAt)}.</p><p>If you received it, the mail service is configured correctly.</p>`,
+  });
+}
+
+module.exports = { sendVerificationEmail, sendTestEmail };
