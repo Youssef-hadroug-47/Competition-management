@@ -999,6 +999,36 @@
           }
         });
         management.append(el('div', { class: 'vote-card__nominee-editor' }, [select, add]));
+        const teamsWithAvailablePlayers = state.participantTeams
+          .map((team) => ({
+            team,
+            available: candidates.filter((candidate) => (
+              candidate.participantTeamId === team.id && !existing.has(candidate.id)
+            )),
+          }))
+          .filter(({ available }) => available.length);
+        if (teamsWithAvailablePlayers.length) {
+          const teamSelect = el('select', { class: 'vote-card__candidate', 'aria-label': 'Choose a team to add all players' }, [
+            el('option', { value: '', text: 'Choose a team to add all its players' }),
+            ...teamsWithAvailablePlayers.map(({ team, available }) => el('option', {
+              value: team.id,
+              text: `${team.team?.name || team.nickname || 'Team'} · ${available.length} player${available.length === 1 ? '' : 's'}`,
+            })),
+          ]);
+          const addTeam = el('button', { class: 'btn btn--ghost', type: 'button', text: 'Add team players' });
+          addTeam.addEventListener('click', async () => {
+            if (!teamSelect.value) return;
+            addTeam.disabled = true;
+            try {
+              await Api.nominees.addTeam(state.tournamentId, vote.id, teamSelect.value);
+              await refresh();
+            } catch (err) {
+              addTeam.disabled = false;
+              showBanner(banner, friendlyErrorMessage(err));
+            }
+          });
+          management.append(el('div', { class: 'vote-card__nominee-editor' }, [teamSelect, addTeam]));
+        }
         if (nominees.length) {
           management.appendChild(el('div', { class: 'vote-card__nominee-removals' }, nominees.map((nominee) => {
             const remove = el('button', { class: 'btn btn--ghost', type: 'button', text: `Remove ${voteNomineeLabel(nominee)}` });

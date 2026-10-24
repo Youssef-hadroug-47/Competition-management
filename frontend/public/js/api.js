@@ -365,6 +365,8 @@ const Api = {
       request('GET', `/tournaments/${enc(tournamentId)}/votes/${enc(voteId)}/nominees`),
     add: (tournamentId, voteId, nomineeId) =>
       request('POST', `/tournaments/${enc(tournamentId)}/votes/${enc(voteId)}/nominees`, { body: { nomineeId } }),
+    addTeam: (tournamentId, voteId, teamId) =>
+      request('POST', `/tournaments/${enc(tournamentId)}/votes/${enc(voteId)}/nominees/team`, { body: { teamId } }),
     castVote: (tournamentId, voteId, nomineeId) =>
       request('POST', `/tournaments/${enc(tournamentId)}/votes/${enc(voteId)}/nominees/${enc(nomineeId)}`, { body: {} }),
     remove: (tournamentId, voteId, nomineeId) =>

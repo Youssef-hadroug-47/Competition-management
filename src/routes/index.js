@@ -135,6 +135,7 @@ router.delete('/tournaments/:tournamentId/votes/:id', requireAuth, requireTourna
 
 router.get('/tournaments/:tournamentId/votes/:voteId/nominees', authOptional, votes.listNominees);
 router.post('/tournaments/:tournamentId/votes/:voteId/nominees', requireAuth, requireTournamentModerator, votes.addNominee);
+router.post('/tournaments/:tournamentId/votes/:voteId/nominees/team', requireAuth, requireTournamentModerator, votes.addTeamNominees);
 router.post('/tournaments/:tournamentId/votes/:voteId/nominees/:nomineeId', requireAuth, votes.castVote);
 router.delete('/tournaments/:tournamentId/votes/:voteId/nominees/:nomineeId', requireAuth, requireTournamentModerator, votes.removeNominee);
 

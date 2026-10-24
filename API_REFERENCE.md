@@ -625,6 +625,15 @@ Creates (or returns existing) follow record. Status is auto-`accepted` for publi
 **Response `201`**: nominee object
 **Errors**: `400` missing nomineeId.
 
+### `POST /tournaments/:tournamentId/votes/:voteId/nominees/team` — Auth + tournament role `moderator`
+Adds every player of one team to the vote in a single query, skipping players already nominated.
+**Body**
+```json
+{ "teamId": "string (required)" }
+```
+**Response `201`**: `{ "nominees": [ ...nominee objects ] }`
+**Errors**: `400` missing teamId or team has no players, `404` vote or team not found, `409` vote finished.
+
 ### `POST /tournaments/:tournamentId/votes/:voteId/nominees/:nomineeId` — Auth (any authenticated user, no role required)
 Casts a vote for a nominee.
 **Body**

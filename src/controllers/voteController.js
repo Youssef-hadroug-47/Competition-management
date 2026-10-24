@@ -89,6 +89,57 @@ const addNominee = asyncHandler(async (req, res) => {
   })) });
 });
 
+const addTeamNominees = asyncHandler(async (req, res) => {
+  const { teamId } = req.body || {};
+  if (!teamId) throw httpError(400, 'teamId is required');
+  const result = await query(
+    `WITH vote_target AS (
+       SELECT id, status FROM vote WHERE id = $1 AND tournament_id = $2
+     ),
+     team_target AS (
+       SELECT id FROM participant_teams WHERE id = $3 AND tournament_id = $2
+     ),
+     eligible AS (
+       SELECT vote_target.id AS vote_id
+       FROM vote_target, team_target
+       WHERE vote_target.status = 'open'
+     ),
+     inserted AS (
+       INSERT INTO vote_nominees (vote_id, nominee_id, votes)
+       SELECT eligible.vote_id, pp.id, 0
+       FROM eligible
+       JOIN team_target ON TRUE
+       JOIN participant_players pp ON pp.participant_team_id = team_target.id
+       ON CONFLICT (vote_id, nominee_id) DO NOTHING
+       RETURNING vote_id, nominee_id, votes
+     )
+     SELECT
+       (SELECT status FROM vote_target) AS vote_status,
+       (SELECT id FROM team_target) AS team_id,
+       (SELECT COUNT(*) FROM participant_players pp WHERE pp.participant_team_id = $3) AS team_player_count,
+       COALESCE(
+         (SELECT json_agg(json_build_object(
+             'vote_id', inserted.vote_id,
+             'nominee_id', inserted.nominee_id,
+             'votes', inserted.votes,
+             'participant_team_id', pp.participant_team_id,
+             'player_name', pp.name,
+             'player_position', pp.position
+           ) ORDER BY pp.name COLLATE "C")
+          FROM inserted
+          JOIN participant_players pp ON pp.id = inserted.nominee_id),
+         '[]'::json
+       ) AS nominees`,
+    [req.params.voteId, req.params.tournamentId, teamId],
+  );
+  const row = result.rows[0];
+  if (!row?.vote_status) throw httpError(404, 'Vote not found');
+  if (row.vote_status !== 'open') throw httpError(409, 'This vote is finished.');
+  if (!row.team_id) throw httpError(404, 'Participant team not found');
+  if (!Number(row.team_player_count)) throw httpError(400, 'This team has no registered players.');
+  res.status(201).json({ nominees: (row.nominees || []).map(mappers.voteNominee) });
+});
+
 const castVote = asyncHandler(async (req, res) => {
   const row = await tournament(req);
   if (!req.user?.id) throw httpError(401, 'Authentication required');
@@ -117,6 +168,7 @@ module.exports = {
   deleteVote,
   listNominees,
   addNominee,
+  addTeamNominees,
   castVote,
   removeNominee,
 };

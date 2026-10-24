@@ -1289,3 +1289,69 @@ test('tournament update reconciles invite codes with set-based queries when regi
     else delete require.cache[accessPath];
   }
 });
+
+test('adding every player of a team to a vote uses a single query and maps the nominees', async () => {
+  const database = require('../src/db');
+  const originalQuery = database.query;
+  const controllerPath = require.resolve('../src/controllers/voteController');
+  const calls = [];
+  const inserted = [
+    { vote_id: 'vote-1', nominee_id: 'p1', votes: 0, participant_team_id: 'team-1', player_name: 'Alice', player_position: 'FW' },
+    { vote_id: 'vote-1', nominee_id: 'p2', votes: 0, participant_team_id: 'team-1', player_name: 'Bob', player_position: 'MF' },
+  ];
+  database.query = async (text, values = []) => {
+    calls.push({ text, values });
+    return { rows: [{ vote_status: 'open', team_id: 'team-1', team_player_count: '2', nominees: inserted }] };
+  };
+  delete require.cache[controllerPath];
+  try {
+    const controller = require(controllerPath);
+    let response;
+    let status;
+    let caughtError;
+    await controller.addTeamNominees(
+      { params: { tournamentId: 'tournament-1', voteId: 'vote-1' }, body: { teamId: 'team-1' } },
+      { status(code) { status = code; return this; }, json(body) { response = body; } },
+      (error) => { caughtError = error; },
+    );
+    assert.equal(caughtError, undefined);
+    assert.equal(status, 201);
+    assert.equal(calls.length, 1, 'adding a whole team roster must be one query, not one per player');
+    assert.deepEqual(calls[0].values, ['vote-1', 'tournament-1', 'team-1']);
+    assert.deepEqual(response.nominees, [
+      { voteId: 'vote-1', nomineeId: 'p1', participantTeamId: 'team-1', player: { name: 'Alice', position: 'FW' }, votes: 0, selectedByViewer: false },
+      { voteId: 'vote-1', nomineeId: 'p2', participantTeamId: 'team-1', player: { name: 'Bob', position: 'MF' }, votes: 0, selectedByViewer: false },
+    ]);
+  } finally {
+    database.query = originalQuery;
+    delete require.cache[controllerPath];
+  }
+});
+
+test('adding a team to a vote reports missing votes, finished votes, missing teams, and empty rosters', async () => {
+  const database = require('../src/db');
+  const originalQuery = database.query;
+  const controllerPath = require.resolve('../src/controllers/voteController');
+  const run = async (rows, body = { teamId: 'team-1' }) => {
+    database.query = async () => ({ rows });
+    delete require.cache[controllerPath];
+    const controller = require(controllerPath);
+    let caughtError;
+    await controller.addTeamNominees(
+      { params: { tournamentId: 'tournament-1', voteId: 'vote-1' }, body },
+      { status() { return this; }, json() {} },
+      (error) => { caughtError = error; },
+    );
+    return caughtError;
+  };
+  try {
+    assert.equal((await run([{ vote_status: null }])).status, 404);
+    assert.equal((await run([{ vote_status: 'finished', team_id: 'team-1', team_player_count: '2' }])).status, 409);
+    assert.equal((await run([{ vote_status: 'open', team_id: null, team_player_count: '0' }])).status, 404);
+    assert.equal((await run([{ vote_status: 'open', team_id: 'team-1', team_player_count: '0' }])).status, 400);
+    assert.equal((await run([], {})).status, 400);
+  } finally {
+    database.query = originalQuery;
+    delete require.cache[controllerPath];
+  }
+});
