@@ -40,7 +40,18 @@ No session is created until verification.
 ### `POST /auth/resend-verification` — Public
 **Body**: `{ "email": "string" }`
 **Response `202`**: generic troubleshooting guidance whether or not an unverified account exists, to avoid disclosing account state. Resends are limited to one per email address per minute.
-**Errors**: `400` invalid email, `503` delivery/configuration guidance when email sending fails.
+**Errors**: `400` invalid email, `429` cooldown still active (`details.code = "VERIFICATION_COOLDOWN"`, `details.retryAfterSeconds`, plus a `Retry-After` header), `503` delivery/configuration guidance when email sending fails (`details.code = "EMAIL_DELIVERY_FAILED"`).
+
+### `POST /auth/forgot-password` — Public
+**Body**: `{ "email": "string" }`
+**Response `202`**: always the same generic guidance (`"If an account exists for that address, a password reset link has been sent…"`), whether or not the account exists, is cooling down, or email delivery failed — this prevents account enumeration. Tokens are single-use, expire after 30 minutes, and are replaced by each new request.
+**Errors**: `400` invalid email format only; delivery failures are logged server-side and never exposed.
+
+### `POST /auth/reset-password` — Public
+**Body**: `{ "token": "one-time token from the reset email", "password": "at least 8 characters (max 72 bytes)" }`
+**Response `200`**: `{ "message": "Password updated. Sign in with your new password." }`
+A successful reset consumes the token, verifies the email address, and revokes every existing session by incrementing `users.token_version`.
+**Errors**: `400` invalid/expired/used token (`details.code = "INVALID_RESET_TOKEN"`), invalid password (`details.code = "INVALID_PASSWORD"`).
 
 ### `POST /auth/login` — Public
 **Body**
@@ -48,7 +59,7 @@ No session is created until verification.
 { "email": "string (required)", "password": "string (required)" }
 ```
 **Response `200`**: `{ "user": { "id", "email", "name", "role", "emailVerified", "createdAt" }, "token": "JWT (7d expiry)" }`
-**Errors**: `400` missing fields, `401` invalid credentials, `403` email not verified.
+**Errors**: `400` missing fields, `401` invalid credentials, `403` email not verified (`details.code = "EMAIL_NOT_VERIFIED"`). Tokens embed the account's `token_version`; completing a password reset invalidates all previously issued tokens.
 
 ### Google OAuth — Better Auth
 The login and registration pages submit a top-level form to

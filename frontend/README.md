@@ -46,10 +46,12 @@ the static server is still running — refresh the browser afterwards.
 | `public/tournament.html` | One tournament — info, role-protected draw control (including optional balanced pots for equally sized league groups), match-information menus with moderator monitoring, voting, standings/bracket (stage-scoped toggle), top scorers/assisters, registered teams/rosters, private-tournament follower moderation, and creator-only staff management. Reachable from every tournament row/card on the site. |
 | `public/join-team.html` | Redeem a player invite code without opening a tournament page first, including for private tournaments. The invite section is omitted when all invite-enabled teams are full; sign-in is required to redeem, and a successful redemption creates the player and consumes the code. |
 | `public/create-tournament.html` | Authenticated two-phase tournament builder. Collects general information (including the roster cap and player-registration mode), then uses a stage navigator with balanced team-count presets, league points, responsive group cards, direct advancement defaults for ranks 1–2, optional best-ranking places and knockout rounds before submitting through the existing API helpers. |
-| `public/login.html` | Sign in with an email/password or Google OAuth. |
-| `public/register.html` | Create an email/password account or use Google OAuth; password signup waits for email verification and provides a resend action. |
+| `public/login.html` | Sign in with an email/password or Google OAuth. Offers a fresh verification email after a correct password reveals an unverified account. |
+| `public/register.html` | Create an email/password account or use Google OAuth; password signup waits for email verification. |
 | `public/oauth-callback.html` | Completes Better Auth Google OAuth, exchanges the cookie session for the API JWT, then redirects to a validated same-origin destination. |
 | `public/verify-email.html` | Confirm the one-time email verification token and continue to sign in. |
+| `public/forgot-password.html` | Request a password-reset email; always shows the same generic confirmation. |
+| `public/reset-password.html` | Read the one-time token from the URL fragment and set a new password. |
 
 ## Tournament detail page (`tournament.html?id=<tournamentId>`)
 
@@ -176,8 +178,9 @@ guessing at visibility itself.
   for anything that touches API or user data)
 - `public/js/header.js` — the shared topbar/profile-menu, used by every
   page so the auth-state UI only exists in one place
-- `public/js/home.js`, `login.js`, `register.js`, `tournament.js` — one
-  controller per page
+- `public/js/home.js`, `login.js`, `register.js`, `verify-email.js`,
+  `forgot-password.js`, `reset-password.js`, `tournament.js` — one controller
+  per page
 
 ## Security decisions, and their limits
 

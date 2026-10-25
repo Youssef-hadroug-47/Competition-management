@@ -32,6 +32,14 @@
       "dest": "/register.html"
     },
     {
+      "src": "/forgot-password",
+      "dest": "/forgot-password.html"
+    },
+    {
+      "src": "/reset-password",
+      "dest": "/reset-password.html"
+    },
+    {
       "src": "/create-tournament",
       "dest": "/create-tournament.html"
     },
@@ -46,14 +54,6 @@
     {
       "src": "/(.*)",
       "dest": "/$1"
-    },
-    {
-      "src": "/forgot-password",
-      "dest": "/forgot-password.html"
-    },
-    {
-      "src": "/reset-password",
-      "dest": "/reset-password.html"
     }
   ]
 }
