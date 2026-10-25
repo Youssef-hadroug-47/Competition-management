@@ -47,6 +47,34 @@ async function sendVerificationEmail(user, token) {
   });
 }
 
+function passwordResetUrl(token) {
+  const url = new URL('/reset-password', `${config.publicAppUrl}/`);
+  url.hash = `token=${encodeURIComponent(token)}`;
+  return url.toString();
+}
+
+async function sendPasswordResetEmail(user, token) {
+  const resetUrl = passwordResetUrl(token);
+  await getTransporter().sendMail({
+    from: config.smtpFrom,
+    to: user.email,
+    subject: 'Reset your Tournly password',
+    text: `Hi ${user.name},\n\nWe received a request to reset your Tournly password. Visit this link to choose a new password:\n${resetUrl}\n\nThis link expires in 30 minutes and can be used once. If you did not request this, you can ignore this email — your password will not change.`,
+    html: `<p>Hi ${escapeHtml(user.name)},</p><p>We received a request to reset your Tournly password. Click the link below to choose a new password.</p><p><a href="${escapeHtml(resetUrl)}">Reset my password</a></p><p>This link expires in 30 minutes and can be used once. If you did not request this, you can ignore this email — your password will not change.</p>`,
+  });
+}
+
+async function sendPasswordChangedEmail(user) {
+  const signInUrl = new URL('/login', `${config.publicAppUrl}/`).toString();
+  await getTransporter().sendMail({
+    from: config.smtpFrom,
+    to: user.email,
+    subject: 'Your Tournly password was changed',
+    text: `Hi ${user.name},\n\nYour Tournly password was just changed. If this was you, no further action is needed.\n\nIf you did not make this change, reset your password immediately:\n${signInUrl}\n`,
+    html: `<p>Hi ${escapeHtml(user.name)},</p><p>Your Tournly password was just changed. If this was you, no further action is needed.</p><p>If you did not make this change, <a href="${escapeHtml(signInUrl)}">reset your password</a> immediately.</p>`,
+  });
+}
+
 async function sendTestEmail(to) {
   const sentAt = new Date().toISOString();
   return getTransporter().sendMail({
@@ -58,4 +86,9 @@ async function sendTestEmail(to) {
   });
 }
 
-module.exports = { sendVerificationEmail, sendTestEmail };
+module.exports = {
+  sendVerificationEmail,
+  sendPasswordResetEmail,
+  sendPasswordChangedEmail,
+  sendTestEmail,
+};

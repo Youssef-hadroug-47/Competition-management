@@ -6,12 +6,19 @@ const { id } = require('../utils/ids');
 const { asyncHandler } = require('../utils/asyncHandler');
 const { httpError } = require('../middleware/error');
 const { userPublic } = require('../services/mappers');
-const { sendVerificationEmail } = require('../services/emailService');
+const {
+  sendVerificationEmail,
+  sendPasswordResetEmail,
+  sendPasswordChangedEmail,
+} = require('../services/emailService');
 const { getBetterAuth } = require('../services/betterAuth');
 const config = require('../config');
 
 const verificationLifetimeMs = 24 * 60 * 60 * 1000;
 const resendCooldownMs = 60 * 1000;
+const passwordResetLifetimeMs = 30 * 60 * 1000;
+const passwordResetCooldownMs = 60 * 1000;
+const passwordResetMessage = 'If an account exists for that address, a password reset link has been sent. Check your inbox and spam folder.';
 
 function logVerificationDeliveryFailure(context, error) {
   console.error(`[email-verification] ${context} failed`, {
@@ -35,7 +42,11 @@ function verificationDeliveryMessage(error) {
 }
 
 function tokenFor(user) {
-  return jwt.sign({ sub: user.id, role: user.role }, config.jwtSecret, { expiresIn: '7d' });
+  return jwt.sign(
+    { sub: user.id, role: user.role, tv: Number(user.token_version) || 0 },
+    config.jwtSecret,
+    { expiresIn: '7d' },
+  );
 }
 
 function normalizeEmail(value) {
@@ -71,6 +82,41 @@ async function releaseVerificationCooldown(userId, token) {
      WHERE user_id = $1 AND token_hash = $2`,
     [userId, tokenHash],
   );
+}
+
+function createPasswordResetToken() {
+  const token = crypto.randomBytes(32).toString('hex');
+  return {
+    token,
+    tokenHash: crypto.createHash('sha256').update(token).digest('hex'),
+    expiresAt: new Date(Date.now() + passwordResetLifetimeMs).toISOString(),
+  };
+}
+
+async function storePasswordResetToken(client, userId) {
+  const reset = createPasswordResetToken();
+  await client.query(
+    `INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, sent_at)
+     VALUES ($1, $2, $3, NOW())
+     ON CONFLICT (user_id) DO UPDATE
+       SET token_hash = EXCLUDED.token_hash, expires_at = EXCLUDED.expires_at, sent_at = NOW()`,
+    [userId, reset.tokenHash, reset.expiresAt],
+  );
+  return reset.token;
+}
+
+async function releasePasswordResetToken(userId, token) {
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  await query(
+    'DELETE FROM password_reset_tokens WHERE user_id = $1 AND token_hash = $2',
+    [userId, tokenHash],
+  );
+}
+
+function validPassword(password) {
+  return typeof password === 'string'
+    && password.length >= 8
+    && Buffer.byteLength(password, 'utf8') <= 72;
 }
 
 async function linkGoogleUserToApplication(client, googleUser) {
@@ -268,7 +314,7 @@ const register = asyncHandler(async (req, res) => {
   const normalizedEmail = normalizeEmail(email);
   if (!normalizedEmail || !password || !name) throw httpError(400, 'email, password and name are required');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) throw httpError(400, 'Enter a valid email address');
-  if (typeof password !== 'string' || password.length < 8) throw httpError(400, 'Password must be at least 8 characters');
+  if (!validPassword(password)) throw httpError(400, 'Password must be at least 8 characters and at most 72 bytes');
   if (typeof name !== 'string' || !name.trim() || name.trim().length > 120) {
     throw httpError(400, 'Name must contain 1 to 120 characters');
   }
@@ -384,6 +430,111 @@ const resendVerification = asyncHandler(async (req, res) => {
   });
 });
 
+const forgotPassword = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const normalizedEmail = normalizeEmail(req.body?.email);
+  if (!normalizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    throw httpError(400, 'Enter a valid email address');
+  }
+
+  let delivery = null;
+  try {
+    delivery = await withTransaction(async (client) => {
+      const found = await client.query(
+        'SELECT id, email, name FROM users WHERE email = $1 FOR UPDATE',
+        [normalizedEmail],
+      );
+      const user = found.rows[0];
+      if (!user) return null;
+
+      const existing = await client.query(
+        'SELECT sent_at FROM password_reset_tokens WHERE user_id = $1 FOR UPDATE',
+        [user.id],
+      );
+      const sentAt = existing.rows[0]?.sent_at;
+      if (sentAt && Date.now() - new Date(sentAt).getTime() < passwordResetCooldownMs) {
+        return null;
+      }
+
+      await client.query('DELETE FROM password_reset_tokens WHERE expires_at <= NOW()');
+      return { user, token: await storePasswordResetToken(client, user.id) };
+    });
+  } catch (error) {
+    logVerificationDeliveryFailure('password reset token creation', error);
+  }
+
+  if (delivery) {
+    try {
+      await sendPasswordResetEmail(delivery.user, delivery.token);
+    } catch (error) {
+      logVerificationDeliveryFailure('password reset email', error);
+      try {
+        await releasePasswordResetToken(delivery.user.id, delivery.token);
+      } catch (cleanupError) {
+        logVerificationDeliveryFailure('password reset token cleanup', cleanupError);
+      }
+    }
+  }
+
+  res.status(202).json({ message: passwordResetMessage });
+});
+
+const resetPassword = asyncHandler(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const token = req.body?.token;
+  const password = req.body?.password;
+  if (typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token)) {
+    throw httpError(400, 'This password reset link is invalid or has expired. Request a new one.', {
+      code: 'INVALID_RESET_TOKEN',
+    });
+  }
+  if (!validPassword(password)) {
+    throw httpError(400, 'Password must be at least 8 characters and at most 72 bytes', {
+      code: 'INVALID_PASSWORD',
+    });
+  }
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  const updatedUser = await withTransaction(async (client) => {
+    const found = await client.query(
+      `SELECT prt.user_id, u.email, u.name
+       FROM password_reset_tokens prt
+       JOIN users u ON u.id = prt.user_id
+       WHERE prt.token_hash = $1 AND prt.expires_at > NOW()
+       FOR UPDATE OF prt`,
+      [tokenHash],
+    );
+    const reset = found.rows[0];
+    if (!reset) return null;
+
+    await client.query(
+      `UPDATE users
+       SET password_hash = $2, email_verified = true, token_version = token_version + 1
+       WHERE id = $1`,
+      [reset.user_id, passwordHash],
+    );
+    await client.query('DELETE FROM password_reset_tokens WHERE user_id = $1', [reset.user_id]);
+    await client.query('DELETE FROM email_verification_tokens WHERE user_id = $1', [reset.user_id]);
+    await client.query('DELETE FROM oauth_exchange_codes WHERE user_id = $1', [reset.user_id]);
+    return { id: reset.user_id, email: reset.email, name: reset.name };
+  });
+
+  if (!updatedUser) {
+    throw httpError(400, 'This password reset link is invalid or has expired. Request a new one.', {
+      code: 'INVALID_RESET_TOKEN',
+    });
+  }
+
+  try {
+    await sendPasswordChangedEmail(updatedUser);
+  } catch (error) {
+    logVerificationDeliveryFailure('password changed notification', error);
+  }
+
+  res.json({ message: 'Password updated. Sign in with your new password.' });
+});
+
 const login = asyncHandler(async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) throw httpError(400, 'email and password are required');
@@ -452,6 +603,8 @@ module.exports = {
   register,
   verifyEmail,
   resendVerification,
+  forgotPassword,
+  resetPassword,
   login,
   googleOAuthProviders,
   startGoogleOAuth,

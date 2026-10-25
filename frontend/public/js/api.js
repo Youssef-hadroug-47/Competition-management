@@ -136,6 +136,10 @@ const Api = {
     verifyEmail: (token) => request('POST', '/auth/verify-email', { body: { token }, auth: false }),
     resendVerification: (email) =>
       request('POST', '/auth/resend-verification', { body: { email }, auth: false }),
+    forgotPassword: (email) =>
+      request('POST', '/auth/forgot-password', { body: { email }, auth: false }),
+    resetPassword: (token, password) =>
+      request('POST', '/auth/reset-password', { body: { token, password }, auth: false }),
     providers: () => request('GET', '/auth/providers', { auth: false }),
     googleStartUrl: () => apiUrl('/oauth/google/start').toString(),
     exchangeGoogleCode: (code) =>

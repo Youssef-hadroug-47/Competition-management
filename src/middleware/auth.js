@@ -104,10 +104,16 @@ async function authenticate(req) {
   try {
     const payload = jwt.verify(token, config.jwtSecret);
     const result = await query(
-      'SELECT id, email, name, role FROM users WHERE id = $1',
+      'SELECT id, email, name, role, token_version FROM users WHERE id = $1',
       [payload.sub],
     );
-    req.user = result.rows[0] || null;
+    const user = result.rows[0];
+    const tokenVersion = Number(payload.tv) || 0;
+    if (!user || tokenVersion !== (Number(user.token_version) || 0)) {
+      req.user = null;
+      return;
+    }
+    req.user = user;
   } catch {
     req.user = null;
   }

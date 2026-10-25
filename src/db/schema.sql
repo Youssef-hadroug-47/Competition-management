@@ -5,11 +5,15 @@ CREATE TABLE IF NOT EXISTS users (
   name TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('admin', 'user')),
   email_verified BOOLEAN NOT NULL DEFAULT true,
+  token_version INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text)
 );
 
 ALTER TABLE users
   ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT true;
+
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0;
 
 ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
 
@@ -27,6 +31,13 @@ CREATE TABLE IF NOT EXISTS oauth_exchange_codes (
 );
 
 CREATE TABLE IF NOT EXISTS email_verification_tokens (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
   user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   token_hash TEXT NOT NULL UNIQUE,
   expires_at TIMESTAMPTZ NOT NULL,
