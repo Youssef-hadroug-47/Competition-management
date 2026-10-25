@@ -45,7 +45,7 @@ Sends a test message through the configured SMTP service.
 
 **Response `201`**: `{ "message": "Account created. Check your email for a verification link." }`
 No session is created until the address has been verified.
-**Errors**: `400` invalid or missing fields; `409` email already registered (`details.code = "EMAIL_TAKEN"`); `503` verification email delivery failed (`details.code = "EMAIL_DELIVERY_FAILED"`). On `409` or `503` the client can offer the resend-verification form for the same address.
+**Errors**: `400` invalid or missing fields; `409` an account with that email already exists (`details.code = "EMAIL_TAKEN"`, regardless of verification state); `503` the account was created but the verification email delivery failed (`details.code = "EMAIL_DELIVERY_FAILED"`, instructs the user to sign in to resend). Registration never offers a resend action; resending is exposed from sign-in only after a correct password.
 
 ### `POST /auth/verify-email` — Public
 **Body**: `{ "token": "one-time token from verification email" }`
@@ -54,7 +54,7 @@ No session is created until the address has been verified.
 
 ### `POST /auth/resend-verification` — Public
 **Body**: `{ "email": "string" }`
-**Response `202`**: generic troubleshooting guidance whether or not an unverified account exists, to avoid disclosing account state. Resends are limited to one email per address each minute.
+**Response `202`**: generic troubleshooting guidance whether or not an unverified account exists, to avoid disclosing account state. Resends are limited to one email per address each minute. The web UI exposes this action from the sign-in page only after the password check succeeds.
 **Errors**: `400` invalid email; `429` cooldown still active (`details.code = "VERIFICATION_COOLDOWN"`, `details.retryAfterSeconds`, plus a `Retry-After` header); `503` delivery/configuration guidance when email sending fails (`details.code = "EMAIL_DELIVERY_FAILED"`).
 
 ### `POST /auth/login` — Public

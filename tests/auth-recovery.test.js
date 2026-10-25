@@ -60,11 +60,14 @@ function invoke(handler, req) {
   });
 }
 
-test('register reports a duplicate email with a stable code', async () => {
+test('register rejects a duplicate without looking up verification state', async () => {
   clientQueryImpl = async () => {
     const error = new Error('duplicate key value violates unique constraint');
     error.code = '23505';
     throw error;
+  };
+  queryImpl = async () => {
+    throw new Error('register must not query the existing account');
   };
 
   const { error } = await invoke('register', {
@@ -73,6 +76,7 @@ test('register reports a duplicate email with a stable code', async () => {
 
   assert.equal(error.status, 409);
   assert.equal(error.details.code, 'EMAIL_TAKEN');
+  assert.match(error.message, /already exists/);
 });
 
 test('register reports a delivery failure with a stable code', async () => {

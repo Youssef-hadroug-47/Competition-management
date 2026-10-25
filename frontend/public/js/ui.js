@@ -173,8 +173,8 @@ function pageState(scope) {
 /**
  * Wires an "email verification resend" form: shows it on demand, submits the
  * address, and keeps the button disabled during the server-side cooldown.
- * Returns `{ show(email), cooldown(seconds) }` so the login/register pages can
- * surface the form at the exact moment the API says verification is missing.
+ * Returns `{ show(email) }` so the login page can surface the form at the exact
+ * moment the API says verification is missing.
  */
 function wireVerificationResend(form, emailInput, banner) {
   const button = form.querySelector('button[type="submit"]');
@@ -241,9 +241,6 @@ function wireVerificationResend(form, emailInput, banner) {
         emailInput.focus();
         form.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       });
-    },
-    cooldown(seconds) {
-      startCooldown(seconds);
     },
   };
 }

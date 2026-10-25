@@ -1,7 +1,5 @@
 (function () {
   const form = document.getElementById('register-form');
-  const resendForm = document.getElementById('resend-form');
-  const resendEmail = document.getElementById('resend-email');
   const title = document.getElementById('register-title');
   const intro = document.getElementById('register-intro');
   const verifiedState = document.getElementById('verified-state');
@@ -10,7 +8,6 @@
   const submitBtn = document.getElementById('submit-btn');
   const pendingEmailKey = 'tournly:pending-verification-email';
   const verifiedEmailKey = 'tournly:verified-email';
-  const resend = UI.wireVerificationResend(resendForm, resendEmail, banner);
   let verificationChannel = null;
   try {
     if ('BroadcastChannel' in window) {
@@ -56,7 +53,6 @@
       // The success UI can still be shown if session storage is disabled.
     }
     form.hidden = true;
-    resendForm.hidden = true;
     document.querySelectorAll('[data-google-sign-in]').forEach((button) => {
       button.hidden = true;
     });
@@ -123,8 +119,6 @@
       const result = await Api.auth.register({ name, email, password });
       form.password.value = '';
       writePendingEmail(email);
-      resend.show(email);
-      resend.cooldown(60);
       submitBtn.disabled = true;
       submitBtn.textContent = 'Verification email sent';
       UI.flashMessage(result.message || 'Account created. Check your email for a verification link.', 'success');
@@ -132,10 +126,7 @@
       UI.showBanner(banner, UI.friendlyErrorMessage(err));
       submitBtn.disabled = false;
       submitBtn.textContent = 'Create account';
-      if (err.status === 503 || err.code === 'EMAIL_TAKEN') {
-        writePendingEmail(email);
-        resend.show(email);
-      }
+      if (err.status === 503) writePendingEmail(email);
     }
   });
 })();

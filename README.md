@@ -75,9 +75,10 @@ STARTTLS. SMTP authentication is optional for relays that do not require it.
 `PUBLIC_APP_URL` is the frontend origin used to construct verification links.
 Verification links expire after 24 hours and keep their token in the URL
 fragment until the user explicitly confirms it. Unverified users can request
-another email from the registration or sign-in page; resends are limited to
-one per minute. Existing accounts are marked verified when the schema adds the
-new column, so deployment does not lock out current users.
+another email from the sign-in page after entering the correct password;
+resends are limited to one per minute. Existing accounts are marked verified
+when the schema adds the new column, so deployment does not lock out current
+users.
 
 ### Google OAuth (Better Auth)
 

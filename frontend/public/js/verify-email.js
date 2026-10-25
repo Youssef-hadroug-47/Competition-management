@@ -14,7 +14,7 @@
   };
   if (!token) {
     title.textContent = 'Verification link unavailable';
-    showState('error', '!', 'This verification link is missing, invalid, or expired. Request a new email to try again.');
+    showState('error', '!', 'This verification link is missing, invalid, or expired. Sign in with your password to request a new email.');
     homeLink.hidden = false;
     return;
   }

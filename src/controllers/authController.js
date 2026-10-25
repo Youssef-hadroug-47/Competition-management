@@ -291,7 +291,7 @@ const register = asyncHandler(async (req, res) => {
     if (error?.code === '23505') {
       throw httpError(
         409,
-        'This email address is already registered. Resend the verification email if it is unverified, or sign in.',
+        'An account with this email address already exists. Sign in instead.',
         { code: 'EMAIL_TAKEN' },
       );
     }
@@ -306,7 +306,7 @@ const register = asyncHandler(async (req, res) => {
     } catch (cooldownError) {
       logVerificationDeliveryFailure('registration resend cooldown reset', cooldownError);
     }
-    throw httpError(503, `Your account was created but is not verified. ${verificationDeliveryMessage(error)} Use “Resend verification email” to try again.`, { code: 'EMAIL_DELIVERY_FAILED' });
+    throw httpError(503, `Your account was created but is not verified. ${verificationDeliveryMessage(error)} Sign in with your password to resend the verification email.`, { code: 'EMAIL_DELIVERY_FAILED' });
   }
   res.status(201).json({ message: 'Account created. Check your email for a verification link.' });
 });
