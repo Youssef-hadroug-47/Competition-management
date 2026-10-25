@@ -72,13 +72,19 @@ PUBLIC_APP_URL=https://your-frontend.example.com
 
 Set `SMTP_SECURE=true` for implicit TLS (commonly port 465); port 587 uses
 STARTTLS. SMTP authentication is optional for relays that do not require it.
-`PUBLIC_APP_URL` is the frontend origin used to construct verification links.
-Verification links expire after 24 hours and keep their token in the URL
-fragment until the user explicitly confirms it. Unverified users can request
-another email from the sign-in page after entering the correct password;
-resends are limited to one per minute. Existing accounts are marked verified
-when the schema adds the new column, so deployment does not lock out current
-users.
+`PUBLIC_APP_URL` is the frontend origin used to construct verification and
+password-reset links. Verification links expire after 24 hours and keep their
+token in the URL fragment until the user explicitly confirms it. Unverified
+users can request another email from the sign-in page after entering the
+correct password; resends are limited to one per minute. Existing accounts are
+marked verified when the schema adds the new column, so deployment does not
+lock out current users.
+
+Password resets use the same SMTP configuration and `PUBLIC_APP_URL`. The
+request endpoint always returns a generic confirmation to avoid disclosing
+account state, sends at most one email per account each minute, and stores only
+a hash of the token. Reset links expire after 30 minutes and can be used once.
+Completing a reset marks the email verified and revokes every existing session.
 
 ### Google OAuth (Better Auth)
 
@@ -88,9 +94,8 @@ Better Auth persists provider accounts and short-lived OAuth sessions in
 PostgreSQL; stored provider tokens are encrypted with `BETTER_AUTH_SECRET`.
 After Google confirms a verified email, the callback links the
 Google identity to an existing Tournly account with the same email or creates
-a normal `user` account. Existing roles are preserved, and OAuth-only users
-cannot sign in with a password until a password is set through a separate
-password-management flow.
+a normal `user` account. Existing roles are preserved. OAuth-only users can
+set a password later through the forgot-password flow.
 
 Create a **Web application** OAuth client in Google Cloud Console. Add this
 authorized redirect URI exactly:
@@ -296,6 +301,8 @@ Send the JWT returned by login in the Authorization header.
 ### Auth
 - `POST /api/auth/register` `{ email, password, name, role? }` role: `user` or `referee`
 - `POST /api/auth/login`
+- `POST /api/auth/forgot-password` `{ email }`
+- `POST /api/auth/reset-password` `{ token, password }`
 - `GET /api/auth/me`
 
 ### Tournaments

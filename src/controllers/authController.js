@@ -494,7 +494,6 @@ const resetPassword = asyncHandler(async (req, res) => {
     });
   }
 
-  const passwordHash = await bcrypt.hash(password, 10);
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
   const updatedUser = await withTransaction(async (client) => {
     const found = await client.query(
@@ -508,6 +507,7 @@ const resetPassword = asyncHandler(async (req, res) => {
     const reset = found.rows[0];
     if (!reset) return null;
 
+    const passwordHash = await bcrypt.hash(password, 10);
     await client.query(
       `UPDATE users
        SET password_hash = $2, email_verified = true, token_version = token_version + 1

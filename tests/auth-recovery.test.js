@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const bcrypt = require('bcryptjs');
+const crypto = require('node:crypto');
 
 const dbPath = require.resolve('../src/db');
 const emailPath = require.resolve('../src/services/emailService');
@@ -9,6 +10,8 @@ const controllerPath = require.resolve('../src/controllers/authController');
 let queryImpl = async () => ({ rows: [] });
 let clientQueryImpl = async () => ({ rows: [] });
 let sendImpl = async () => {};
+let resetSendImpl = async () => {};
+let changedSendImpl = async () => {};
 const client = { query: (...args) => clientQueryImpl(...args) };
 
 const originalDb = require.cache[dbPath];
@@ -27,7 +30,11 @@ require.cache[emailPath] = {
   id: emailPath,
   filename: emailPath,
   loaded: true,
-  exports: { sendVerificationEmail: (...args) => sendImpl(...args) },
+  exports: {
+    sendVerificationEmail: (...args) => sendImpl(...args),
+    sendPasswordResetEmail: (...args) => resetSendImpl(...args),
+    sendPasswordChangedEmail: (...args) => changedSendImpl(...args),
+  },
 };
 
 const controller = require(controllerPath);
@@ -157,4 +164,148 @@ test('resend stays generic for unknown addresses and sends nothing', async () =>
   assert.equal(error, undefined);
   assert.match(body.message, /Request processed/);
   assert.equal(sent, 0);
+});
+
+test('forgot password is generic and skips sending for unknown addresses', async () => {
+  clientQueryImpl = async () => ({ rows: [] });
+  let sent = 0;
+  resetSendImpl = async () => {
+    sent += 1;
+  };
+
+  const { body, error } = await invoke('forgotPassword', {
+    body: { email: 'missing@example.com' },
+  });
+
+  assert.equal(error, undefined);
+  assert.match(body.message, /If an account exists/);
+  assert.equal(sent, 0);
+});
+
+test('forgot password stores a hashed token and emails the raw token', async () => {
+  const calls = [];
+  clientQueryImpl = async (text, params) => {
+    calls.push({ text, params });
+    if (text.includes('FROM users')) {
+      return { rows: [{ id: 'user-1', email: 'a@example.com', name: 'A' }] };
+    }
+    return { rows: [] };
+  };
+  let sentToken = null;
+  resetSendImpl = async (_user, token) => {
+    sentToken = token;
+  };
+
+  const { body, error } = await invoke('forgotPassword', {
+    body: { email: ' A@Example.com ' },
+  });
+
+  assert.equal(error, undefined);
+  assert.match(body.message, /If an account exists/);
+  assert.match(sentToken, /^[a-f0-9]{64}$/);
+  const insert = calls.find((call) => call.text.includes('INSERT INTO password_reset_tokens'));
+  assert.equal(
+    insert.params[1],
+    crypto.createHash('sha256').update(sentToken).digest('hex'),
+  );
+});
+
+test('forgot password stays generic while the cooldown is active', async () => {
+  clientQueryImpl = async (text) => {
+    if (text.includes('FROM users')) {
+      return { rows: [{ id: 'user-1', email: 'a@example.com', name: 'A' }] };
+    }
+    if (text.includes('FROM password_reset_tokens')) {
+      return { rows: [{ sent_at: new Date().toISOString() }] };
+    }
+    throw new Error(`Unexpected query: ${text}`);
+  };
+  let sent = 0;
+  resetSendImpl = async () => {
+    sent += 1;
+  };
+
+  const { body, error } = await invoke('forgotPassword', {
+    body: { email: 'a@example.com' },
+  });
+
+  assert.equal(error, undefined);
+  assert.match(body.message, /If an account exists/);
+  assert.equal(sent, 0);
+});
+
+test('forgot password stays generic when delivery fails and releases the token', async () => {
+  clientQueryImpl = async () => ({ rows: [{ id: 'user-1', email: 'a@example.com', name: 'A' }] });
+  resetSendImpl = async () => {
+    throw new Error('smtp down');
+  };
+  const deletions = [];
+  queryImpl = async (text, params) => {
+    deletions.push({ text, params });
+    return { rows: [] };
+  };
+
+  const { body, error } = await invoke('forgotPassword', {
+    body: { email: 'a@example.com' },
+  });
+
+  assert.equal(error, undefined);
+  assert.match(body.message, /If an account exists/);
+  assert.ok(deletions.some((call) => call.text.includes('DELETE FROM password_reset_tokens')));
+});
+
+test('reset password rejects a malformed token with a stable code', async () => {
+  const { error } = await invoke('resetPassword', {
+    body: { token: 'nope', password: 'password123' },
+  });
+
+  assert.equal(error.status, 400);
+  assert.equal(error.details.code, 'INVALID_RESET_TOKEN');
+});
+
+test('reset password updates the password, verifies the email, and revokes sessions', async () => {
+  const token = 'a'.repeat(64);
+  const calls = [];
+  clientQueryImpl = async (text, params) => {
+    calls.push({ text, params });
+    if (text.includes('FROM password_reset_tokens prt')) {
+      return { rows: [{ user_id: 'user-1', email: 'a@example.com', name: 'A' }] };
+    }
+    return { rows: [] };
+  };
+  let changed = 0;
+  changedSendImpl = async () => {
+    changed += 1;
+  };
+
+  const { body, error } = await invoke('resetPassword', {
+    body: { token, password: 'newpassword' },
+  });
+
+  assert.equal(error, undefined);
+  assert.match(body.message, /Password updated/);
+  assert.equal(changed, 1);
+
+  const lookup = calls.find((call) => call.text.includes('FROM password_reset_tokens prt'));
+  assert.equal(lookup.params[0], crypto.createHash('sha256').update(token).digest('hex'));
+
+  const update = calls.find((call) => call.text.includes('UPDATE users'));
+  assert.match(update.text, /email_verified = true/);
+  assert.match(update.text, /token_version = token_version \+ 1/);
+  assert.ok(bcrypt.compareSync('newpassword', update.params[1]));
+
+  assert.deepEqual(
+    calls.filter((call) => call.text.startsWith('DELETE FROM')).map((call) => call.params[0]),
+    ['user-1', 'user-1', 'user-1'],
+  );
+});
+
+test('reset password rejects an expired or used token', async () => {
+  clientQueryImpl = async () => ({ rows: [] });
+  const { error } = await invoke('resetPassword', {
+    body: { token: 'b'.repeat(64), password: 'newpassword' },
+  });
+
+  assert.equal(error.status, 400);
+  assert.equal(error.details.code, 'INVALID_RESET_TOKEN');
 });

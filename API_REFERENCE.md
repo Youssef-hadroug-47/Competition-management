@@ -74,7 +74,7 @@ A successful reset consumes the token, verifies the email address, and revokes e
 { "email": "string (required)", "password": "string (required)" }
 ```
 **Response `200`**: `{ "user": { "id", "email", "name", "role", "emailVerified", "createdAt" }, "token": "JWT (7d expiry)" }`
-**Errors**: `400` missing fields, `401` invalid credentials, `403` email not verified (`details.code = "EMAIL_NOT_VERIFIED"`; the client can offer the resend-verification form).
+**Errors**: `400` missing fields, `401` invalid credentials, `403` email not verified (`details.code = "EMAIL_NOT_VERIFIED"`; the client can offer the resend-verification form). Tokens embed the account's `token_version`; completing a password reset invalidates all previously issued tokens.
 
 ### `GET /auth/providers` — Public
 **Response `200`**: `{ "google": "boolean" }`

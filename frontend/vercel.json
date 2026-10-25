@@ -46,6 +46,14 @@
     {
       "src": "/(.*)",
       "dest": "/$1"
+    },
+    {
+      "src": "/forgot-password",
+      "dest": "/forgot-password.html"
+    },
+    {
+      "src": "/reset-password",
+      "dest": "/reset-password.html"
     }
   ]
 }
