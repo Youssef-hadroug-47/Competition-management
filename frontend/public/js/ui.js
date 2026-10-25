@@ -170,4 +170,82 @@ function pageState(scope) {
   };
 }
 
-window.UI = { el, clear, showBanner, flashMessage, friendlyErrorMessage, confirmAction, pageState };
+/**
+ * Wires an "email verification resend" form: shows it on demand, submits the
+ * address, and keeps the button disabled during the server-side cooldown.
+ * Returns `{ show(email), cooldown(seconds) }` so the login/register pages can
+ * surface the form at the exact moment the API says verification is missing.
+ */
+function wireVerificationResend(form, emailInput, banner) {
+  const button = form.querySelector('button[type="submit"]');
+  const idleLabel = button.textContent;
+  let countdown = null;
+
+  function stopCountdown() {
+    if (countdown) clearInterval(countdown);
+    countdown = null;
+  }
+
+  function setIdle() {
+    stopCountdown();
+    button.disabled = false;
+    button.textContent = idleLabel;
+  }
+
+  function startCooldown(seconds) {
+    stopCountdown();
+    let remaining = Math.max(0, Math.ceil(Number(seconds) || 0));
+    if (remaining <= 0) {
+      setIdle();
+      return;
+    }
+    button.disabled = true;
+    const render = () => {
+      button.textContent = `Resend in ${remaining}s`;
+    };
+    render();
+    countdown = setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) setIdle();
+      else render();
+    }, 1000);
+  }
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    UI.showBanner(banner, '');
+    const email = emailInput.value.trim();
+    if (!email) {
+      UI.showBanner(banner, 'Enter your email address.');
+      return;
+    }
+    stopCountdown();
+    button.disabled = true;
+    button.textContent = 'Sending…';
+    try {
+      const result = await Api.auth.resendVerification(email);
+      UI.flashMessage(result.message, 'success');
+      startCooldown(60);
+    } catch (err) {
+      UI.showBanner(banner, UI.friendlyErrorMessage(err));
+      if (err.status === 429) startCooldown(err.details?.retryAfterSeconds || 60);
+      else setIdle();
+    }
+  });
+
+  return {
+    show(email) {
+      form.hidden = false;
+      if (typeof email === 'string' && email) emailInput.value = email;
+      requestAnimationFrame(() => {
+        emailInput.focus();
+        form.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      });
+    },
+    cooldown(seconds) {
+      startCooldown(seconds);
+    },
+  };
+}
+
+window.UI = { el, clear, showBanner, flashMessage, friendlyErrorMessage, confirmAction, pageState, wireVerificationResend };

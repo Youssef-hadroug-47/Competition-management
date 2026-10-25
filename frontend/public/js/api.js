@@ -16,10 +16,12 @@
  */
 
 class ApiError extends Error {
-  constructor(message, status) {
+  constructor(message, status, details) {
     super(message);
     this.isApiError = true;
     this.status = status;
+    this.details = details && typeof details === 'object' ? details : null;
+    this.code = this.details?.code || null;
   }
 }
 
@@ -114,7 +116,7 @@ async function performRequest(method, path, { body, query, auth = true, credenti
 
   if (!res.ok) {
     const message = (data && typeof data.error === 'string' && data.error) || `Request failed (${res.status}).`;
-    throw new ApiError(message, res.status);
+    throw new ApiError(message, res.status, data && data.details);
   }
 
   return data;

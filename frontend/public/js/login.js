@@ -4,6 +4,7 @@
   const resendEmail = document.getElementById('resend-email');
   const banner = document.getElementById('banner');
   const submitBtn = document.getElementById('submit-btn');
+  const resend = UI.wireVerificationResend(resendForm, resendEmail, banner);
 
   // If already signed in, there's nothing to do here.
   if (window.Session.isAuthenticated()) {
@@ -45,22 +46,9 @@
       location.href = safeNextPath();
     } catch (err) {
       UI.showBanner(banner, UI.friendlyErrorMessage(err));
-      if (err.status === 403) {
-        resendEmail.value = email;
-        resendForm.hidden = false;
-      }
+      if (err.code === 'EMAIL_NOT_VERIFIED' || err.status === 403) resend.show(email);
       submitBtn.disabled = false;
       submitBtn.textContent = 'Sign in';
-    }
-  });
-
-  resendForm.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    try {
-      const result = await Api.auth.resendVerification(resendEmail.value.trim());
-      UI.flashMessage(result.message, 'success');
-    } catch (err) {
-      UI.showBanner(banner, UI.friendlyErrorMessage(err));
     }
   });
 })();

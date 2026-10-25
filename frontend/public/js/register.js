@@ -10,6 +10,7 @@
   const submitBtn = document.getElementById('submit-btn');
   const pendingEmailKey = 'tournly:pending-verification-email';
   const verifiedEmailKey = 'tournly:verified-email';
+  const resend = UI.wireVerificationResend(resendForm, resendEmail, banner);
   let verificationChannel = null;
   try {
     if ('BroadcastChannel' in window) {
@@ -121,9 +122,9 @@
     try {
       const result = await Api.auth.register({ name, email, password });
       form.password.value = '';
-      resendEmail.value = email;
       writePendingEmail(email);
-      resendForm.hidden = false;
+      resend.show(email);
+      resend.cooldown(60);
       submitBtn.disabled = true;
       submitBtn.textContent = 'Verification email sent';
       UI.flashMessage(result.message || 'Account created. Check your email for a verification link.', 'success');
@@ -131,21 +132,10 @@
       UI.showBanner(banner, UI.friendlyErrorMessage(err));
       submitBtn.disabled = false;
       submitBtn.textContent = 'Create account';
-      if (err.status === 503) {
-        resendEmail.value = email;
+      if (err.status === 503 || err.code === 'EMAIL_TAKEN') {
         writePendingEmail(email);
-        resendForm.hidden = false;
+        resend.show(email);
       }
-    }
-  });
-
-  resendForm.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    try {
-      const result = await Api.auth.resendVerification(resendEmail.value.trim());
-      UI.flashMessage(result.message, 'success');
-    } catch (err) {
-      UI.showBanner(banner, UI.friendlyErrorMessage(err));
     }
   });
 })();

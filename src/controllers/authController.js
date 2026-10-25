@@ -274,16 +274,29 @@ const register = asyncHandler(async (req, res) => {
   }
   const chosen = 'user';
   const userId = id();
-  const { user, verificationToken } = await withTransaction(async (client) => {
-    await client.query(
-      `INSERT INTO users (id, email, password_hash, name, role, email_verified)
-       VALUES ($1, $2, $3, $4, $5, false)`,
-      [userId, normalizedEmail, await bcrypt.hash(password, 10), name.trim(), chosen],
-    );
-    const result = await client.query('SELECT * FROM users WHERE id = $1', [userId]);
-    const verificationToken = await storeVerificationToken(client, userId);
-    return { user: result.rows[0], verificationToken };
-  });
+  let user;
+  let verificationToken;
+  try {
+    ({ user, verificationToken } = await withTransaction(async (client) => {
+      await client.query(
+        `INSERT INTO users (id, email, password_hash, name, role, email_verified)
+         VALUES ($1, $2, $3, $4, $5, false)`,
+        [userId, normalizedEmail, await bcrypt.hash(password, 10), name.trim(), chosen],
+      );
+      const result = await client.query('SELECT * FROM users WHERE id = $1', [userId]);
+      const verificationToken = await storeVerificationToken(client, userId);
+      return { user: result.rows[0], verificationToken };
+    }));
+  } catch (error) {
+    if (error?.code === '23505') {
+      throw httpError(
+        409,
+        'This email address is already registered. Resend the verification email if it is unverified, or sign in.',
+        { code: 'EMAIL_TAKEN' },
+      );
+    }
+    throw error;
+  }
   try {
     await sendVerificationEmail(user, verificationToken);
   } catch (error) {
@@ -293,7 +306,7 @@ const register = asyncHandler(async (req, res) => {
     } catch (cooldownError) {
       logVerificationDeliveryFailure('registration resend cooldown reset', cooldownError);
     }
-    throw httpError(503, `Your account was created but is not verified. ${verificationDeliveryMessage(error)} Use “Resend verification email” to try again.`);
+    throw httpError(503, `Your account was created but is not verified. ${verificationDeliveryMessage(error)} Use “Resend verification email” to try again.`, { code: 'EMAIL_DELIVERY_FAILED' });
   }
   res.status(201).json({ message: 'Account created. Check your email for a verification link.' });
 });
@@ -346,7 +359,10 @@ const resendVerification = asyncHandler(async (req, res) => {
         (resendCooldownMs - (Date.now() - new Date(sentAt).getTime())) / 1000,
       );
       res.set('Retry-After', String(retryAfterSeconds));
-      throw httpError(429, `A verification email was sent recently. Try again in ${retryAfterSeconds} seconds.`);
+      throw httpError(429, `A verification email was sent recently. Try again in ${retryAfterSeconds} seconds.`, {
+        code: 'VERIFICATION_COOLDOWN',
+        retryAfterSeconds,
+      });
     }
     return { user, verificationToken: await storeVerificationToken(client, user.id) };
   });
@@ -360,7 +376,7 @@ const resendVerification = asyncHandler(async (req, res) => {
       } catch (cooldownError) {
         logVerificationDeliveryFailure('resend cooldown reset', cooldownError);
       }
-      throw httpError(503, `${verificationDeliveryMessage(error)} Please try again in a few minutes.`);
+      throw httpError(503, `${verificationDeliveryMessage(error)} Please try again in a few minutes.`, { code: 'EMAIL_DELIVERY_FAILED' });
     }
   }
   res.status(202).json({
@@ -376,7 +392,9 @@ const login = asyncHandler(async (req, res) => {
   if (!user || !user.password_hash || !(await bcrypt.compare(password, user.password_hash))) {
     throw httpError(401, 'Invalid credentials');
   }
-  if (!user.email_verified) throw httpError(403, 'Verify your email address before signing in.');
+  if (!user.email_verified) {
+    throw httpError(403, 'Verify your email address before signing in.', { code: 'EMAIL_NOT_VERIFIED' });
+  }
   res.json({ user: userPublic(user), token: tokenFor(user) });
 });
 
