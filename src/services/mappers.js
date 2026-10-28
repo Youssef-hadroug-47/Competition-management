@@ -1,4 +1,5 @@
 const { parseJson } = require('../db');
+const { canCreateTournament } = require('./accessPolicy');
 
 function userPublic(row) {
   if (!row) return null;
@@ -8,6 +9,7 @@ function userPublic(row) {
     name: row.name,
     role: row.role,
     emailVerified: row.email_verified ?? true,
+    canCreateTournament: canCreateTournament(row),
     createdAt: row.created_at,
   };
 }

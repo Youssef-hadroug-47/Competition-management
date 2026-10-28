@@ -1,5 +1,6 @@
 const express = require('express');
 const { requireAuth, requireRole, authOptional, requireTournamentRole, requireTournamentModerator, requireTournamentReferee, requireTournamentModeratorOrReferee, requireTournamentSupervisor, requireOwner } = require('../middleware/auth');
+const { requireTournamentCreation } = require('../middleware/tournamentCreation');
 const auth = require('../controllers/authController');
 const tournaments = require('../controllers/tournamentController');
 const catalog = require('../controllers/catalogController');
@@ -33,7 +34,7 @@ router.get('/tournaments/mine', requireAuth, tournaments.listMine);
 router.get('/tournaments', authOptional, tournaments.list);
 router.get('/tournaments/search', authOptional, tournaments.searchByName);
 router.get('/tournaments/:tournamentId', authOptional, tournaments.getOne);
-router.post('/tournaments', requireAuth, tournaments.create);
+router.post('/tournaments', requireAuth, requireTournamentCreation, tournaments.create);
 router.patch('/tournaments/:tournamentId', requireAuth, requireTournamentRole('moderator'), tournaments.update);
 router.delete('/tournaments/:tournamentId', requireAuth, requireOwner, tournaments.remove);
 

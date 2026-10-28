@@ -39,6 +39,18 @@ The browser console will show each API duration, the server
 server log to separate browser/network time from backend/database time. Disable
 it with `localStorage.removeItem('apiDebug')`.
 
+### Tournament creation access
+
+`TOURNAMENT_CREATION` controls who may call `POST /api/tournaments`:
+
+- `*` (default) — any signed-in user.
+- `admin` — only users with the `admin` role.
+
+Any other value stops the API at startup. The frontend hides the creation
+panel and blocks the create page when the signed-in user lacks this
+capability; the API always enforces the policy, so the UI is only a
+convenience.
+
 ### Read-only load test
 
 With the API running, the built-in load test sends randomized read-only
@@ -149,6 +161,7 @@ fly launch --no-deploy
 fly secrets set \
   DATABASE_URL='your-supabase-session-pooler-url' \
   JWT_SECRET='your-long-random-secret' \
+  TOURNAMENT_CREATION='*' \
   SMTP_HOST='your-smtp-host' \
   SMTP_USER='your-smtp-user' \
   SMTP_PASSWORD='your-smtp-password' \
@@ -256,8 +269,8 @@ database once per warm function instance and forwards requests to the Express
 app; `vercel.json` routes `/api` requests to it.
 
 Configure the API project's environment variables in Vercel, including
-`DATABASE_URL`, `JWT_SECRET`, `DATABASE_SSL`, and any SMTP or Google OAuth
-settings you use. For a separate frontend Vercel project, set `FRONTEND_ORIGIN`,
+`DATABASE_URL`, `JWT_SECRET`, `TOURNAMENT_CREATION`, `DATABASE_SSL`, and any
+SMTP or Google OAuth settings you use. For a separate frontend Vercel project, set `FRONTEND_ORIGIN`,
 `PUBLIC_APP_URL`, and `CORS_ORIGINS` to the frontend's exact HTTPS origin. Set
 the frontend project's `API_BASE_URL` to the deployed API origin followed by
 `/api`, for example `https://your-api.vercel.app/api`. Never use

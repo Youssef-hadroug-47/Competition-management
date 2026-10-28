@@ -10,10 +10,12 @@
   const favoritesBody = document.getElementById('favorites-body');
   const myTournamentsPanel = document.getElementById('my-tournaments-panel');
   const myTournamentsBody = document.getElementById('my-tournaments-body');
+  const createPanel = document.getElementById('create-panel');
   const createBody = document.getElementById('create-body');
   const publicBody = document.getElementById('public-body');
 
   let cancelExpiryTimer = () => {};
+  let createAllowed = false;
 
   // ---------------------------------------------------------------
   // Header: login/register buttons (left wireframe) vs profile menu
@@ -26,9 +28,28 @@
   // ---------------------------------------------------------------
   // "création des tournois" panel
   // ---------------------------------------------------------------
+  async function resolveCreateAccess() {
+    createAllowed = false;
+    if (!Session.isAuthenticated()) return;
+
+    const user = Session.getUser();
+    if (typeof user?.canCreateTournament === 'boolean') {
+      createAllowed = user.canCreateTournament;
+      return;
+    }
+
+    try {
+      const refreshed = await Session.refreshUser();
+      createAllowed = refreshed?.canCreateTournament === true;
+    } catch {
+      createAllowed = false;
+    }
+  }
+
   function renderCreatePanel() {
     clear(createBody);
     if (!Session.isAuthenticated()) {
+      createPanel.hidden = false;
       createBody.appendChild(
         el('div', {}, [
           el('p', { text: 'Sign in to set up your own tournament — brackets, groups, matches and all.' }),
@@ -37,6 +58,11 @@
       );
       return;
     }
+    if (!createAllowed) {
+      createPanel.hidden = true;
+      return;
+    }
+    createPanel.hidden = false;
     createBody.appendChild(
       el('div', {}, [
         el('p', { text: 'Give it a name and you can add stages, teams and players afterwards.' }),
@@ -288,6 +314,7 @@
   async function init() {
     cancelExpiryTimer = Session.scheduleExpiryLogout(() => {
       showBanner(banner, 'You were signed out because your session expired.', 'error');
+      createAllowed = false;
       renderHeader();
       renderCreatePanel();
       setupTournamentSearch();
@@ -296,6 +323,7 @@
     });
 
     renderHeader();
+    await resolveCreateAccess();
     renderCreatePanel();
     // Load followed tournaments first so public rows are rendered with the
     // current follow state instead of the initial empty array. The two

@@ -11,9 +11,10 @@
 </head>
 <body><div class="page"><header class="topbar"><a class="logo" href="/index"><span class="logo__mark" aria-hidden="true"></span>Tournly</a><div class="topbar__actions" id="topbar-actions"></div></header>
 <main><a class="back-link" href="/index">&larr; All tournaments</a><div id="banner" class="banner" hidden role="alert"></div>
-<section class="panel create-wizard"><div class="wizard__head"><div><p class="eyebrow">Tournament setup</p><h1>Create a tournament</h1><p>Set up the competition structure now. Teams and players can be added afterwards.</p></div><div class="wizard-steps" id="wizard-steps" aria-label="Creation phases"></div></div>
+<section class="panel create-wizard" id="create-wizard" hidden><div class="wizard__head"><div><p class="eyebrow">Tournament setup</p><h1>Create a tournament</h1><p>Set up the competition structure now. Teams and players can be added afterwards.</p></div><div class="wizard-steps" id="wizard-steps" aria-label="Creation phases"></div></div>
 <form id="create-wizard-form" novalidate><section id="phase-general" class="wizard-phase"></section><section id="phase-format" class="wizard-phase" hidden></section>
-<div class="wizard__actions"><a class="btn btn--ghost" href="/index">Cancel</a><button type="button" class="btn btn--ghost" id="wizard-back" hidden>Back</button><button type="submit" class="btn btn--primary" id="wizard-next">Build format</button></div></form></section></main>
+<div class="wizard__actions"><a class="btn btn--ghost" href="/index">Cancel</a><button type="button" class="btn btn--ghost" id="wizard-back" hidden>Back</button><button type="submit" class="btn btn--primary" id="wizard-next">Build format</button></div></form></section>
+<section class="panel" id="create-denied" hidden><h1>Tournament creation is unavailable</h1><p>Your account does not have permission to create tournaments on this server.</p><a class="btn btn--primary" href="/index">Back to home</a></section></main>
 <footer class="page__footer">Tournly — a small tournament organizer.</footer></div>
 <script src="/js/config.js"></script><script src="/js/session.js"></script><script src="/js/ui.js"></script><script src="/js/page-activity.js"></script><script src="/js/api.js"></script><script src="/js/header.js"></script><script src="/js/create-tournament.js"></script>
 </body></html>

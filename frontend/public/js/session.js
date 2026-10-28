@@ -98,6 +98,26 @@ const Session = {
     sessionStorage.removeItem(STORAGE_KEY);
   },
 
+  /** Replace the cached user without changing the token or expiry. */
+  setUser(user) {
+    const s = read();
+    if (!s) return;
+    write({ ...s, user });
+  },
+
+  /** Re-read the user from the API so role and capabilities are fresh. */
+  async refreshUser() {
+    if (!this.isAuthenticated()) return null;
+    const data = await window.Api.auth.me();
+    const user = data?.user || null;
+    if (user) this.setUser(user);
+    return user;
+  },
+
+  canCreateTournament() {
+    return this.getUser()?.canCreateTournament === true;
+  },
+
   getToken() {
     const s = read();
     if (!s) return null;

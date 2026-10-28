@@ -1,11 +1,34 @@
-(function () {
+(async function () {
   const { el, clear, showBanner, friendlyErrorMessage } = UI;
   if (!Session.isAuthenticated()) { location.href = '/login?next=%2Fcreate-tournament'; return; }
   Header.render(document.getElementById('topbar-actions'));
+
+  const wizard = document.getElementById('create-wizard');
+  const denied = document.getElementById('create-denied');
+  const banner = document.getElementById('banner');
+  const deny = () => {
+    wizard.hidden = true;
+    denied.hidden = false;
+  };
+
+  let viewer = null;
+  try {
+    viewer = await Session.refreshUser();
+  } catch (err) {
+    if (err?.status === 401) return;
+    showBanner(banner, friendlyErrorMessage(err));
+    deny();
+    return;
+  }
+  if (!viewer?.canCreateTournament) {
+    deny();
+    return;
+  }
+  wizard.hidden = false;
+
   const form = document.getElementById('create-wizard-form');
   const general = document.getElementById('phase-general');
   const format = document.getElementById('phase-format');
-  const banner = document.getElementById('banner');
   const next = document.getElementById('wizard-next');
   const back = document.getElementById('wizard-back');
   const steps = document.getElementById('wizard-steps');
@@ -549,7 +572,21 @@
       });
       await Promise.all(creations);
       location.href = `/tournament?id=${encodeURIComponent(tournamentId)}`;
-    } catch (err) { showBanner(banner, friendlyErrorMessage(err)); next.disabled = false; next.textContent = 'Create tournament'; }
+    } catch (err) {
+      if (err?.status === 401) return;
+      if (err?.status === 403) {
+        deny();
+        return;
+      }
+      showBanner(
+        banner,
+        err?.status === 503
+          ? 'Tournament creation is temporarily unavailable.'
+          : friendlyErrorMessage(err),
+      );
+      next.disabled = false;
+      next.textContent = 'Create tournament';
+    }
   }
   function advanceWizard() {
     if (phase === 1) {

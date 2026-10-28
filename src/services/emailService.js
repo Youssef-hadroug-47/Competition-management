@@ -65,13 +65,13 @@ async function sendPasswordResetEmail(user, token) {
 }
 
 async function sendPasswordChangedEmail(user) {
-  const signInUrl = new URL('/login', `${config.publicAppUrl}/`).toString();
+  const resetUrl = new URL('/forgot-password', `${config.publicAppUrl}/`).toString();
   await getTransporter().sendMail({
     from: config.smtpFrom,
     to: user.email,
     subject: 'Your Tournly password was changed',
-    text: `Hi ${user.name},\n\nYour Tournly password was just changed. If this was you, no further action is needed.\n\nIf you did not make this change, reset your password immediately:\n${signInUrl}\n`,
-    html: `<p>Hi ${escapeHtml(user.name)},</p><p>Your Tournly password was just changed. If this was you, no further action is needed.</p><p>If you did not make this change, <a href="${escapeHtml(signInUrl)}">reset your password</a> immediately.</p>`,
+    text: `Hi ${user.name},\n\nYour Tournly password was just changed. If this was you, no further action is needed.\n\nIf you did not make this change, reset your password immediately:\n${resetUrl}\n`,
+    html: `<p>Hi ${escapeHtml(user.name)},</p><p>Your Tournly password was just changed. If this was you, no further action is needed.</p><p>If you did not make this change, <a href="${escapeHtml(resetUrl)}">reset your password</a> immediately.</p>`,
   });
 }
 

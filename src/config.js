@@ -19,6 +19,10 @@ if (googleClientId && (!betterAuthSecret || !betterAuthUrl)) {
 if (betterAuthSecret && betterAuthSecret.length < 32) {
   throw new Error('BETTER_AUTH_SECRET must contain at least 32 characters.');
 }
+const tournamentCreation = process.env.TOURNAMENT_CREATION || '*';
+if (!['admin', '*'].includes(tournamentCreation)) {
+  throw new Error("TOURNAMENT_CREATION must be either 'admin' or '*'.");
+}
 const publicAppUrl = (
   process.env.PUBLIC_APP_URL || process.env.FRONTEND_ORIGIN || 'http://localhost:5173'
 ).replace(/\/+$/, '');
@@ -93,6 +97,7 @@ module.exports = {
   smtpPassword: process.env.SMTP_PASSWORD || '',
   smtpFrom: process.env.SMTP_FROM || '',
   publicAppUrl,
+  tournamentCreation,
   frontendOrigin,
   betterAuthSecret,
   betterAuthUrl,

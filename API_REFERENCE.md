@@ -73,7 +73,7 @@ A successful reset consumes the token, verifies the email address, and revokes e
 ```json
 { "email": "string (required)", "password": "string (required)" }
 ```
-**Response `200`**: `{ "user": { "id", "email", "name", "role", "emailVerified", "createdAt" }, "token": "JWT (7d expiry)" }`
+**Response `200`**: `{ "user": { "id", "email", "name", "role", "emailVerified", "canCreateTournament", "createdAt" }, "token": "JWT (7d expiry)" }`
 **Errors**: `400` missing fields, `401` invalid credentials, `403` email not verified (`details.code = "EMAIL_NOT_VERIFIED"`; the client can offer the resend-verification form). Tokens embed the account's `token_version`; completing a password reset invalidates all previously issued tokens.
 
 ### `GET /auth/providers` — Public
@@ -101,7 +101,7 @@ fragment.
 ### `GET /auth/me` — Auth
 **Response `200`**
 ```json
-{ "user": { "id", "email", "name", "role", "emailVerified", "createdAt" } }
+{ "user": { "id", "email", "name", "role", "emailVerified", "canCreateTournament", "createdAt" } }
 ```
 
 ### `GET /users` — Auth + admin
@@ -137,7 +137,11 @@ Lists all tournaments. Private tournaments are returned in a reduced/redacted sh
 ```
 **Errors**: `404` not found, `403` private and not inspectable.
 
-### `POST /tournaments` — Auth
+### `POST /tournaments` — Auth + tournament-creation policy
+Access is controlled by `TOURNAMENT_CREATION`: `*` allows any authenticated
+user; `admin` allows only administrators. Login and `GET /auth/me` responses
+include `user.canCreateTournament` so clients can hide the action, but the API
+remains the enforcement point.
 **Body**
 ```json
 {
@@ -159,7 +163,7 @@ Lists all tournaments. Private tournaments are returned in a reduced/redacted sh
 ```json
 { "tournament": {...}, "stages": [...] }
 ```
-**Errors**: `400` missing name, player cap outside 1–99, invalid player-registration mode, or invalid stage type.
+**Errors**: `400` missing name, player cap outside 1–99, invalid player-registration mode, or invalid stage type; `401` authentication required (`details.code = "AUTH_REQUIRED"`); `403` account not allowed to create tournaments (`details.code = "TOURNAMENT_CREATION_FORBIDDEN"`); `503` tournament-creation policy is misconfigured (`details.code = "TOURNAMENT_CREATION_MISCONFIGURED"`).
 
 Tournament responses include `maxPlayersPerTeam` (default `11` for older
 tournaments) and `playerRegistrationMode`. `direct` allows moderators and team
