@@ -20,6 +20,38 @@ function timestampMilliseconds(value) {
   return Date.parse(/[zZ]|[+-]\d{2}:?\d{2}$/.test(text) ? text : `${text.replace(' ', 'T')}Z`);
 }
 
+function sendOffDetails(event) {
+  if (!event || event.type !== 'card' || event.card !== 'red') return null;
+  const payload = parseJson(event.payload, {});
+  const mode = payload.sendOffMode === 'temporary' ? 'temporary' : 'permanent';
+  const minutes = Number(payload.sendOffMinutes);
+  const createdAt = timestampMilliseconds(event.created_at);
+  const expiresAt = mode === 'temporary' && Number.isFinite(minutes) && minutes > 0 && Number.isFinite(createdAt)
+    ? createdAt + minutes * 60 * 1000
+    : null;
+  return { mode, minutes, expiresAt };
+}
+
+function isActiveSendOff(event, nowMilliseconds = Date.now()) {
+  const details = sendOffDetails(event);
+  return details?.mode === 'permanent' || (details?.expiresAt != null && details.expiresAt > nowMilliseconds);
+}
+
+function validateSendOffChoice({ mode, minutes, field = 'sendOff' }) {
+  const normalizedMode = mode == null
+    ? 'permanent'
+    : mode === 'temporary' ? 'temporary' : mode === 'permanent' ? 'permanent' : null;
+  if (!normalizedMode) throw httpError(400, `${field}Mode must be "permanent" or "temporary"`);
+  if (normalizedMode === 'temporary'
+      && (!Number.isInteger(Number(minutes)) || Number(minutes) <= 0 || Number(minutes) > 120)) {
+    throw httpError(400, `${field}Minutes must be a positive integer no greater than 120`);
+  }
+  return {
+    mode: normalizedMode,
+    minutes: normalizedMode === 'temporary' ? Number(minutes) : null,
+  };
+}
+
 async function getMatch(matchId, tournamentId) {
   const match = await one('SELECT * FROM matches WHERE id = ? AND tournament_id = ?', [matchId, tournamentId]);
   if (!match) throw httpError(404, 'Match not found');
@@ -169,11 +201,16 @@ async function reconcileAutomaticSecondYellowCards({ matchId, tournamentId }) {
       && yellows.length >= 2;
     if (yellows.length < 2 || hasRed || hasAutomaticRed) continue;
     const secondYellow = yellows[1];
+    const secondYellowPayload = parseJson(secondYellow.payload, {});
+    const sendOffMode = secondYellowPayload.secondYellowSendOffMode || 'permanent';
+    const sendOffMinutes = secondYellowPayload.secondYellowSendOffMinutes || null;
     const payload = {
       automaticSecondYellow: true,
       sourceEventId: secondYellow.id,
       playerId,
       teamId: secondYellow.team_id,
+      sendOffMode,
+      sendOffMinutes,
     };
     await run(
       `INSERT INTO match_events
@@ -217,8 +254,12 @@ async function validateEventEligibility({ matchId, eventId = null, type, teamId,
   if (!playerId) return;
   const playerCards = events.filter((event) => event.player_id === playerId && event.type === 'card');
   const yellowCards = playerCards.filter((event) => event.card === 'yellow').length;
-  const redCard = playerCards.some((event) => event.card === 'red');
-  if (redCard || yellowCards >= 2) {
+  const redCard = playerCards.some((event) => event.card === 'red' && isActiveSendOff(event));
+  const secondYellowRed = playerCards.find((event) =>
+    event.card === 'red' && parseJson(event.payload, {}).automaticSecondYellow === true
+  );
+  const activeSecondYellow = secondYellowRed && isActiveSendOff(secondYellowRed);
+  if (redCard || (yellowCards >= 2 && activeSecondYellow)) {
     throw httpError(409, 'This player is suspended for the remainder of the match.');
   }
   if (type === 'assist' && goalEventId) {
@@ -232,7 +273,7 @@ async function validateEventEligibility({ matchId, eventId = null, type, teamId,
     );
     if (previousAttempt) throw httpError(409, 'Each player can take only one shootout attempt.');
   }
-  if (type === 'card' && card === 'red' && redCard) {
+  if (type === 'card' && card === 'red' && playerCards.some((event) => event.card === 'red')) {
     throw httpError(409, 'This player has already received a red card.');
   }
   if (type === 'shootout_attempt' && phase !== 'shootout') {
@@ -366,6 +407,23 @@ async function addEvent({ matchId, tournamentId, refereeId, adminOverride = fals
     throw httpError(400, 'A player is required for an own goal');
   }
   if (type === 'card' && !payload.playerId) throw httpError(400, 'A player is required for this event');
+  if (type === 'card' && payload.card === 'red') {
+    const choice = validateSendOffChoice({
+      mode: payload.sendOffMode,
+      minutes: payload.sendOffMinutes,
+    });
+    payload.sendOffMode = choice.mode;
+    payload.sendOffMinutes = choice.minutes;
+  }
+  if (type === 'card' && payload.card === 'yellow' && payload.secondYellowSendOffMode) {
+    const choice = validateSendOffChoice({
+      mode: payload.secondYellowSendOffMode,
+      minutes: payload.secondYellowSendOffMinutes,
+      field: 'secondYellowSendOff',
+    });
+    payload.secondYellowSendOffMode = choice.mode;
+    payload.secondYellowSendOffMinutes = choice.minutes;
+  }
   if (type === 'assist' && phase === 'shootout') throw httpError(400, 'Shootouts do not have assists');
   await validateEventEligibility({
     matchId,
@@ -568,4 +626,7 @@ module.exports = {
   transition,
   finishPhase,
   abandon,
+  sendOffDetails,
+  isActiveSendOff,
+  validateSendOffChoice,
 };

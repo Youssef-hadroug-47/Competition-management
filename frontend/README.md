@@ -286,14 +286,16 @@ The timeline reconnects after a disconnect and falls back to periodic snapshot
 refresh when SSE is unavailable; private tournament views retain the normal
 authenticated detail-request access rules.
 
-Event controls also enforce player eligibility: red-carded players and players
-with two yellow cards are unavailable for the rest of the match, a scorer
-cannot assist the same goal, and each shootout player may take only one
-attempt. The server is authoritative and the picker disables players already
-known to be ineligible. When a player receives a second yellow card, the
-backend appends a visible automatic red-card event; that derived event cannot
-be edited or deleted directly, and correcting the yellow-card events
-recalculates it.
+Event controls also enforce player eligibility: a permanent red card keeps a
+player out for the rest of the match, while a temporary send-off returns the
+player automatically after the referee-selected elapsed duration. The
+second-yellow red-card flow uses the same send-off choice. A scorer cannot
+assist the same goal, and each shootout player may take only one attempt. The
+server is authoritative and the picker disables players already known to be
+ineligible, showing active send-off countdowns. When a player receives a
+second yellow card, the backend appends a visible automatic red-card event;
+that derived event cannot be edited or deleted directly, and correcting the
+yellow-card events recalculates it.
 
 Tournament creation also configures a tournament-wide suspension system. The
 creator can enable or disable the complete suspension mechanic. When enabled,

@@ -2724,6 +2724,21 @@ footer.page__footer {
   flex-wrap: wrap;
 }
 
+.match-row__details {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.match-row__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
 .match-row__score {
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -2733,7 +2748,38 @@ footer.page__footer {
 .match-row__meta {
   font-size: 0.78rem;
   color: var(--text-muted);
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .match-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    padding: 12px;
+  }
+  .match-row__teams {
+    align-items: flex-start;
+    gap: 5px 8px;
+    font-weight: 700;
+  }
+  .match-row__details {
+    gap: 6px 8px;
+  }
+  .match-row__details .match-row__meta:last-child {
+    flex: 1 1 100%;
+    white-space: normal;
+  }
+  .match-row__actions {
+    width: 100%;
+  }
+  .match-row__actions .btn {
+    flex: 1 1 0;
+    min-height: 42px;
+  }
+  .match-row .match-menu-trigger {
+    padding-inline: 12px;
+  }
 }
 
 .status-pill {
@@ -2869,6 +2915,12 @@ footer.page__footer {
 .referee-timer { display: inline-block; width: fit-content; padding: 8px 14px; border-radius: 999px; background: var(--ink, #17221e); color: #fff; font-variant-numeric: tabular-nums; letter-spacing: .08em; }
 .referee-controls, .referee-event-panel { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin: 16px 0; padding: 16px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
 .referee-whistle { display: inline-flex; align-items: center; gap: 6px; }
+.referee-send-off-choice { display: flex; flex: 1 1 100%; flex-wrap: wrap; align-items: end; gap: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-muted, #f2f5f1); }
+.referee-send-off-choice .field__hint { flex: 1 1 100%; }
+.referee-send-off-panel { display: grid; gap: 10px; margin: 16px 0; padding: 16px; border: 1px solid var(--danger); border-radius: 14px; background: var(--danger-bg, #fff1ef); }
+.referee-send-off-panel h2 { margin: 0; font-size: 1.05rem; }
+.referee-send-off { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.referee-send-off__status { color: var(--danger); font-size: .85rem; font-weight: 600; }
 .referee-event-panel { display: grid; align-items: center; }
 .referee-event-panel h2 { margin: 0; grid-column: 1 / -1; font-size: 1.05rem; }
 .referee-control { display: grid; gap: 5px; color: var(--text-muted); font-size: .8rem; font-weight: 600; }
@@ -2923,15 +2975,58 @@ footer.page__footer {
 .referee-timeline__row--phase .referee-timeline__kind { margin: 0; }
 .referee-timeline__empty { margin: 10px 0 0; text-align: center; color: var(--text-muted); }
 @media (max-width: 640px) {
+  .referee-controls,
+  .referee-event-panel,
+  .referee-send-off-panel {
+    padding: 12px;
+  }
+  .referee-controls > .btn,
+  .referee-controls > .referee-control,
+  .referee-controls > .referee-control__input,
+  .referee-controls > .referee-suspension-panel {
+    width: 100%;
+  }
+  .referee-controls > .referee-control__input,
+  .referee-controls > .referee-control .referee-control__input,
+  .referee-controls > .referee-control .referee-control__select,
+  .referee-controls > .btn {
+    min-height: 44px;
+  }
+  .referee-whistle {
+    justify-content: center;
+  }
+  .referee-send-off-choice {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .referee-send-off-choice .referee-control,
+  .referee-send-off-choice .referee-control__input,
+  .referee-send-off-choice .referee-control__select {
+    width: 100%;
+  }
+  .referee-send-off__status {
+    flex: 1 1 100%;
+  }
   .referee-team-lists { grid-template-columns: 1fr; }
   .referee-scoreboard { gap: 8px; }
-  .referee-scoreboard__team { gap: 6px; }
-  .referee-scoreboard__name { max-width: 100px; font-size: .82rem; }
+  .referee-scoreboard__team { flex: 1 1 0; gap: 6px; }
+  .referee-scoreboard__name { max-width: 100%; font-size: .82rem; }
   .referee-scoreboard__score { font-size: 2.4rem; }
   .referee-event-utilities { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .referee-event-squares { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .referee-event-square { min-height: 64px; padding: 12px 8px; }
+  .referee-emitter-selection { align-items: stretch; }
+  .referee-emitter-selection > .btn,
+  .referee-emitter-selection > .referee-control__input,
+  .referee-emitter-selection > .referee-control__select {
+    width: 100%;
+    min-height: 44px;
+  }
   .referee-timeline { padding: 12px 8px; }
   .referee-timeline__kind { display: none; }
   .referee-timeline__row { grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1fr); }
+  .referee-timeline__event { gap: 6px; padding-inline: 4px; }
+  .referee-timeline__actions { flex: 1 1 100%; }
 }
 .vote-nominee__name { font-weight: 700; }
 .vote-nominee__position { color: var(--text-muted); font-size: .75rem; }

@@ -10,6 +10,7 @@
   let streamRetry = null;
   let fallbackRefresh = null;
   let pendingAssist = null;
+  let sendOffReloading = false;
   const whistleAudio = new Audio('/assets/freesound_community-referee-whistle-blow-gymnasium-6320.mp3');
   whistleAudio.preload = 'auto';
   const isAdministrator = () => String(Session.getUser()?.role || '').toLowerCase() === 'admin';
@@ -203,8 +204,13 @@
 
   function eventTitle(event) {
     if (event.type === 'goal') return event.payload?.ownGoal ? 'Own goal' : 'Goal';
-    if (event.type === 'card' && event.payload?.automaticSecondYellow) return 'Second yellow — red card';
-    if (event.type === 'card') return `${event.card === 'red' ? 'Red' : 'Yellow'} card`;
+    if (event.type === 'card' && event.card === 'red') {
+      const suffix = event.payload?.sendOffMode === 'temporary'
+        ? ` — ${event.payload.sendOffMinutes || '?'} min send-off`
+        : ' — sent off';
+      return event.payload?.automaticSecondYellow ? `Second yellow — red card${suffix}` : `Red card${suffix}`;
+    }
+    if (event.type === 'card') return 'Yellow card';
     if (event.type === 'shootout_attempt') return event.scored ? 'Penalty scored' : 'Penalty missed';
     return event.payload?.action || 'Match update';
   }
@@ -349,20 +355,71 @@
     return list;
   }
 
+  function sendOffControls(eventType, card) {
+    if (eventType !== 'card') return null;
+    const temporary = card === 'red'
+      ? 'This player returns automatically after the selected time.'
+      : 'If this becomes a second yellow, apply this send-off rule.';
+    const mode = UI.el('select', { class: 'referee-control__select', 'aria-label': 'Send-off type' }, [
+      UI.el('option', { value: 'permanent', text: 'Sent off for the match' }),
+      UI.el('option', { value: 'temporary', text: 'Temporary send-off' }),
+    ]);
+    const minutes = UI.el('input', {
+      class: 'referee-control__input',
+      type: 'number',
+      min: 1,
+      max: 120,
+      value: 10,
+      placeholder: 'Minutes',
+      hidden: true,
+      'aria-label': 'Temporary send-off minutes',
+    });
+    const updateVisibility = () => { minutes.hidden = mode.value !== 'temporary'; };
+    mode.addEventListener('change', updateVisibility);
+    return {
+      node: UI.el('div', { class: 'referee-send-off-choice' }, [
+        UI.el('span', { class: 'field__hint', text: temporary }),
+        UI.el('label', { class: 'referee-control' }, [UI.el('span', { text: 'Send-off' }), mode]),
+        minutes,
+      ]),
+      values: () => ({
+        mode: mode.value,
+        minutes: mode.value === 'temporary' ? Number(minutes.value) : null,
+      }),
+    };
+  }
+
+  function activeSendOff(event) {
+    if (event.type !== 'card' || event.card !== 'red') return null;
+    const mode = event.payload?.sendOffMode === 'temporary' ? 'temporary' : 'permanent';
+    const minutes = Number(event.payload?.sendOffMinutes);
+    const createdAt = Date.parse(event.created_at || '');
+    const expiresAt = mode === 'temporary' && Number.isFinite(minutes) && minutes > 0 && Number.isFinite(createdAt)
+      ? createdAt + minutes * 60 * 1000
+      : null;
+    if (mode === 'temporary' && (!expiresAt || expiresAt <= Date.now())) return null;
+    return { event, mode, expiresAt };
+  }
+
   function render() {
     const { match, events } = state;
     UI.clear(root);
     const home = state.homeSquad || [];
     const away = state.awaySquad || [];
     const cardCounts = new Map();
+    const activeSendOffs = new Map();
     events.filter((event) => event.type === 'card' && event.player_id).forEach((event) => {
       const current = cardCounts.get(event.player_id) || { yellow: 0, red: false };
       if (event.card === 'yellow') current.yellow += 1;
-      if (event.card === 'red') current.red = true;
+      if (event.card === 'red') {
+        const sendOff = activeSendOff(event);
+        current.red = Boolean(sendOff);
+        if (sendOff) activeSendOffs.set(event.player_id, sendOff);
+      }
       cardCounts.set(event.player_id, current);
     });
     const unavailablePlayers = new Set([...cardCounts.entries()]
-      .filter(([, cards]) => cards.red || cards.yellow >= 2)
+      .filter(([, cards]) => cards.red)
       .map(([playerId]) => playerId));
     [...home, ...away].forEach((player) => {
       const suspension = player.suspension;
@@ -391,6 +448,26 @@
       timerNode,
       UI.el('p', { class: 'field__hint', text: `${match.phase} · ${match.status} · ${events.length} recorded events` }),
     ]));
+
+    const sendOffEntries = [...activeSendOffs.values()];
+    if (sendOffEntries.length) {
+      const sendOffPanel = UI.el('section', { class: 'referee-send-off-panel' }, [
+        UI.el('h2', { text: 'Active send-offs' }),
+      ]);
+      sendOffEntries.forEach(({ event, mode, expiresAt }) => {
+        const playerName = event.playerName || 'Player';
+        const status = UI.el('span', {
+          class: 'referee-send-off__status',
+          text: mode === 'permanent' ? 'Out for the rest of the match' : 'Temporary send-off',
+        });
+        sendOffPanel.appendChild(UI.el('div', { class: 'referee-send-off' }, [
+          UI.el('strong', { text: playerName }),
+          status,
+        ]));
+        if (expiresAt) status.dataset.expiresAt = String(expiresAt);
+      });
+      root.appendChild(sendOffPanel);
+    }
 
     const controls = UI.el('div', { class: 'referee-controls' });
     if (canOperateLiveMatch(match)) {
@@ -516,6 +593,7 @@
         const correctionReason = (isAdministrator() || state.viewerRole === 'moderator') && match.status === 'finished'
           ? UI.el('textarea', { class: 'referee-control__input', rows: 2, placeholder: 'Correction reason (required)' })
           : null;
+        const sendOff = sendOffControls(eventType, options.card);
         const scored = eventType === 'shootout_attempt'
           ? UI.el('label', { class: 'referee-control' }, [
               UI.el('input', { type: 'checkbox', checked: true }),
@@ -555,6 +633,14 @@
             playerId: activePlayer,
             ...(eventType === 'goal' ? { ownGoal: Boolean(options.ownGoal || !activePlayer) } : {}),
             ...(options.card ? { card: options.card } : {}),
+            ...(sendOff && options.card === 'red' ? {
+              sendOffMode: sendOff.values().mode,
+              sendOffMinutes: sendOff.values().minutes,
+            } : {}),
+            ...(sendOff && options.card === 'yellow' ? {
+              secondYellowSendOffMode: sendOff.values().mode,
+              secondYellowSendOffMinutes: sendOff.values().minutes,
+            } : {}),
             ...(minute && minute.value !== '' ? { minute: Number(minute.value) } : {}),
             ...(scored ? { scored: scored.querySelector('input').checked } : {}),
             ...(correctionReason ? { reason: correctionReason.value.trim() } : {}),
@@ -587,6 +673,8 @@
           selection.append(minute);
         if (correctionReason)
           selection.append(correctionReason);
+        if (sendOff)
+          selection.append(sendOff.node);
         selection.append(action);
       }
       const eventChoices = [
@@ -663,7 +751,19 @@
     }
     root.appendChild(renderEventTimeline(events, match, home, away));
     clearInterval(timer);
-    timer = setInterval(() => { if (match.status === 'live') timerNode.textContent = timerLabel(match); }, 1000);
+    timer = setInterval(() => {
+      if (match.status === 'live') timerNode.textContent = timerLabel(match);
+      root.querySelectorAll('.referee-send-off__status[data-expires-at]').forEach((status) => {
+        const remaining = Math.max(0, Number(status.dataset.expiresAt) - Date.now());
+        status.textContent = remaining
+          ? `Returns in ${Math.ceil(remaining / 1000)}s`
+          : 'Returning now';
+        if (!remaining && !sendOffReloading) {
+          sendOffReloading = true;
+          load().catch((error) => notify(UI.friendlyErrorMessage(error))).finally(() => { sendOffReloading = false; });
+        }
+      });
+    }, 1000);
   }
 
   async function load() {

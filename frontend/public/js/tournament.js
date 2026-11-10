@@ -1406,21 +1406,26 @@
     const hasScore = m.score && m.score.home != null && m.score.away != null;
     const metaParts = [formatDateTime(m.scheduledAt), m.venue].filter(Boolean);
 
-    const children = [
-      el('div', { class: 'match-row__teams' }, [
-        el('span', { text: home }),
-        el('span', { text: 'vs', style: 'color: var(--text-muted); font-size:0.78rem;' }),
-        el('span', { text: away }),
-      ]),
+    const details = [
       hasScore
         ? el('span', { class: 'match-row__score', text: `${m.score.home} \u2013 ${m.score.away}` })
         : el('span', { class: 'match-row__meta', text: '\u2014' }),
       statusPill(m.status),
       metaParts.length ? el('span', { class: 'match-row__meta', text: metaParts.join(' · ') }) : null,
     ];
+    const actions = [];
+    const children = [
+      el('div', { class: 'match-row__teams' }, [
+        el('span', { text: home }),
+        el('span', { text: 'vs', style: 'color: var(--text-muted); font-size:0.78rem;' }),
+        el('span', { text: away }),
+      ]),
+      el('div', { class: 'match-row__details' }, details),
+    ];
     const simulate = simulationButton('Simulate', () => Api.simulation.match(m.id), m.status === 'finished');
-    if (simulate) children.push(simulate);
-    children.push(matchMenuTrigger(m.id, state));
+    if (simulate) actions.push(simulate);
+    actions.push(matchMenuTrigger(m.id, state));
+    children.push(el('div', { class: 'match-row__actions' }, actions));
     return el('li', { class: 'match-row' }, children);
   }
 
