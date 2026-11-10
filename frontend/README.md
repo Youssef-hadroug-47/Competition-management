@@ -270,7 +270,9 @@ captured as a `tournamentId` value instead. See the note in
 ## Referee match menu
 
 Assigned tournament referees can open `/referee.html?tournamentId=...&matchId=...`
-to run a live match. The menu records goals, cards, phase transitions, and
+to run a live match. Match operators also have a local `Whistle` control in
+the action bar that plays the bundled referee whistle sound and restarts it
+from the beginning when pressed again. The menu records goals, cards, phase transitions, and
 penalty-shootout attempts. Regulation and extra-time goals update match/player
 statistics; shootout attempts update only shootout totals and never count as
 goals. Match timing is based on server timestamps, and referee mutations use

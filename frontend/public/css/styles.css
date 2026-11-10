@@ -2868,6 +2868,7 @@ footer.page__footer {
 .referee-scoreboard__separator { color: var(--text-muted); font-size: 2rem; }
 .referee-timer { display: inline-block; width: fit-content; padding: 8px 14px; border-radius: 999px; background: var(--ink, #17221e); color: #fff; font-variant-numeric: tabular-nums; letter-spacing: .08em; }
 .referee-controls, .referee-event-panel { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin: 16px 0; padding: 16px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+.referee-whistle { display: inline-flex; align-items: center; gap: 6px; }
 .referee-event-panel { display: grid; align-items: center; }
 .referee-event-panel h2 { margin: 0; grid-column: 1 / -1; font-size: 1.05rem; }
 .referee-control { display: grid; gap: 5px; color: var(--text-muted); font-size: .8rem; font-weight: 600; }

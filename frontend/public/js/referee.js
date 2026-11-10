@@ -10,6 +10,8 @@
   let streamRetry = null;
   let fallbackRefresh = null;
   let pendingAssist = null;
+  const whistleAudio = new Audio('/assets/freesound_community-referee-whistle-blow-gymnasium-6320.mp3');
+  whistleAudio.preload = 'auto';
   const isAdministrator = () => String(Session.getUser()?.role || '').toLowerCase() === 'admin';
 
   if (!tournamentId || !matchId) {
@@ -42,6 +44,16 @@
     && (state?.viewerRole === 'moderator'
       || isAdministrator()
       || (canOperateMatch(match) && match?.status === 'live'));
+  const playWhistle = async (button) => {
+    try {
+      whistleAudio.currentTime = 0;
+      await whistleAudio.play();
+      button.textContent = 'Whistle';
+    } catch (error) {
+      button.textContent = 'Whistle';
+      notify('The whistle could not be played. Check the browser audio permissions.');
+    }
+  };
   const backButton = document.getElementById('back-navigation');
   if (backButton) {
     backButton.addEventListener('click', () => {
@@ -381,6 +393,17 @@
     ]));
 
     const controls = UI.el('div', { class: 'referee-controls' });
+    if (canOperateLiveMatch(match)) {
+      const whistle = UI.el('button', {
+        class: 'btn btn--ghost referee-whistle',
+        type: 'button',
+        text: 'Whistle',
+        title: 'Play referee whistle',
+        'aria-label': 'Play referee whistle',
+      });
+      whistle.addEventListener('click', () => playWhistle(whistle));
+      controls.appendChild(whistle);
+    }
     if (match.status === 'scheduled' && canStartMatch(match)) {
       const duration = UI.el('input', { class: 'referee-control__input', type: 'number', min: 1, value: match.durationMinutes || 90, placeholder: 'Minutes' });
       const start = UI.el('button', { class: 'btn btn--primary', type: 'button', text: 'Start match' });
