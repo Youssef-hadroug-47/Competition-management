@@ -360,7 +360,10 @@
     const temporary = card === 'red'
       ? 'This player returns automatically after the selected time.'
       : 'If this becomes a second yellow, apply this send-off rule.';
-    const mode = UI.el('select', { class: 'referee-control__select', 'aria-label': 'Send-off type' }, [
+    const mode = UI.el('select', {
+      class: 'referee-control__select referee-send-off-choice__select',
+      'aria-label': 'Send-off type',
+    }, [
       UI.el('option', { value: 'permanent', text: 'Sent off for the match' }),
       UI.el('option', { value: 'temporary', text: 'Temporary send-off' }),
     ]);
@@ -379,8 +382,14 @@
     return {
       node: UI.el('div', { class: 'referee-send-off-choice' }, [
         UI.el('span', { class: 'field__hint', text: temporary }),
-        UI.el('label', { class: 'referee-control' }, [UI.el('span', { text: 'Send-off' }), mode]),
-        minutes,
+        UI.el('label', { class: 'referee-control referee-send-off-choice__mode' }, [
+          UI.el('span', { text: 'How should this player return?' }),
+          mode,
+        ]),
+        UI.el('label', { class: 'referee-control referee-send-off-choice__duration' }, [
+          UI.el('span', { text: 'Minutes off the pitch' }),
+          minutes,
+        ]),
       ]),
       values: () => ({
         mode: mode.value,

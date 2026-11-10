@@ -1515,6 +1515,11 @@ footer.page__footer {
   border-left: 4px solid var(--highlight);
 }
 
+#referee-app {
+  width: 100%;
+  min-width: 0;
+}
+
 .panel__head {
   display: flex;
   align-items: baseline;
@@ -2915,13 +2920,17 @@ footer.page__footer {
 .referee-timer { display: inline-block; width: fit-content; padding: 8px 14px; border-radius: 999px; background: var(--ink, #17221e); color: #fff; font-variant-numeric: tabular-nums; letter-spacing: .08em; }
 .referee-controls, .referee-event-panel { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; margin: 16px 0; padding: 16px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
 .referee-whistle { display: inline-flex; align-items: center; gap: 6px; }
-.referee-send-off-choice { display: flex; flex: 1 1 100%; flex-wrap: wrap; align-items: end; gap: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-muted, #f2f5f1); }
-.referee-send-off-choice .field__hint { flex: 1 1 100%; }
+.referee-send-off-choice { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 180px); flex: 1 1 100%; align-items: end; gap: 10px; box-sizing: border-box; min-width: 0; max-width: 100%; width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-muted, #f2f5f1); }
+.referee-send-off-choice .field__hint { grid-column: 1 / -1; min-width: 0; overflow-wrap: anywhere; }
+.referee-send-off-choice__mode,
+.referee-send-off-choice__duration { min-width: 0; }
+.referee-send-off-choice__select { width: 100%; font-size: .95rem; font-weight: 600; }
 .referee-send-off-panel { display: grid; gap: 10px; margin: 16px 0; padding: 16px; border: 1px solid var(--danger); border-radius: 14px; background: var(--danger-bg, #fff1ef); }
 .referee-send-off-panel h2 { margin: 0; font-size: 1.05rem; }
 .referee-send-off { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 .referee-send-off__status { color: var(--danger); font-size: .85rem; font-weight: 600; }
-.referee-event-panel { display: grid; align-items: center; }
+.referee-event-panel { display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; min-width: 0; }
+.referee-event-panel > * { grid-column: 1 / -1; min-width: 0; max-width: 100%; }
 .referee-event-panel h2 { margin: 0; grid-column: 1 / -1; font-size: 1.05rem; }
 .referee-control { display: grid; gap: 5px; color: var(--text-muted); font-size: .8rem; font-weight: 600; }
 .referee-control__input, .referee-control__select { min-height: 40px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); }
@@ -2997,12 +3006,32 @@ footer.page__footer {
   }
   .referee-send-off-choice {
     align-items: stretch;
+    box-sizing: border-box;
+    flex: 0 0 100%;
     flex-direction: column;
+    min-width: 0;
+    max-width: 100%;
+    width: 100%;
   }
   .referee-send-off-choice .referee-control,
   .referee-send-off-choice .referee-control__input,
   .referee-send-off-choice .referee-control__select {
+    box-sizing: border-box;
+    min-width: 0;
     width: 100%;
+  }
+  .referee-send-off-choice__mode,
+  .referee-send-off-choice__duration {
+    grid-column: 1 / -1;
+  }
+  .referee-send-off-choice__select,
+  .referee-send-off-choice__duration .referee-control__input {
+    min-height: 48px;
+    font-size: 1rem;
+  }
+  .referee-send-off-choice .field__hint {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .referee-send-off__status {
     flex: 1 1 100%;
@@ -3015,18 +3044,80 @@ footer.page__footer {
   .referee-event-utilities { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .referee-event-squares { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .referee-event-square { min-height: 64px; padding: 12px 8px; }
-  .referee-emitter-selection { align-items: stretch; }
+  .referee-emitter-selection {
+    align-items: stretch;
+    box-sizing: border-box;
+    min-width: 0;
+    max-width: 100%;
+    width: 100%;
+  }
   .referee-emitter-selection > .btn,
   .referee-emitter-selection > .referee-control__input,
   .referee-emitter-selection > .referee-control__select {
     width: 100%;
     min-height: 44px;
   }
-  .referee-timeline { padding: 12px 8px; }
+  .referee-timeline { gap: 6px; padding: 12px 8px; }
+  .referee-timeline__heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .referee-timeline__period {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+    margin-top: 6px;
+  }
   .referee-timeline__kind { display: none; }
-  .referee-timeline__row { grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1fr); }
+  .referee-timeline__row {
+    grid-template-columns: 34px minmax(0, 1fr);
+    gap: 6px;
+    align-items: start;
+    min-height: 48px;
+  }
+  .referee-timeline__row > .referee-timeline__minute {
+    grid-column: 1;
+    grid-row: 1;
+    padding-top: 8px;
+    text-align: left;
+  }
+  .referee-timeline__row--home .referee-timeline__event,
+  .referee-timeline__row--away .referee-timeline__event {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: stretch;
+    justify-content: flex-start;
+    width: auto;
+    padding: 6px 4px;
+    text-align: left;
+  }
   .referee-timeline__event { gap: 6px; padding-inline: 4px; }
-  .referee-timeline__actions { flex: 1 1 100%; }
+  .referee-timeline__icon { flex-basis: 26px; width: 26px; height: 26px; }
+  .referee-timeline__details { flex: 1 1 auto; }
+  .referee-timeline__details strong,
+  .referee-timeline__team { overflow-wrap: anywhere; }
+  .referee-timeline__actions {
+    display: flex;
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 4px 0 0;
+  }
+  .referee-timeline__actions .referee-event-action {
+    flex: 1 1 120px;
+    min-height: 40px;
+  }
+  .referee-timeline__row--phase {
+    display: block;
+    min-height: 0;
+  }
+  .referee-timeline__row--phase .referee-timeline__event {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+    padding-block: 8px;
+  }
 }
 .vote-nominee__name { font-weight: 700; }
 .vote-nominee__position { color: var(--text-muted); font-size: .75rem; }
@@ -3115,6 +3206,19 @@ footer.page__footer {
   padding: 6px 10px;
   font-size: 0.78rem;
   white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .referee-timeline__actions {
+    display: flex;
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    margin: 4px 0 0;
+  }
+  .referee-timeline__actions .referee-event-action {
+    flex: 1 1 120px;
+    min-height: 40px;
+  }
 }
 
 .back-link--button {
