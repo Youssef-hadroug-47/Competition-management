@@ -5,3 +5,5 @@ data/
 .DS_Store
 addings.md
 mail-test.sh
+tests/
+root.log
