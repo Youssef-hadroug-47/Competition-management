@@ -10,7 +10,7 @@
   content="default-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src https://fonts.gstatic.com; script-src 'self'; connect-src 'self' http://localhost:* https:; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Work+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="/css/styles.css" />
 </head>
 <body>
@@ -45,7 +45,11 @@
 
     <!-- Matches / Standings & bracket / Top scorers — one tab visible at a time -->
     <section class="panel" id="tabs-panel" hidden>
-      <div class="tabs" id="content-tabs" role="tablist"></div>
+      <div class="tabs-rail" id="tabs-rail">
+        <button class="tabs-rail__control tabs-rail__control--prev" id="tabs-scroll-prev" type="button" aria-label="Scroll tabs left" aria-controls="content-tabs">‹</button>
+        <div class="tabs" id="content-tabs" role="tablist"></div>
+        <button class="tabs-rail__control tabs-rail__control--next" id="tabs-scroll-next" type="button" aria-label="Scroll tabs right" aria-controls="content-tabs">›</button>
+      </div>
       <div id="content-body" style="margin-top:18px;"></div>
     </section>
   </main>

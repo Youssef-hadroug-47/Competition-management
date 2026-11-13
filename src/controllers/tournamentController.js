@@ -666,7 +666,12 @@ const getUserRole = asyncHandler(async (req, res) => {
 const getAllTournamentRole = asyncHandler(async (req, res) => {
   const tournamentId = req.params.tournamentId || null;
   if (!tournamentId) throw httpError(400, 'tournaments id is required');
-  res.json((await getRoles(tournamentId)) || []);
+  const roles = (await getRoles(tournamentId)) || [];
+  res.json(roles.map((assignment) => ({
+    role: assignment.role,
+    user_id: assignment.user_id,
+    email: assignment.user_email || assignment.email,
+  })));
 });
 const getTournamentRole = asyncHandler(async (req, res) => {
   const { userId, tournamentId } = req.params;

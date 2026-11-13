@@ -37,8 +37,32 @@
   const heroMeta = document.getElementById('hero-meta');
   const heroActions = document.getElementById('hero-actions');
   const tabsPanel = document.getElementById('tabs-panel');
+  const tabsRail = document.getElementById('tabs-rail');
   const contentTabs = document.getElementById('content-tabs');
+  const tabsScrollPrev = document.getElementById('tabs-scroll-prev');
+  const tabsScrollNext = document.getElementById('tabs-scroll-next');
   const contentBody = document.getElementById('content-body');
+
+  function updateTabsRail() {
+    if (!contentTabs || !tabsRail) return;
+    const maxScroll = Math.max(0, contentTabs.scrollWidth - contentTabs.clientWidth);
+    const overflowing = maxScroll > 2;
+    tabsRail.classList.toggle('is-overflowing', overflowing);
+    if (tabsScrollPrev) tabsScrollPrev.disabled = contentTabs.scrollLeft <= 2;
+    if (tabsScrollNext) tabsScrollNext.disabled = contentTabs.scrollLeft >= maxScroll - 2;
+  }
+
+  function scrollTabs(direction) {
+    contentTabs?.scrollBy({
+      left: direction * Math.max(180, contentTabs.clientWidth * 0.65),
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    });
+  }
+
+  tabsScrollPrev?.addEventListener('click', () => scrollTabs(-1));
+  tabsScrollNext?.addEventListener('click', () => scrollTabs(1));
+  contentTabs?.addEventListener('scroll', updateTabsRail, { passive: true });
+  window.addEventListener('resize', updateTabsRail);
 
   // A tournament id is an opaque token from `utils/ids.js` on the
   // backend — we don't know its exact shape, so we allow-list generously
@@ -389,6 +413,7 @@
       reservedInviteCodes: new Map(),
       teamLeader: null,
       teamLeaderRequest: null,
+      teamsEditMode: false,
     };
     const savedStageId = navigationState.get('activeStageId');
     if (stages.some((stage) => stage.id === savedStageId)) state.activeStageId = savedStageId;
@@ -649,6 +674,9 @@
       { id: 'teams', label: 'Teams & players', render: renderTeamsView },
       { id: 'votes', label: 'Voting', render: renderVotesView },
     ];
+    if (['invite_code', 'both'].includes(state.tournament.playerRegistrationMode)) {
+      tabs.push({ id: 'join-team', label: 'Join a team', render: renderJoinTeamView });
+    }
     if (state.tournament.visibility === 'private' && state.viewerRole === 'moderator') {
       tabs.push({ id: 'followers', label: 'Followers', render: renderFollowersView });
     }
@@ -667,6 +695,14 @@
       [...contentTabs.children].forEach((btn) => {
         btn.setAttribute('aria-selected', String(btn.dataset.tabId === tabId));
       });
+      const selectedButton = [...contentTabs.children]
+        .find((button) => button.dataset.tabId === tabId);
+      selectedButton?.scrollIntoView({
+        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+        block: 'nearest',
+        inline: 'center',
+      });
+      requestAnimationFrame(updateTabsRail);
       clear(contentBody);
       tabs.find((t) => t.id === tabId).render(contentBody, state);
     }
@@ -685,6 +721,7 @@
     });
 
     selectTab(activeTab);
+    requestAnimationFrame(updateTabsRail);
   }
 
   async function renderFollowersView(container, state) {
@@ -847,7 +884,7 @@
     });
     container.appendChild(el('div', { class: 'staff-management__intro' }, [
       el('h2', { text: 'Tournament staff' }),
-      el('p', { class: 'field__hint', text: 'Find a user by exact email, then assign them as a moderator or referee. User IDs are internal identifiers, not passwords or access credentials.' }),
+      el('p', { class: 'field__hint', text: 'Find a user by exact email, then assign them as a moderator, referee, or team leader.' }),
     ]));
     container.appendChild(addForm);
 
@@ -858,7 +895,8 @@
     const list = el('ul', { class: 'staff-list' });
     roles.forEach((assignment) => {
       const isCreator = assignment.user_id === state.tournament.createdBy;
-      const roleSelect = el('select', { class: 'staff-row__role', 'aria-label': `Role for ${assignment.user_id}` }, [
+      const email = assignment.user_email || assignment.email || 'User account unavailable';
+      const roleSelect = el('select', { class: 'staff-row__role', 'aria-label': `Role for ${email}` }, [
         el('option', { value: 'moderator', text: 'Moderator' }),
         el('option', { value: 'referee', text: 'Referee' }),
         el('option', { value: 'team_leader', text: 'Team leader' }),
@@ -897,7 +935,10 @@
       });
       list.appendChild(el('li', { class: 'staff-row' }, [
         el('div', { class: 'staff-row__identity' }, [
-          el('strong', { text: assignment.user_id }),
+          el('strong', { text: email }),
+          ...(!assignment.user_email && !assignment.email
+            ? [el('span', { class: 'badge badge--warning', text: 'Account data unavailable' })]
+            : []),
           isCreator ? el('span', { class: 'badge', text: 'Creator' }) : null,
         ]),
         el('div', { class: 'staff-row__actions' }, [roleSelect, removeButton]),
@@ -1331,17 +1372,20 @@
     if (state.viewerRole === 'moderator') {
       shell.appendChild(matchMenuControls(state, detail, refresh));
     }
-    shell.appendChild(el('div', { class: 'match-menu__controls' }, [
+    shell.appendChild(el('div', { class: 'match-menu__controls match-menu__timeline' }, [
       el('a', {
-        class: 'btn btn--ghost',
+        class: 'btn btn--primary',
         href: `/referee?tournamentId=${encodeURIComponent(state.tournamentId)}&matchId=${encodeURIComponent(detail.match.id)}`,
         text: 'View match timeline',
       }),
     ]));
 
-    shell.appendChild(el('div', { class: 'match-menu__squads' }, [
-      matchMenuSquadPanel(homeName, detail.homeSquad || []),
-      matchMenuSquadPanel(awayName, detail.awaySquad || []),
+    shell.appendChild(el('section', { class: 'match-menu__squads-section' }, [
+      el('h3', { class: 'match-menu__section-title', text: 'Teams & players' }),
+      el('div', { class: 'match-menu__squads' }, [
+        matchMenuSquadPanel(homeName, detail.homeSquad || []),
+        matchMenuSquadPanel(awayName, detail.awaySquad || []),
+      ]),
     ]));
   }
 
@@ -1356,6 +1400,7 @@
 
     function close() {
       backdrop.remove();
+      document.body.classList.remove('match-menu-open');
       document.removeEventListener('keydown', onKeyDown);
     }
     function onKeyDown(event) {
@@ -1366,6 +1411,7 @@
     });
     document.addEventListener('keydown', onKeyDown);
     document.body.appendChild(backdrop);
+    document.body.classList.add('match-menu-open');
 
     async function refresh() {
       let detail;
@@ -2176,6 +2222,7 @@
   }
 
   function adminCatalogForms(container, state) {
+    if (!state.teamsEditMode) return;
     const isTeamLeader = state.viewerRole === 'team_leader';
     const canManageTeams = isAdmin() || state.viewerRole === 'moderator' || isTeamLeader;
     if (!canManageTeams) return;
@@ -2222,6 +2269,7 @@
       const autoForm = el('form', { class: 'inline-form registration-form' }, [
         el('button', { class: 'btn btn--secondary', type: 'submit', text: 'Add missing teams automatically' }),
       ]);
+      autoForm.classList.add('team-auto-fill-form');
       autoForm.addEventListener('submit', async (event) => {
         event.preventDefault();
         try {
@@ -2251,8 +2299,10 @@
     const inviteCodeEnabled = registrationMode === 'invite_code' || registrationMode === 'both';
     const reservedInviteCodes = Number(state.reservedInviteCodes.get(participantTeam.id)) || 0;
     const availableSlots = Math.max(0, maxPlayersPerTeam - players.length - reservedInviteCodes);
-    const canDelete = isAdmin() || state.viewerRole === 'moderator' || isOwnedByTeamLeader;
-    const canManageRoster = isAdmin() || state.viewerRole === 'moderator' || isOwnedByTeamLeader;
+    const canDelete = state.teamsEditMode
+      && (isAdmin() || state.viewerRole === 'moderator' || isOwnedByTeamLeader);
+    const canManageRoster = state.teamsEditMode
+      && (isAdmin() || state.viewerRole === 'moderator' || isOwnedByTeamLeader);
     const children = [
       el('div', { class: 'participant-team-card__heading' }, [
         el('h3', { text: teamName }),
@@ -2384,6 +2434,7 @@
   async function renderTeamsView(container, state) {
     const scrollTop = window.scrollY;
     clear(container);
+    container.classList.add('teams-view');
     container.appendChild(el('p', { class: 'empty-state', text: 'Loading teams and players…' }));
     try {
       state.teamLeader = await loadTeamLeader(state);
@@ -2393,16 +2444,43 @@
       return;
     }
     clear(container);
-    adminCatalogForms(container, state);
-    if (['invite_code', 'both'].includes(state.tournament.playerRegistrationMode)) {
-      PlayerInvite.renderRedeemer(container, {
-        onRedeemed: async (details) => {
-          UI.flashMessage(`Player added to ${details.teamName}.`);
-          invalidateRoster(state, details.participantTeamId);
-          await renderTeamsView(container, state);
-        },
+    const canEditTeams = isAdmin() || state.viewerRole === 'moderator' || state.viewerRole === 'team_leader';
+    const editToggle = canEditTeams
+      ? el('label', { class: 'teams-edit-switch' }, [
+        el('input', {
+          type: 'checkbox',
+          checked: state.teamsEditMode,
+          'aria-label': 'Toggle teams and players edit mode',
+        }),
+        el('span', { class: 'teams-edit-switch__track', 'aria-hidden': 'true' }, [
+          el('span', { class: 'teams-edit-switch__thumb' }),
+        ]),
+        el('span', {
+          class: 'teams-edit-switch__label',
+          text: state.teamsEditMode ? 'Editing enabled' : 'View mode',
+        }),
+      ])
+      : null;
+    if (editToggle) {
+      editToggle.querySelector('input').addEventListener('change', (event) => {
+        state.teamsEditMode = event.target.checked;
+        renderTeamsView(container, state);
       });
     }
+    container.appendChild(el('div', { class: 'teams-view__toolbar' }, [
+      el('div', { class: 'teams-view__heading' }, [
+        el('div', { class: 'eyebrow', text: 'Tournament roster' }),
+        el('h2', { text: 'Teams & players' }),
+        el('p', {
+          class: 'field__hint',
+          text: state.teamsEditMode
+            ? 'Changes are saved immediately. Use Done editing when you are finished.'
+            : 'Browse registered teams and player stats. Open edit mode only when you need to make changes.',
+        }),
+      ]),
+      editToggle,
+    ]));
+    adminCatalogForms(container, state);
     if (!state.participantTeams.length) {
       container.appendChild(el('p', { class: 'empty-state', text: 'No teams registered yet.' }));
       return;
@@ -2461,6 +2539,18 @@
     );
     cards.forEach((card) => grid.appendChild(card));
     requestAnimationFrame(() => window.scrollTo({ top: scrollTop, behavior: 'auto' }));
+  }
+
+  function renderJoinTeamView(container, state) {
+    clear(container);
+    container.classList.remove('teams-view');
+    PlayerInvite.renderRedeemer(container, {
+      onRedeemed: async (details) => {
+        UI.flashMessage(`Player added to ${details.teamName}.`);
+        invalidateRoster(state, details.participantTeamId);
+        renderJoinTeamView(container, state);
+      },
+    });
   }
 
   // ---------------------------------------------------------------

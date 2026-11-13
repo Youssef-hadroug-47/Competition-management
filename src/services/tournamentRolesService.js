@@ -3,7 +3,11 @@ const { query } = require('../db');
 async function getRoles(tournamentId) {
   if (!tournamentId) return null;
   const result = await query(
-    'SELECT role, user_id FROM tournament_role WHERE tournament_id = $1',
+    `SELECT tr.role, tr.user_id, u.email AS user_email
+     FROM tournament_role tr
+     LEFT JOIN users u ON u.id = tr.user_id
+     WHERE tr.tournament_id = $1
+     ORDER BY LOWER(u.email), tr.role`,
     [tournamentId],
   );
   return result.rows;
