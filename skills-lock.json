@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "skills": {
+    "backend-performance-review": {
+      "source": "Sanoy24/backend-performance-review",
+      "sourceType": "github",
+      "skillPath": "skills/backend-performance-review/SKILL.md",
+      "computedHash": "63ea4ce776ffed388c52c1220f9ad556cb9de2fefdf17585ce2076941e18e00f"
+    },
+    "express": {
+      "source": "full-stack-skills/nodejs-skills",
+      "sourceType": "github",
+      "skillPath": "skills/express/SKILL.md",
+      "computedHash": "a29fcf8e87f87675761674fdaccc31f20d545e6823545e94dbca24e9a060c406"
+    },
+    "node": {
+      "source": "mcollina/skills",
+      "sourceType": "github",
+      "skillPath": "skills/node/SKILL.md",
+      "computedHash": "aba2163ddb3fcf3e6a9d101ac370fabc94055b3e628b125dd084969f1a945993"
+    },
+    "postgres-pro": {
+      "source": "jeffallan/claude-skills",
+      "sourceType": "github",
+      "skillPath": "skills/postgres-pro/SKILL.md",
+      "computedHash": "51ec6df3efe3c8cfc82b4996c55361149a9fa0ae5d9b10343e4768d30b645c7f"
+    },
+    "supabase-postgres-best-practices": {
+      "source": "supabase/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/supabase-postgres-best-practices/SKILL.md",
+      "computedHash": "e14e276241805c97dbcfe40dcbea1a3035269cc7293cac4b1832dda41a835e60"
+    }
+  }
+}

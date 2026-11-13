@@ -1,0 +1,4 @@
+interface:
+  display_name: "Express"
+  short_description: "Express.js framework including routing, middleware, request…"
+  default_prompt: "Use $express to help with my current task: Provides comprehensive guidance for Express.js framework including routing, middleware, request handling, templating, and API development."

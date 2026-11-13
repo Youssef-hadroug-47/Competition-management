@@ -2,7 +2,7 @@ const fs = require('fs/promises');
 const path = require('path');
 const { Pool } = require('pg');
 const config = require('../config');
-const { getRequestContext } = require('../utils/requestContext');
+const { getRequestContext, shouldLogPerformance } = require('../utils/requestContext');
 
 const pool = new Pool({
   ...(config.databaseUrl ? { connectionString: config.databaseUrl } : {}),
@@ -17,6 +17,19 @@ const pool = new Pool({
 });
 
 let initialization;
+
+function poolStats() {
+  return {
+    total: pool.totalCount,
+    idle: pool.idleCount,
+    waiting: pool.waitingCount,
+  };
+}
+
+function observePool(context, stats = poolStats()) {
+  if (!context) return;
+  context.poolWaitingMax = Math.max(context.poolWaitingMax || 0, stats.waiting);
+}
 
 async function initialize() {
   if (!initialization) {
@@ -35,10 +48,12 @@ async function query(text, values) {
   const startedAt = performance.now();
   const context = getRequestContext();
   if (context) context.queryCount += 1;
+  observePool(context);
   try {
     return await pool.query(text, values);
   } finally {
-    if (config.performanceLogging) {
+    observePool(context);
+    if (config.performanceLogging && shouldLogPerformance(context)) {
       const statement = String(text).replace(/\s+/g, ' ').trim().slice(0, 120);
       console.log(
         `[db] id=${context?.requestId || 'startup'} ` +
@@ -49,7 +64,22 @@ async function query(text, values) {
 }
 
 async function withTransaction(callback) {
+  const startedAt = performance.now();
+  const waitStartedAt = performance.now();
+  const context = getRequestContext();
+  observePool(context);
   const client = await pool.connect();
+  if (context) {
+    const clientQuery = client.query.bind(client);
+    client.query = (...args) => {
+      context.queryCount += 1;
+      return clientQuery(...args);
+    };
+  }
+  if (context) {
+    context.transactionCount = (context.transactionCount || 0) + 1;
+    context.poolWaitMs = (context.poolWaitMs || 0) + (performance.now() - waitStartedAt);
+  }
   try {
     await client.query('BEGIN');
     const result = await callback(client);
@@ -64,6 +94,13 @@ async function withTransaction(callback) {
     throw error;
   } finally {
     client.release();
+    if (config.performanceLogging && shouldLogPerformance(context)) {
+      console.log(
+        `[db-tx] id=${context?.requestId || 'startup'} ` +
+        `${Math.round(performance.now() - startedAt)}ms ` +
+        `poolWaitMs=${Math.round(context?.poolWaitMs || 0)}`,
+      );
+    }
   }
 }
 
@@ -84,6 +121,7 @@ function parseJson(value, fallback = {}) {
 module.exports = {
   pool,
   db: pool,
+  poolStats,
   initialize,
   query,
   withTransaction,

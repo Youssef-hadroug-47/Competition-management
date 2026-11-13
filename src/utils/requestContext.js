@@ -10,4 +10,8 @@ function getRequestContext() {
   return storage.getStore() || null;
 }
 
-module.exports = { runWithRequestContext, getRequestContext };
+function shouldLogPerformance(context) {
+  return Boolean(context?.performanceLog);
+}
+
+module.exports = { runWithRequestContext, getRequestContext, shouldLogPerformance };

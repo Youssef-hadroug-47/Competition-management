@@ -149,7 +149,9 @@
     const user = window.Session.getUser();
 
     if (!user) {
+      const themeButton = window.Theme?.createToggle();
       container.appendChild(el('div', { class: 'topbar__desktop-actions' }, [
+        themeButton,
         el('a', { class: 'btn btn--ghost', href: '/join-team', text: 'Join with code' }),
         el('a', { class: 'btn btn--ghost', href: '/login', text: 'Log in' }),
         el('a', { class: 'btn btn--primary', href: '/register', text: 'Register' }),

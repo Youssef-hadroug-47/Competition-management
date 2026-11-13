@@ -6,6 +6,10 @@ const databaseSslRejectUnauthorized = !/^(0|false|no)$/i.test(
   process.env.DATABASE_SSL_REJECT_UNAUTHORIZED || '',
 );
 const smtpPort = Number(process.env.SMTP_PORT) || 587;
+const configuredPerformanceLogSampleRate = Number(process.env.PERFORMANCE_LOG_SAMPLE_RATE ?? 0.1);
+const performanceLogSampleRate = Number.isFinite(configuredPerformanceLogSampleRate)
+  ? Math.min(1, Math.max(0, configuredPerformanceLogSampleRate))
+  : 0.1;
 const googleClientId = process.env.GOOGLE_CLIENT_ID || '';
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || '';
 const betterAuthSecret = process.env.BETTER_AUTH_SECRET || '';
@@ -90,6 +94,7 @@ module.exports = {
   databaseConnectionTimeoutMs: Number(process.env.DATABASE_CONNECTION_TIMEOUT_MS) || 10000,
   databaseIdleTimeoutMs: Number(process.env.DATABASE_IDLE_TIMEOUT_MS) || 10000,
   performanceLogging: /^(1|true|yes)$/i.test(process.env.PERFORMANCE_LOGGING || ''),
+  performanceLogSampleRate,
   smtpHost: process.env.SMTP_HOST || '',
   smtpPort,
   smtpSecure: /^(1|true|yes)$/i.test(process.env.SMTP_SECURE || '') || smtpPort === 465,

@@ -1,0 +1,400 @@
+# Performance Review Report — template
+
+Fill this in. **Delete every section for a layer that is not present in the system** — an
+empty section is worse than no section. Do not stub, do not write "N/A: no message broker
+detected".
+
+Guidance in `[brackets]` is for the author and must not appear in the output.
+
+---
+
+# Performance Review: <service or repository name>
+
+**Date:** <date>
+**Mode:** Full review | Change-scoped review (<diff / branch / PR>)
+**Reviewed by:** Automated performance review, `backend-performance-review` v<version>
+
+---
+
+## 1. Decision summary
+
+`[First-screen decision surface: under 400 words, excluding commands. Every item points to
+later detail; introduce no claim absent from its finding or validation plan.]`
+
+### Overall assessment
+
+`[Two to four sentences. What kind of shape is this system in, and what is the single most
+important thing to know? If nothing material was found, say so plainly here — that is a
+valid and complete result. State review confidence and, for change-scoped mode, the derived
+verdict in plain language.]`
+
+### Top three actions
+
+`[At most three. Use the highest-priority findings, adjusted only for explicit sequencing
+dependencies. Name the finding, concrete next move, and why now. This projects §8; if there
+are no findings, recommend no code change rather than manufacturing an action.]`
+
+| Order | Finding | Action | Why now |
+|:--|:--|:--|:--|
+| 1 | **PERF-001 (P0)** | `<concrete next move>` | `<impact, confidence, or dependency>` |
+
+### Key unknowns
+
+`[At most three decision-changing unknowns, ordered by value of resolving them. Say what
+decision each answer unlocks. This is a projection of §2 and §4; keep their full ledgers.]`
+
+| Unknown | Decision it changes | How to resolve it |
+|:--|:--|:--|
+| `<unknown>` | `<finding, rank, or change decision>` | `<artifact or measurement>` |
+
+### Validation commands
+
+`[At most three commands that cheaply test the top actions or unknowns. Copy them from §9
+with production safety. Never invent one; if none is justified, give the specific non-command
+measurement procedure.]`
+
+| Finding / unknown | Safety | Command or procedure | Decision it unlocks |
+|:--|:--|:--|:--|
+| `PERF-001` | `safe-on-production` | `<copyable command>` | `<what result changes the decision>` |
+
+---
+
+## 2. Scope and method
+
+**Reviewed:** `[Paths, services, layers examined.]`
+**Not reviewed:** `[What was excluded, and why. Be specific — this is part of an honest review.]`
+
+**Evidence available:** Well instrumented | Partially instrumented | Uninstrumented
+`[What exists: metrics, traces, benchmarks, load tests, query plans, SLOs. This sets the
+ceiling on confidence for everything below.]`
+
+**Ranking method:** Runtime data | Structural signals only
+`[If structural, say so — the reader needs to know the ranking is inference.]`
+
+**Reference depth:** `[Note any technology carrying only conceptual or generic support, per
+the registry tier. e.g. "MySQL analysis uses relational category principles only; no
+engine-specific reference exists in this version."]`
+
+### Review completeness
+
+`[How much of the system this review actually saw. Without this, "no findings" reads as
+"everything is healthy" — and those are very different claims.]`
+
+| | |
+|:--|:--|
+| **Repository coverage** | `[What was examined. State it honestly or omit it — an estimated percentage is an invented number]` |
+| **Critical paths** | `[analyzed] / [identified]` |
+| **Shared resources** | `[analyzed] / [identified]` |
+| **Technology support** | `[Deep / Conceptual / Generic, per technology]` |
+| **Runtime evidence** | `[What was supplied, or None]` |
+| **Overall review confidence** | **High / Medium / Low** |
+
+**Review confidence is not finding confidence.** Every finding here can be `High` while this
+review is `Low` — that combination means "what I looked at, I am sure about; I did not look
+at much." Both numbers are needed to read the report correctly.
+
+### What this review could not determine
+
+`[Two different kinds of unknown, kept apart because the reader can act on one and not the
+other:]`
+
+| Unknown | Why | What would resolve it |
+|:--|:--|:--|
+| `[subject]` | `No evidence exists` | `[the measurement or artifact that would settle it]` |
+| `[subject]` | `Technology unsupported` | `[what depth of analysis is missing, and what tool would provide it]` |
+
+`[An unknown because no evidence exists is a gap the user can close. An unknown because this
+skill does not support the technology is a gap in the skill. Do not present them as the
+same thing.]`
+
+---
+
+## 3. Architecture overview
+
+`[Short. Entry points, services, datastores, caches, brokers, deployment model. Shared
+resources named explicitly — they determine blast radius throughout the report.]`
+
+| Component | Technology | Version | Support tier | Role |
+|:--|:--|:--|:--|:--|
+
+**Shared resources:** `[connection pools, event loops, locks, primary datastore, shared cache]`
+
+---
+
+## 4. Workload model
+
+**Known** `[cited — infer repository-answerable workload facts before asking; record the
+source and evidence checked in workload.inputs]`
+
+- <fact> — source: <file:line or "user-supplied">
+
+**Assumed** `[stated and unverified; these drive the confidence caps]`
+
+- <assumption> — affects: <finding IDs>
+
+**Unknown** `[would change conclusions if answered]`
+
+- <unknown>
+
+**Derived** `[computed from the entries above — show the inputs, per Hard Rule 1]`
+
+- <conclusion> — from: <the known or assumed entries it was computed from>
+
+**Measured** `[from a real runtime artifact, cited. Often empty — say so rather than omitting
+the heading, because an empty Measured list is why almost nothing here is `Confirmed`]`
+
+- <measurement> — source: <artifact>
+
+### Questions that would change the ranking
+
+`[Only unanswered questions that can change severity, confidence, or recommendation, ranked
+by expected decision value. Zero is valid; seven is the interview maximum, not a quota.]`
+
+| # | Value | Question | Decision dimensions | What it would change |
+|:--|:--|:--|:--|:--|
+| 1 | `highest / high / medium / low` | `[question]` | `severity / confidence / recommendation` | `[which findings move, and where to]` |
+
+---
+
+## 5. Critical path analysis
+
+`[Ranked. For each: what it does, what it touches, what bounds it, whether it is
+instrumented.]`
+
+| # | Path | Blocking | Datastore ops | Bounded | Instrumented | Notes |
+|:--|:--|:--|:--|:--|:--|:--|
+
+**Amplification points:** `[per-item costs multiplied by unbounded result sizes, fan-out]`
+
+**Paths deliberately not analyzed in depth, and why:** `[part of an honest review]`
+
+---
+
+## 6. Layer analysis
+
+`[One subsection per PRESENT layer. Delete the rest entirely. Keep each to observations that
+lead to findings; do not restate the reference material.]`
+
+### 6.1 Application
+### 6.2 API
+### 6.3 Data access and datastore
+### 6.4 Cache
+### 6.5 Distributed communication
+### 6.6 Infrastructure
+### 6.7 Observability
+
+`[Observability is always assessed — its absence is itself a finding, and it determines
+whether any future optimization can be validated.]`
+
+---
+
+## 7. Findings
+
+`[Full format for the top 10–15 by priority. Deduplicate before capping — findings sharing a
+root cause are one finding.]`
+
+### PERF-001 — <short title>
+
+| | |
+|:--|:--|
+| **Root cause** | `ROOT-001` `[findings sharing a cause share this id — see §7 heading]` |
+| **Severity** | Critical / High / Medium / Low / Informational |
+| **Confidence** | Confirmed / High / Medium / Low |
+| **Priority** | P0 / P1 / P2 / P3 `[must match the matrix]` |
+| **Category** | data-access / concurrency / serialization / io / memory / networking / infrastructure / observability / cost |
+| **Location** | `path/to/file.ext:LINE` |
+| **Tags** | quick-win / scalability-risk / needs-measurement |
+
+**Problem**
+`[One or two sentences.]`
+
+**Performance principle**
+`[Which universal principle this violates, stated without reference to the technology.]`
+
+**Evidence**
+`[Cite files and lines. If there is no runtime evidence, say so here explicitly — do not
+leave it implied.]`
+
+**Impact**
+`[All four severity factors made explicit: position, frequency, growth, blast radius. Show
+any arithmetic and label it a derivation.]`
+
+**Conditions**
+`[The workload under which this matters. If workload is unknown, state the assumption. This
+field may not be empty, and "under high load" is not a condition.]`
+
+**Counter-evidence**
+`[What you went looking for that would refute this, and what you found. "Searched, found
+nothing" is a complete answer; an empty section is not — it is indistinguishable from never
+having looked. Anything found here must already be reflected in Severity or Confidence
+above: see methodology/bottleneck-analysis.md §4 for which one moves and why.]`
+
+**Why this might not matter** `[required at Medium severity and above]`
+`[The strongest honest case against acting on this. If you cannot construct one, you may not
+understand the finding well enough to rank it.]`
+
+**Recommendation**
+`[What to change, and why it addresses the cause rather than the symptom.]`
+
+**Alternatives** `[required at Medium severity and above]`
+`[Options considered, with the preferred one marked and justified. The point is to catch the
+case where the first plausible fix was the only one examined — usually the one that masks the
+work rather than removing it.]`
+
+| Option | | Why |
+|:--|:--|:--|
+| `[A — remove the work]` | **preferred** | `[why this one]` |
+| `[B — cache the work]` | | |
+
+**Trade-offs**
+`[Complexity, memory, consistency, operational burden, new failure modes. Every optimization
+costs something.]`
+
+**Validation**
+`[Baseline, measurement, expectation, safety label, falsifier. Do not quantify latency
+without measurement. Include justified repository-local commands with purpose and per-command
+production safety; omit rather than invent one.]`
+
+---
+
+### Remaining findings
+
+`[Everything beyond the top 10–15, ranked.]`
+
+| ID | Sev | Conf | Pri | Location | Summary |
+|:--|:--|:--|:--|:--|:--|
+
+### Considered and not reported
+
+`[Only plausible, material discards worth revisiting. Give path/resource, evidence checked,
+discard reason, and revisit condition; leave obvious noise in the private candidate ledger.]`
+
+### Adjacent findings — outside performance scope
+
+`[Real security, correctness, or maintenance issues noticed while reading code for performance.
+Full write-up, same rigor as a performance finding — this section exists because a one-line
+mention would under-serve something you found with real evidence. But never score it on the
+performance axes: Severity/Confidence/Priority/a PERF- ID all measure performance impact, and
+"Informational/P3" reads as "safe to deprioritize," which is wrong for a real vulnerability.
+Equally, never invent a CVSS-style score or claim comprehensive coverage — this skill has no
+dedicated security or correctness methodology, and manufacturing that rigor is the same kind of
+dishonesty as inventing a number. Omit this section entirely if nothing qualifies — do not
+write "none noticed" as filler.]`
+
+### SEC-001 / COR-001 / MAINT-001 — <short title>
+
+| | |
+|:--|:--|
+| **Kind** | Security / Correctness / Maintenance |
+| **Confidence** | Confirmed / High / Medium / Low `[same evidence-grade meaning as a performance finding — how sure you are it's real]` |
+| **Risk** | Low / Medium / High `[a plain-language judgment call, not a security-specific rating scale — justify it in one sentence in Impact below]` |
+| **Location** | `path/to/file.ext:LINE` |
+
+**Problem** `[What is wrong, in one or two sentences.]`
+
+**Evidence** `[Cite files and lines, same standard as a performance finding.]`
+
+**Impact** `[Plain language, one or two sentences: why this Risk level. Not position/frequency/
+growth/blast-radius — those are the performance-specific factors and don't apply here.]`
+
+**Recommendation** `[What to change.]`
+
+**Trade-offs** `[What the change costs, if anything.]`
+
+**Validation** `[What would confirm the fix. May simply be: run the review this needs.]`
+
+**Would need** `[The dedicated review or tool that would actually assess this properly —
+e.g. a security review, a dependency-update pass, a correctness-focused test suite. This
+section is not a substitute for that review; it is a pointer toward it.]`
+
+---
+
+## 8. Prioritized action plan
+
+`[Sequenced. Priority measures impact; sequencing may account for effort. Where a lower
+priority item is sequenced early because it is cheap, say so explicitly.]`
+
+### P0 — Immediate
+### P1 — High priority
+### P2 — Medium priority
+### P3 — Optimization opportunity
+
+| Order | ID | Priority | Effort | Why here |
+|:--|:--|:--|:--|:--|
+
+**If only one thing is done:** `[Name it. This is often the most-read line in the report.]`
+
+---
+
+## 9. Validation plan
+
+`[Per significant recommendation. Every command labelled for production safety.]`
+
+### PERF-001
+
+- **Baseline:** `[what to measure first, and how]` — `[safe-on-production: yes/no]`
+- **Change:** `[what is being changed]`
+- **Measurement:** `[the specific metric, at the specific place]`
+- **Expectation:** `[direction and, where derivable from code, magnitude. Do not fabricate
+  latency percentages.]`
+- **Falsifier:** `[what result would mean the finding was wrong]`
+- **Guard:** `[test, metric, or alert that prevents regression]`
+- **Commands:**
+  - `[safe-on-production | not-safe-on-production]` `<copyable command>` — `[purpose]`
+
+### Instrumentation gaps to close first
+
+`[If the system is uninstrumented, this comes before any optimization — optimizing an
+unmeasured system produces changes nobody can justify later.]`
+
+---
+
+## 10. Machine-readable output
+
+`[Emit this alongside the report above — never instead of it. The Markdown is the artifact a
+human reads and disagrees with; this is the same content in a form a script can compare,
+diff, and score. If the two ever disagree, the Markdown is authoritative and the JSON is
+wrong, because a claim that appears only in the JSON has escaped human review.]`
+
+Conforms to `schemas/review.schema.json`, whose findings conform to
+`schemas/finding.schema.json`. Emit it in a fenced `json` block:
+
+````
+```json
+{
+  "schema_version": "1.0",
+  "mode": "[full | change-scoped]",
+  "verdict": "[change-scoped only: PASS | WARN | FAIL | UNKNOWN]",
+  "reproducibility": { "...": "[commit, skill version, detector version, model]" },
+  "completeness": { "...": "[§2's figures, in machine form]" },
+  "assumptions": { "...": "[§4's ledger, in machine form]" },
+  "root_causes": [ "[one entry per underlying constraint]" ],
+  "findings": [ "[one entry per finding in §7 — may be empty]" ],
+  "considered_not_reported": [ "[§7's discarded candidates]" ],
+  "adjacent_findings": [ "[§7's SEC-/COR-/MAINT- items]" ]
+}
+```
+````
+
+Three rules this output must satisfy:
+
+- **`priority` must match the matrix.** It is derived from `severity` and `confidence`, never
+  chosen. The schema does not encode the matrix — `scripts/check_repo_invariants.py` checks it
+  against the copy published in `SKILL.md`, so there is exactly one authoritative matrix.
+- **`stable_id` must not depend on a line number.** Derive it from root cause, file, enclosing
+  symbol, and mechanism, so the same unfixed problem yields the same id after a refactor. This
+  is what makes "is this the finding we saw last month?" answerable.
+- **An empty `counter_evidence` array asserts that a search happened and found nothing.** It
+  does not mean the search was skipped. If you did not look, you are not finished.
+- **Validation commands remain structured.** Emit every §1 or §9 command under that finding's
+  `validation.commands` with the same purpose and safety. The JSON does not lose the detail.
+
+---
+
+## 11. Notes on this review
+
+- Findings are classified by evidence grade; `Confirmed` requires a cited runtime artifact.
+- No runtime metric in this report was estimated or assumed. `[If any number is a derivation,
+  it is labelled as such at the point of use.]`
+- Recommendations state their trade-offs and their validation path. Where neither could be
+  established, the item is reported as an observation rather than a recommendation.

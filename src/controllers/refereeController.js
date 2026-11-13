@@ -7,7 +7,13 @@ const { isAdministrator } = require('../middleware/auth');
 const access = require('../services/access');
 const { query } = require('../db');
 const { resetStage, runDraw } = require('../services/drawService');
+const { createRefereeStreamHub } = require('../services/refereeStreamService');
 const adminOverride = (req) => isAdministrator(req.user);
+
+const streamHub = createRefereeStreamHub({
+  snapshot: (matchId, tournamentId) => referee.snapshot(matchId, tournamentId),
+  serialize: (data) => JSON.stringify({ match: map.match(data.match), events: data.events }),
+});
 
 const detail = asyncHandler(async (req, res) => {
   const tournament = await access.getTournamentOrThrow(req.params.tournamentId);
@@ -206,20 +212,18 @@ const stream = asyncHandler(async (req, res) => {
     Connection: 'keep-alive',
   });
   res.flushHeaders?.();
-  let last = '';
-  const send = async () => {
-    const data = await referee.snapshot(req.params.id, req.params.tournamentId);
-    const payload = JSON.stringify({ match: map.match(data.match), events: data.events });
-    if (payload !== last) {
-      res.write(`event: match-update\ndata: ${payload}\n\n`);
-      last = payload;
-    } else {
-      res.write(': heartbeat\n\n');
-    }
-  };
-  await send();
-  const timer = setInterval(() => { send().catch(() => clearInterval(timer)); }, 1000);
-  req.on('close', () => clearInterval(timer));
+  const subscription = streamHub.subscribe({
+    matchId: req.params.id,
+    tournamentId: req.params.tournamentId,
+    res,
+  });
+  req.on('close', subscription.unsubscribe);
+  try {
+    await subscription.ready;
+  } catch {
+    streamHub.reportPollingError(req.params.id, req.params.tournamentId);
+    subscription.unsubscribe();
+  }
 });
 
 module.exports = { detail, start, continueFinished, event, updateEvent, deleteEvent, applyImpact, transition, finishPhase, abandon, stream };

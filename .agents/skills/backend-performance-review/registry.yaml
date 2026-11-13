@@ -1,0 +1,478 @@
+# Reference registry
+#
+# Maps detection signals to the reference files that should be loaded, and declares the
+# support tier for each technology. This is the single source of truth for both reference
+# routing and the support table published in README.md and docs/supported-technologies.md.
+#
+# Adding a technology = one new file under technology/ + one entry here.
+# Neither SKILL.md nor the methodology changes.
+#
+# Entry schema
+#   signal:    stable identifier, kebab-case
+#   kind:      datastore | cache | broker | runtime | framework | infrastructure
+#   category:  for datastores — relational | document | graph | key-value | wide-column |
+#              search | time-series | vector | object-store
+#   match:     substrings matched case-insensitively against dependency names, image
+#              names, connection scheme prefixes, and config keys
+#   load:      reference files, in load order. Category file always precedes technology file.
+#   tier:      deep | conceptual | generic
+#              deep       — dedicated technology reference exists
+#              conceptual — category principles apply; no engine-specific file yet
+#              generic    — universal methodology only; graceful degradation applies
+#   notes:     optional; surfaced in the report's scope section when tier != deep
+
+version: 1
+
+# ---------------------------------------------------------------------------
+# Datastores — relational
+# ---------------------------------------------------------------------------
+
+- signal: postgres
+  kind: datastore
+  category: relational
+  match: [psycopg, psycopg2, asyncpg, "pg8000", postgresql, postgres, "jackc/pgx", npgsql,
+          "org.postgresql", "postgres://", "postgresql://", pg_dump, timescale, "lib/pq",
+          "\"pg\":", "'pg'", "\"pg\""]
+  load: [databases/universal.md, databases/relational.md, technology/postgres.md]
+  tier: deep
+  notes: >
+    Two more driver gaps found by an audit of real dependency declarations per supported
+    ecosystem (docs/evaluation.md, following on from #40): github.com/lib/pq, the other
+    widely used Go Postgres driver alongside jackc/pgx, matched nothing; and node-postgres's
+    package.json entry — just `"pg": "^8.11.0"`, the bare two-letter package name — is too
+    short and common a substring to add unquoted (it would fire on "pgx", "pgadmin", or any
+    word containing "pg"), so it is matched via the same quoted-literal technique already
+    used for the node signal's `"node":` token: `"pg":` as it appears in a real
+    package.json, not the bare substring. A separate audit found Knex names Postgres the
+    same abbreviated way — `client: 'pg'` or `client: "pg"` in knexfile.js, never the full
+    word — so the quoted-literal tokens `'pg'` and `"pg"` (quotes included) catch that too,
+    now that detect_stack.py reads knexfile.js content, scoped the same way rather than a
+    bare unquoted "pg" that would fire on "pgx"/"pgadmin" everywhere else scanned.
+
+- signal: mysql
+  kind: datastore
+  category: relational
+  match: [mysqlclient, pymysql, aiomysql, mysql2, "mysql-connector", "go-sql-driver/mysql",
+          "mysql://", mariadb, "com.mysql", "pomelo.entityframeworkcore"]
+  load: [databases/universal.md, databases/relational.md, technology/mysql.md]
+  tier: deep
+  notes: >
+    Record the storage engine per table (a MyISAM table on a write-heavy path is a
+    correctness-adjacent finding, not merely a performance one) and whether MySQL or MariaDB
+    is actually deployed; technology/mysql.md covers InnoDB's clustered-index primary-key
+    design, REPEATABLE READ gap locking, and buffer-pool sizing as the checkable specifics.
+
+- signal: sqlserver
+  kind: datastore
+  category: relational
+  match: [pyodbc, pymssql, "System.Data.SqlClient", "Microsoft.Data.SqlClient",
+          "Microsoft.EntityFrameworkCore.SqlServer", mssql, "sqlserver://", tedious]
+  load: [databases/universal.md, databases/relational.md, technology/sqlserver.md]
+  tier: deep
+  notes: >
+    Behavioral evaluation (a .NET blind pass, docs/evaluation.md) found the match list
+    covered only the raw ADO.NET client libraries and connection-string scheme, missing
+    Microsoft.EntityFrameworkCore.SqlServer — the official EF Core provider package and the
+    dominant way a .NET project declares a SQL Server dependency in its .csproj. A repo that
+    references only this package, without also committing a packages.lock.json listing the
+    transitive Microsoft.Data.SqlClient dependency, was invisible to this signal entirely.
+
+- signal: oracle
+  kind: datastore
+  category: relational
+  match: [cx_Oracle, oracledb, "ojdbc", "oracle.jdbc", godror, "Oracle.ManagedDataAccess",
+          "jdbc:oracle:thin:@"]
+  load: [databases/universal.md, databases/relational.md, technology/oracle.md]
+  tier: deep
+
+- signal: sqlite
+  kind: datastore
+  category: relational
+  match: [sqlite3, "better-sqlite3", "mattn/go-sqlite3", "sqlite://", libsql,
+          "sqlite-jdbc", "org.xerial", "jdbc:sqlite:", rusqlite,
+          "Microsoft.EntityFrameworkCore.Sqlite", sqlite]
+  load: [databases/universal.md, databases/relational.md, technology/sqlite.md]
+  tier: deep
+  notes: >
+    Sequelize's CLI-scaffolded config.json spells its dialect field as the bare word
+    "sqlite" — never "sqlite3" or any other already-covered token — so detecting it needs
+    the bare word itself, same accepted trade-off already made for postgres/mysql/redis/
+    kafka/cassandra's own bare-name tokens: real but occasional false-positive risk from an
+    unrelated mention, softened by the weak_evidence grading for anything outside a real
+    manifest.
+
+- signal: cockroachdb
+  kind: datastore
+  category: relational
+  match: [cockroach, "cockroachdb", cockroachlabs, crdb_internal]
+  load: [databases/universal.md, databases/relational.md, technology/cockroachdb.md]
+  tier: deep
+  notes: >
+    CockroachDB speaks the PostgreSQL wire protocol, so an application using it declares
+    ordinary Postgres drivers (pgx, psycopg, pg, npgsql) and nothing in the dependency
+    manifest names this engine — the postgres signal will fire instead. When both fire, or
+    when postgres fires alone, confirm which engine is actually deployed before applying
+    technology/postgres.md's engine-specific claims: vacuum, WAL, and buffer-cache reasoning
+    do not transfer, and CockroachDB's application-visible transaction-retry requirement has
+    no Postgres equivalent.
+
+# ---------------------------------------------------------------------------
+# Datastores — document
+# ---------------------------------------------------------------------------
+
+- signal: mongodb
+  kind: datastore
+  category: document
+  match: [pymongo, motor, mongoose, mongodb, "mongo-go-driver", "mongodb://",
+          "mongodb+srv://", mongoengine, beanie, "org.mongodb"]
+  load: [databases/universal.md, databases/document.md, technology/mongodb.md]
+  tier: deep
+
+- signal: couchbase
+  kind: datastore
+  category: document
+  match: [couchbase, "couchbase://", "couchbases://", gocb, "com.couchbase",
+          "CouchbaseNetClient"]
+  load: [databases/universal.md, databases/document.md, technology/couchbase.md]
+  tier: deep
+
+- signal: firestore
+  kind: datastore
+  category: document
+  match: [firestore, "google-cloud-firestore", "firebase-admin", "firestore.indexes.json"]
+  load: [databases/universal.md, databases/document.md, technology/firestore.md]
+  tier: deep
+  notes: >
+    Billing is per document read/write, so cost is often the binding constraint rather
+    than latency. Treat cost as a first-class axis for this engine. Record whether the
+    database is in Native mode or Datastore mode — they are the same service with
+    materially different query semantics and limits.
+
+- signal: dynamodb
+  kind: datastore
+  category: key-value
+  match: [dynamodb, "aws-sdk/client-dynamodb", boto3_dynamodb, "aws-sdk-go-v2/service/dynamodb"]
+  load: [databases/universal.md, databases/key-value.md, technology/dynamodb.md]
+  tier: deep
+  notes: >
+    Record the capacity mode (Provisioned + auto-scaling vs On-Demand) and whether a GSI
+    exists and its capacity relative to the base table; technology/dynamodb.md covers
+    partition-key-driven hot partitions, Scan's per-item-examined cost model, and GSI
+    throttling propagating back to the base table as the checkable specifics.
+
+# ---------------------------------------------------------------------------
+# Datastores — other categories (conceptual in v0.1.0)
+# ---------------------------------------------------------------------------
+
+- signal: neo4j
+  kind: datastore
+  category: graph
+  match: [neo4j, "bolt://", "neo4j://", py2neo, "neo4j-driver", cypher, "Neo4j.Driver"]
+  load: [databases/universal.md, databases/graph.md, technology/neo4j.md]
+  tier: deep
+
+- signal: neptune
+  kind: datastore
+  category: graph
+  match: ["amazonaws.com/neptune", neptune, gremlin, sparql, "opencypher"]
+  load: [databases/universal.md, databases/graph.md, technology/neptune.md]
+  tier: deep
+  notes: >
+    The gremlin, sparql, and opencypher tokens name query languages, not this engine —
+    JanusGraph, Blazegraph, Apache Jena, and Neptune Analytics speak them too. Treat a match
+    on those alone as "a graph query language is in use" and confirm the engine from a
+    *.neptune.amazonaws.com endpoint or an infrastructure declaration before applying
+    technology/neptune.md's managed-service specifics.
+
+- signal: cassandra
+  kind: datastore
+  category: wide-column
+  match: [cassandra, scylla, "cassandra-driver", gocql, datastax]
+  load: [databases/universal.md, databases/wide-column.md, technology/cassandra.md]
+  tier: deep
+
+- signal: elasticsearch
+  kind: datastore
+  category: search
+  match: [elasticsearch, opensearch, "@elastic/elasticsearch", "elastic/go-elasticsearch", solr]
+  load: [databases/universal.md, databases/search.md, technology/elasticsearch.md]
+  tier: deep
+
+- signal: clickhouse
+  kind: datastore
+  category: wide-column
+  match: [clickhouse, "clickhouse-driver", "clickhouse-connect"]
+  load: [databases/universal.md, databases/wide-column.md, technology/clickhouse.md]
+  tier: deep
+
+- signal: influxdb
+  kind: datastore
+  category: time-series
+  match: [influxdb, "influxdb-client", prometheus_remote_write, influxd, "org.influxdb",
+          "com.influxdb"]
+  load: [databases/universal.md, databases/time-series.md, technology/influxdb.md]
+  tier: deep
+  notes: >
+    Establish the major version before scoring any finding: 1.x (InfluxQL/TSM), 2.x
+    (Flux/buckets), and 3.x (SQL, columnar Parquet storage) differ enough that guidance for
+    one can be actively wrong for another — the series-cardinality wall that dominates
+    1.x/2.x reasoning is substantially removed in 3.x. If the version cannot be determined,
+    say so in the report's scope section.
+
+- signal: vector-store
+  kind: datastore
+  category: vector
+  match: [pinecone, weaviate, qdrant, milvus, chromadb, pgvector, faiss, lancedb,
+          "EXTENSION vector", "EXISTS vector", "@lancedb/lancedb"]
+  load: [databases/universal.md, databases/vector.md, technology/vector-stores.md]
+  tier: deep
+  notes: >
+    One combined signal spanning eight independently designed engines — a deliberately
+    comparative technology file, not a per-vendor split (see docs/roadmap.md). Confirm which
+    engine(s) are actually in use before applying a claim from the comparison table;
+    pgvector in particular loads databases/relational.md's reasoning too when the connection
+    is via a postgres signal, since it is a Postgres extension, not a standalone service.
+
+- signal: object-storage
+  kind: datastore
+  category: object-store
+  match: ["s3://", "aws-sdk/client-s3", boto3_s3, "amazonaws.com/s3", "com.amazonaws.services.s3",
+          "google-cloud-storage", "storage.googleapis.com", "azure-storage-blob",
+          "blob.core.windows.net", minio, "gcs://", "aws-sdk-go/service/s3",
+          "aws-sdk-go-v2/service/s3", "software.amazon.awssdk:s3",
+          "cloud.google.com/go/storage", "Google.Cloud.Storage", "@google-cloud/storage",
+          "azure-sdk-for-go/sdk/storage/azblob", "Azure.Storage.Blobs",
+          "@azure/storage-blob"]
+  load: [databases/universal.md, databases/object-storage.md, technology/object-storage.md]
+  tier: deep
+  notes: >
+    One combined signal spanning independently designed services (S3-compatible, GCS, Azure
+    Blob) — a deliberately comparative technology file, not a per-vendor split (see
+    docs/roadmap.md). Confirm which provider is actually in use before applying a claim from
+    the comparison table. The AWS SDK v2 Java/Kotlin client (software.amazon.awssdk:s3) only
+    matches when declared in single-line Gradle notation; a Maven pom.xml splits groupId and
+    artifactId across separate elements with no reliably matchable contiguous substring, a
+    known residual detection gap.
+
+# ---------------------------------------------------------------------------
+# Caches
+# ---------------------------------------------------------------------------
+
+- signal: redis
+  kind: cache
+  match: [redis, ioredis, "go-redis", redis_py, aioredis, redisson, "redis://", "rediss://",
+          valkey, elasticache, "io.lettuce"]
+  load: [databases/universal.md, databases/key-value.md, distributed/caching.md,
+         technology/redis.md]
+  tier: deep
+
+- signal: memcached
+  kind: cache
+  match: [memcached, pymemcache, "gomemcache", memjs, pylibmc]
+  load: [databases/universal.md, databases/key-value.md, distributed/caching.md,
+         technology/memcached.md]
+  tier: deep
+
+# ---------------------------------------------------------------------------
+# Message brokers and queues
+# ---------------------------------------------------------------------------
+
+- signal: kafka
+  kind: broker
+  match: [kafka, confluent_kafka, kafkajs, "segmentio/kafka-go", "sarama", redpanda]
+  load: [distributed/retries-and-backpressure.md, distributed/timeouts-and-deadlines.md,
+         technology/kafka.md]
+  tier: deep
+  notes: >
+    Determine whether the deployment runs KRaft mode or ZooKeeper, and which consumer-group
+    rebalancing protocol (eager vs cooperative sticky) is configured; technology/kafka.md
+    covers rebalance blast radius, max.poll.interval.ms eviction, acks durability trade-offs,
+    and retention-vs-compaction as the checkable specifics.
+
+- signal: rabbitmq
+  kind: broker
+  match: [rabbitmq, pika, amqplib, "amqp://", "streadway/amqp", kombu, lapin,
+          "starter-amqp"]
+  load: [distributed/retries-and-backpressure.md, distributed/timeouts-and-deadlines.md,
+         technology/rabbitmq.md]
+  tier: deep
+  notes: >
+    Record the queue type (classic, quorum, or stream) and whether classic mirroring is
+    still configured (deprecated, removed in 4.0); technology/rabbitmq.md covers the
+    cluster-wide memory-alarm blast radius, prefetch/QoS, and exchange routing cost as the
+    checkable specifics.
+
+- signal: sqs
+  kind: broker
+  match: ["aws-sdk/client-sqs", "aws-sdk-go-v2/service/sqs", "aws-sdk-go/service/sqs",
+          "arn:aws:sqs", "AWS::SQS", "software.amazon.awssdk:sqs", "AWSSDK.SQS",
+          "boto3.client('sqs')", "boto3.client(\"sqs\")"]
+  load: [distributed/retries-and-backpressure.md, distributed/timeouts-and-deadlines.md,
+         technology/sqs.md]
+  tier: deep
+  notes: >
+    A bare "sqs" token is deliberately not in this list — behavioral evaluation found it
+    matching inside base64-encoded lockfile hashes (see LockfileHashCollisionTests), the
+    same collision class as the "rq" removal below. The boto3 Python client has no
+    package-manifest token of its own (boto3 is a single generic package covering every AWS
+    service), so it is matched via the literal client-construction call instead, in both
+    quote styles.
+
+- signal: task-queue
+  kind: broker
+  match: [celery, sidekiq, bullmq, bull, "django-rq", "python-rq", dramatiq, "hangfire",
+          temporal, "asynq"]
+  load: [distributed/retries-and-backpressure.md, application/connection-pools.md,
+         technology/task-queues.md]
+  tier: deep
+  notes: >
+    A bare "rq" token was removed from this match list after behavioral evaluation found
+    it matching inside base64-encoded hashes in lockfiles (e.g. go.sum), producing false
+    positives. See docs/evaluation.md. This narrows detection of the Python `rq` library
+    to its more specific package names; a project using bare `rq` without django-rq or
+    python-rq framing will not be detected by this signal. Temporal is architecturally a
+    durable-execution engine, not a simple job queue — technology/task-queues.md flags this
+    explicitly rather than applying the same comparison table to it uncritically.
+
+# ---------------------------------------------------------------------------
+# Runtimes
+# ---------------------------------------------------------------------------
+
+- signal: node
+  kind: runtime
+  match: ["package.json", "node_modules", nodejs, "\"node\":"]
+  load: [runtimes/universal.md, application/async-and-blocking.md, technology/node.md]
+  tier: deep
+  notes: >
+    "package.json" and "node_modules" alone cannot distinguish a Node.js backend from
+    front-end tooling in a full-stack repository; behavioral evaluation fired this signal
+    on a Python-backend repo that happened to contain a frontend, so verify the actual
+    backend entry point before applying Node-specific reasoning (see docs/evaluation.md).
+
+- signal: python
+  kind: runtime
+  match: ["requirements.txt", "pyproject.toml", "Pipfile", "setup.py"]
+  load: [runtimes/universal.md, application/async-and-blocking.md, technology/python.md]
+  tier: deep
+  notes: >
+    Determine the concurrency model first — WSGI threads/processes vs ASGI event loop —
+    because the failure modes differ completely; technology/python.md covers this and the
+    GIL's role as the concrete mechanism behind this runtime's parallelism dimension.
+
+- signal: jvm
+  kind: runtime
+  match: ["pom.xml", "build.gradle", "build.gradle.kts", ".java", ".kt"]
+  load: [runtimes/universal.md, application/async-and-blocking.md, technology/jvm.md]
+  tier: deep
+  notes: >
+    Determine the concurrency model first — thread-per-request, reactive event-loop, or
+    virtual threads (JDK 21+) — because severity of an identical blocking call differs
+    completely between them; technology/jvm.md covers this plus GC-collector choice,
+    JIT warm-up, and off-heap/metaspace memory as the concrete, checkable specifics.
+
+- signal: go
+  kind: runtime
+  match: ["go.mod", "go.sum"]
+  load: [runtimes/universal.md, application/async-and-blocking.md, technology/go.md]
+  tier: deep
+  notes: >
+    Identify the concurrency pattern actually used (unbounded goroutine spawning, a bounded
+    worker pool, or a channel pipeline) before scoring anything; technology/go.md covers
+    goroutine-leak detection, GOMAXPROCS-vs-container-CPU-quota mismatches, and the GC's
+    budget-based (not algorithm-choice) tuning as the concrete, checkable specifics.
+
+- signal: dotnet
+  kind: runtime
+  match: [".csproj", ".sln", ".fsproj"]
+  load: [runtimes/universal.md, application/async-and-blocking.md, technology/dotnet.md]
+  tier: deep
+  notes: >
+    Determine first whether the code awaits asynchronously throughout or blocks synchronously
+    on async work (.Result/.Wait()/.GetAwaiter().GetResult()) on a hot path; technology/dotnet.md
+    covers thread-pool starvation as the concrete failure mode this produces, sync-over-async
+    deadlock risk, value-type boxing, and Server-vs-Workstation GC as the checkable specifics.
+
+- signal: rust
+  kind: runtime
+  match: ["Cargo.toml", "Cargo.lock"]
+  load: [runtimes/universal.md, application/async-and-blocking.md, technology/rust.md]
+  tier: deep
+  notes: >
+    Identify the async runtime actually in use (Tokio, async-std, smol, or none) before
+    applying any async-specific reasoning, and confirm a --release build before drawing any
+    conclusion from a profile or benchmark; technology/rust.md covers Rc/Arc reference-cycle
+    leaks, spawn_blocking as the fix for a stalled async worker, and static-vs-dynamic
+    dispatch as the checkable specifics.
+
+- signal: php
+  kind: runtime
+  match: ["composer.json", "composer.lock", "artisan"]
+  load: [runtimes/universal.md, technology/php.md]
+  tier: deep
+
+- signal: ruby
+  kind: runtime
+  match: ["Gemfile", "Gemfile.lock", "config.ru"]
+  load: [runtimes/universal.md, technology/ruby.md]
+  tier: deep
+
+# ---------------------------------------------------------------------------
+# API surfaces
+# ---------------------------------------------------------------------------
+
+- signal: graphql
+  kind: framework
+  match: [graphql, apollo, strawberry, graphene, gqlgen, "graphql-java", nexus]
+  load: [application/api.md, application/data-access.md, technology/graphql.md]
+  tier: deep
+
+- signal: grpc
+  kind: framework
+  match: [grpc, "grpc-go", grpcio, "@grpc/grpc-js", protobuf]
+  load: [application/api.md, application/serialization.md,
+         distributed/timeouts-and-deadlines.md, technology/grpc.md]
+  tier: deep
+
+- signal: rest
+  kind: framework
+  match: [fastapi, flask, django, express, nestjs, "\"koa\":", "gin-gonic/gin",
+          "labstack/echo", "gofiber/fiber", "spring-boot", actix, axum, laravel, rails,
+          "aspnetcore"]
+  load: [application/api.md, technology/rest.md]
+  tier: deep
+  notes: >
+    Go framework tokens use their full module path ("gin-gonic/gin", "labstack/echo",
+    "gofiber/fiber") rather than the bare framework name. Behavioral evaluation found bare
+    "gin" matching inside the word "logging" and bare "echo" matching inside ordinary shell
+    `echo` commands in CI YAML — both are extremely common substrings outside their
+    framework meaning. See docs/evaluation.md.
+
+# ---------------------------------------------------------------------------
+# Infrastructure
+# ---------------------------------------------------------------------------
+
+- signal: kubernetes
+  kind: infrastructure
+  match: ["kind: Deployment", "kind: StatefulSet", "apiVersion: apps/v1", helm, "Chart.yaml"]
+  load: [infrastructure/resources.md, technology/kubernetes.md]
+  tier: deep
+
+- signal: docker
+  kind: infrastructure
+  match: [Dockerfile, "docker-compose.yml", "compose.yaml"]
+  load: [infrastructure/resources.md, technology/docker.md]
+  tier: deep
+
+- signal: serverless
+  kind: infrastructure
+  match: ["serverless.yml", "template.yaml", "AWS::Serverless", lambda_handler,
+          "func.HttpTrigger", "cloud-functions", vercel, "netlify.toml"]
+  load: [infrastructure/resources.md, application/connection-pools.md,
+         technology/serverless.md]
+  tier: deep
+
+- signal: terraform
+  kind: infrastructure
+  match: [".tf", "terraform"]
+  load: [infrastructure/resources.md, technology/terraform.md]
+  tier: deep

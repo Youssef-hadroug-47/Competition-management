@@ -20,15 +20,21 @@ function createApp({ staticDir } = {}) {
         requestId: crypto.randomUUID(),
         startedAt: performance.now(),
         queryCount: 0,
+        performanceLog: Math.random() < config.performanceLogSampleRate,
       };
       res.setHeader('X-Request-Id', context.requestId);
       runWithRequestContext(context, () => {
         res.once('finish', () => {
-          console.log(
-            `[request] id=${context.requestId} ${req.method} ${req.originalUrl} ` +
-            `${res.statusCode} ${Math.round(performance.now() - context.startedAt)}ms ` +
-            `queries=${context.queryCount}`,
-          );
+          if (context.performanceLog) {
+            console.log(
+              `[request] id=${context.requestId} ${req.method} ${req.originalUrl} ` +
+              `${res.statusCode} ${Math.round(performance.now() - context.startedAt)}ms ` +
+              `queries=${context.queryCount} ` +
+              `poolWaitMs=${Math.round(context.poolWaitMs || 0)} ` +
+              `poolWaitingMax=${context.poolWaitingMax || 0} ` +
+              `transactions=${context.transactionCount || 0}`,
+            );
+          }
         });
         next();
       });

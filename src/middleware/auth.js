@@ -95,6 +95,12 @@ const requireOwner = asyncHandler(async (req, _, next) => {
 });
 
 async function authenticate(req) {
+  if (req.authPromise) return req.authPromise;
+  req.authPromise = authenticateOnce(req);
+  return req.authPromise;
+}
+
+async function authenticateOnce(req) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) {
