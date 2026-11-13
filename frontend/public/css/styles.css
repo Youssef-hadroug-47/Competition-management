@@ -9,6 +9,7 @@
 :root {
   --bg: #eef3f5;
   --surface: #ffffff;
+  --surface-raised: #ffffff;
   --surface-muted: #f6f9fa;
   --surface-tint: #e8f4f1;
   --border: #d5e0e2;
@@ -17,6 +18,7 @@
   --text-muted: #5d7076;
   --accent: #0d7766;
   --accent-dark: #075246;
+  --accent-soft: #e8f4f1;
   --accent-contrast: #f4fbfa;
   --highlight: #ef8b4b;
   --highlight-dark: #b75a27;
@@ -30,6 +32,29 @@
   --focus-ring: 0 0 0 3px rgba(13, 119, 102, 0.24);
 }
 
+:root[data-theme='dark'] {
+  --bg: #0d1728;
+  --surface: #1d2b40;
+  --surface-raised: #263750;
+  --surface-muted: #263750;
+  --surface-tint: #124957;
+  --border: #4a607d;
+  --border-strong: #7186a4;
+  --text: #f8fafc;
+  --text-muted: #c1ccdc;
+  --accent: #35d0b4;
+  --accent-dark: #8af0dc;
+  --accent-soft: #204b58;
+  --accent-contrast: #06241f;
+  --highlight: #ff9b62;
+  --highlight-dark: #ffd0ad;
+  --danger: #ff9c95;
+  --danger-bg: #512d35;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .34), 0 12px 30px rgba(0, 0, 0, .24);
+  --shadow-lg: 0 20px 48px rgba(0, 0, 0, .42);
+  --focus-ring: 0 0 0 3px rgba(57, 197, 173, .34);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -38,16 +63,62 @@ html {
   color-scheme: light;
 }
 
+html[data-theme='dark'] {
+  color-scheme: dark;
+}
+
 body {
   margin: 0;
   background:
     radial-gradient(circle at 8% -10%, rgba(239, 139, 75, 0.14), transparent 28rem),
-    linear-gradient(180deg, #f8fbfc 0, var(--bg) 26rem);
+    linear-gradient(180deg, var(--surface-muted) 0, var(--bg) 26rem);
   color: var(--text);
   font-family: 'Manrope', 'Work Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 16px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+}
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 40px;
+  white-space: nowrap;
+}
+
+.theme-toggle [data-theme-icon] {
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.theme-toggle--floating {
+  position: fixed;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  z-index: 900;
+  border: 1px solid var(--border-strong);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(12px);
+}
+
+html[data-theme='dark'] body {
+  background:
+    radial-gradient(circle at 8% -10%, rgba(255, 155, 98, .12), transparent 28rem),
+    linear-gradient(180deg, #1a2940 0, var(--bg) 26rem);
+}
+
+html[data-theme='dark'] .btn--primary,
+html[data-theme='dark'] .wizard-step--active,
+html[data-theme='dark'] .mobile-nav__link--primary {
+  color: var(--accent-contrast);
+}
+
+html[data-theme='dark'] .btn--primary:hover:not(:disabled),
+html[data-theme='dark'] .mobile-nav__link--primary:hover {
+  color: var(--accent-contrast);
 }
 
 body.match-menu-open {
@@ -92,7 +163,7 @@ a { color: var(--accent-dark); }
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(23, 36, 28, 0.32);
+  background: rgba(12, 21, 38, 0.42);
   cursor: progress;
 }
 
@@ -112,6 +183,16 @@ a { color: var(--accent-dark); }
   box-shadow: 0 12px 32px rgba(23, 36, 28, 0.2);
   color: var(--text);
   font-weight: 600;
+}
+
+html[data-theme='dark'] .page-busy-overlay {
+  background: rgba(3, 8, 18, .7);
+}
+
+html[data-theme='dark'] .page-busy-overlay__panel {
+  background: var(--surface-raised);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-lg);
 }
 
 .page-busy-overlay__spinner {
@@ -169,6 +250,21 @@ a { color: var(--accent-dark); }
   background: var(--highlight);
   box-shadow: 4px 4px 0 var(--accent);
   display: inline-block;
+}
+
+html[data-theme='dark'] .topbar {
+  border-bottom-color: #344967;
+  background: rgba(17, 29, 51, .96);
+  box-shadow: 0 6px 22px rgba(3, 10, 22, .28);
+}
+
+html[data-theme='dark'] .logo {
+  color: #62b9aa;
+}
+
+html[data-theme='dark'] .logo__mark {
+  background: #e58b5d;
+  box-shadow: 4px 4px 0 #258d7d;
 }
 
 .topbar__actions {
@@ -1113,6 +1209,17 @@ footer.page__footer {
     background: var(--accent-dark);
     color: #fff;
   }
+  .mobile-nav__links .theme-toggle {
+    justify-content: flex-start;
+    width: 100%;
+    border-color: transparent;
+    background: transparent;
+    text-align: left;
+  }
+  .mobile-nav__links .theme-toggle:hover {
+    border-color: var(--border);
+    background: var(--surface-tint);
+  }
   main {
     min-width: 0;
     padding: 20px 16px 48px;
@@ -1723,6 +1830,9 @@ footer.page__footer {
    and card surfaces that separate the user's tournaments from discovery. */
 .home-page {
   font-family: 'Manrope', 'Work Sans', sans-serif;
+  background:
+    radial-gradient(circle at 8% -10%, rgba(13, 119, 102, .08), transparent 28rem),
+    linear-gradient(180deg, var(--surface-muted) 0, var(--bg) 26rem);
 }
 
 .home-page h1,
@@ -1740,10 +1850,8 @@ footer.page__footer {
   position: relative;
   overflow: hidden;
   padding: clamp(18px, 3vw, 28px);
-  border-color: rgba(184, 202, 190, 0.9);
-  background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.98), rgba(247, 249, 246, 0.94)),
-    var(--surface);
+  border-color: var(--border);
+  background: var(--surface);
 }
 
 .home-page .panel::before {
@@ -1760,7 +1868,13 @@ footer.page__footer {
 
 .home-page .panel--accent::before {
   background: linear-gradient(90deg, var(--highlight), var(--accent));
-  opacity: 1;
+  opacity: .8;
+}
+
+html[data-theme='dark'] .home-page {
+  background:
+    radial-gradient(circle at 8% -10%, rgba(53, 208, 180, .1), transparent 28rem),
+    linear-gradient(180deg, #1a2940 0, var(--bg) 26rem);
 }
 
 .home-page .panel__head {
@@ -1778,8 +1892,8 @@ footer.page__footer {
 .home-page .tournament-search {
   border-color: var(--border-strong);
   border-radius: 999px;
-  background: rgba(247, 249, 246, 0.94);
-  box-shadow: 0 4px 14px rgba(20, 37, 27, 0.06);
+  background: var(--surface-muted);
+  box-shadow: var(--shadow);
 }
 
 .home-page .tournament-search input {
@@ -1904,7 +2018,7 @@ footer.page__footer {
   padding: 14px 16px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.76);
+  background: var(--surface-muted);
   transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease, background-color 140ms ease;
 }
 
@@ -1966,7 +2080,7 @@ footer.page__footer {
 
 .tournament-row--locked {
   border-style: dashed;
-  background: rgba(179, 38, 30, 0.025);
+  background: color-mix(in srgb, var(--danger-bg) 22%, var(--surface));
 }
 
 .tournament-row--locked .tournament-row__name {
@@ -2010,7 +2124,7 @@ footer.page__footer {
   padding: 20px 16px;
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius-sm);
-  background: rgba(247, 249, 246, 0.72);
+  background: var(--surface-muted);
   text-align: center;
 }
 
@@ -2517,11 +2631,20 @@ footer.page__footer {
 .back-link:hover { color: var(--accent-dark); }
 
 .tournament-hero {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
   align-items: flex-start;
-  justify-content: space-between;
   gap: 16px;
-  flex-wrap: wrap;
+}
+
+.tournament-hero > div:first-child {
+  min-width: 0;
+}
+
+#hero-actions {
+  width: 100%;
+  min-width: 0;
+  justify-self: end;
 }
 
 .tournament-hero__title {
@@ -2560,6 +2683,7 @@ footer.page__footer {
   align-items: stretch;
   gap: 10px;
   min-width: min(100%, 260px);
+  width: 100%;
 }
 
 .tournament-hero__actions .hero-action-group {
@@ -3208,7 +3332,9 @@ footer.page__footer {
 
 @media (max-width: 640px) {
   .leaderboard { grid-template-columns: 1fr; }
+  .tournament-hero { grid-template-columns: 1fr; }
   .tournament-hero__actions { width: 100%; min-width: 0; }
+  #hero-actions { justify-self: stretch; }
 }
 
 .leaderboard-list {
@@ -3632,7 +3758,7 @@ footer.page__footer {
   overflow-y: auto;
   overscroll-behavior: contain;
   text-align: left;
-  border: 1px solid rgba(184, 202, 190, 0.9);
+  border: 1px solid var(--border);
   box-shadow: var(--shadow-lg);
   animation: match-menu-in 180ms ease-out both;
 }
@@ -3664,8 +3790,17 @@ footer.page__footer {
   margin: -24px -24px 26px;
   padding: 28px 24px 20px;
   border-bottom: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.94);
+  background: var(--surface);
   backdrop-filter: blur(12px);
+}
+
+html[data-theme='dark'] .match-menu-backdrop {
+  background: rgba(3, 8, 18, .76);
+}
+
+html[data-theme='dark'] .match-menu__header {
+  background: var(--surface-raised);
+  border-bottom-color: var(--border-strong);
 }
 
 .match-menu__header h2 {

@@ -62,16 +62,19 @@
       'aria-label': 'Close navigation menu',
       text: '×',
     });
+    const themeButton = window.Theme?.createToggle();
     const links = user
       ? [
           link('Home', '/index'),
           link('Join a team with a code', '/join-team'),
+          themeButton,
           el('button', { class: 'mobile-nav__link', type: 'button', text: 'Log out', onclick: handleLogout }),
         ]
       : [
           link('Join with code', '/join-team'),
           link('Log in', '/login'),
           link('Register', '/register', 'mobile-nav__link mobile-nav__link--primary'),
+          themeButton,
         ];
 
     const drawer = el('aside', {
@@ -183,7 +186,9 @@
       }
     });
 
+    const themeButton = window.Theme?.createToggle();
     container.appendChild(el('div', { class: 'topbar__desktop-actions' }, [
+      themeButton,
       el('div', { class: 'profile' }, [button, menu]),
     ]));
     container.append(...createMobileNavigation(user));
